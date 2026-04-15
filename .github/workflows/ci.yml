@@ -53,16 +53,17 @@ jobs:
           cp /tmp/cyrius/lib/*.cyr lib/ 2>/dev/null || true
       - name: Run test suites
         run: |
+          set +e
           pass=0; fail=0
           for t in tests/*.tcyr; do
             name=$(basename "$t" .tcyr)
+            # Skip non-test files before compile
+            case "$name" in investigate_*) echo "SKIP: $name"; continue ;; esac
             tmpbin="/tmp/ci_t_$$"
             cat "$t" | cc3 > "$tmpbin" 2>/dev/null && chmod +x "$tmpbin"
             if [ $? -ne 0 ]; then echo "FAIL (compile): $name"; fail=$((fail+1)); continue; fi
-            output=$("$tmpbin" 2>&1); ec=$?
+            output=$("$tmpbin" 2>&1) && ec=0 || ec=$?
             rm -f "$tmpbin"
-            # Skip non-test files (investigation scripts)
-            case "$name" in investigate_*) echo "SKIP: $name"; continue ;; esac
             f=$(echo "$output" | grep -o '[0-9]* failed' | tail -1 | grep -o '^[0-9]*')
             if [ "$ec" -ne 0 ] || { [ -n "$f" ] && [ "$f" -gt 0 ]; }; then
               echo "FAIL: $name"; fail=$((fail+1))
