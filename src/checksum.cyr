@@ -80,9 +80,10 @@ fn adler32(data, len) {
 # CRC-32: table-driven, polynomial 0xEDB88320 (reflected).
 # Source: RFC 1952, Section 8
 # Table must be initialized once via crc32_init_table().
-var crc32_table[2048];  # 256 entries * 8 bytes
+var crc32_table = 0;  # heap-allocated: 256 entries * 8 bytes
 
 fn crc32_init_table() {
+    if (crc32_table == 0) { crc32_table = alloc(2048); }
     var i = 0;
     while (i < 256) {
         var c = i;
@@ -96,7 +97,7 @@ fn crc32_init_table() {
             }
             j = j + 1;
         }
-        store64(&crc32_table + i * 8, c);
+        store64(crc32_table +i * 8, c);
         i = i + 1;
     }
     return 0;
@@ -110,28 +111,28 @@ fn crc32(data, len) {
     # Unrolled: process 8 bytes per iteration
     while (i + 8 <= len) {
         var index = (crc ^ load8(data + i)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 1)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 2)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 3)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 4)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 5)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 6)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         index = (crc ^ load8(data + i + 7)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         i = i + 8;
     }
 
     # Scalar tail
     while (i < len) {
         var index = (crc ^ load8(data + i)) & 255;
-        crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
+        crc = (crc >> 8) ^ load64(crc32_table +index * 8);
         i = i + 1;
     }
 

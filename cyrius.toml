@@ -7,7 +7,7 @@ repository = "https://github.com/MacCracken/sankoch"
 
 [deps]
 # thread.cyr for mutex-based thread safety on compress/decompress globals
-stdlib = ["thread", "alloc", "syscalls", "fnptr"]
+stdlib = ["thread", "alloc", "syscalls", "fnptr", "string", "fmt", "assert", "vec"]
 
 [build]
 src = "src/lib.cyr"

@@ -13,7 +13,6 @@
 # Maximum code length in DEFLATE is 15 bits.
 # We use a primary lookup table of 512 entries (9-bit index).
 # Each entry: symbol in low 16 bits, length in bits 16-20.
-# If length == 0, the entry is unused (no code of that pattern).
 
 enum Huffman {
     HUFF_TABLE_BITS = 9;
@@ -22,41 +21,45 @@ enum Huffman {
     HUFF_FAST_SHIFT = 16;
 }
 
-# Storage for two Huffman tables (literal/length + distance).
-# Each table: 512 entries * 8 bytes = 4096 bytes for the fast table,
-# plus overflow entries for codes > 9 bits.
-# Table entry: (bit_length << 16) | symbol
-# For overflow: bit_length == 0 means "not a fast entry, use slow path"
-
+# All large tables are heap-allocated on first use.
 # Literal/length table (up to 286 symbols)
-var _huff_litlen_fast[4096];    # 512 entries * 8 bytes
-var _huff_litlen_syms[2288];    # 286 entries * 8 bytes — full symbol table
-var _huff_litlen_lens[2288];    # 286 entries * 8 bytes — code lengths
-var _huff_litlen_codes[2288];   # 286 entries * 8 bytes — actual codes
+var _huff_litlen_fast = 0;   # 512 entries * 8 bytes
+var _huff_litlen_lens = 0;   # 286 entries * 8 bytes
+var _huff_litlen_codes = 0;  # 286 entries * 8 bytes
 var _huff_litlen_count = 0;
 
 # Distance table (up to 30 symbols)
-var _huff_dist_fast[4096];
-var _huff_dist_syms[240];
-var _huff_dist_lens[240];
-var _huff_dist_codes[240];
+var _huff_dist_fast = 0;
+var _huff_dist_lens = 0;
+var _huff_dist_codes = 0;
 var _huff_dist_count = 0;
 
-# Code-length alphabet table (up to 19 symbols, used for dynamic trees)
-var _huff_cl_fast[4096];
-var _huff_cl_syms[152];
-var _huff_cl_lens[152];
-var _huff_cl_codes[152];
+# Code-length alphabet table (up to 19 symbols)
+var _huff_cl_fast = 0;
+var _huff_cl_lens = 0;
+var _huff_cl_codes = 0;
 var _huff_cl_count = 0;
 
+var _huff_tables_allocd = 0;
+
+fn _huff_alloc_tables() {
+    if (_huff_tables_allocd == 1) { return 0; }
+    _huff_litlen_fast = alloc(4096);
+    _huff_litlen_lens = alloc(2288);
+    _huff_litlen_codes = alloc(2288);
+    _huff_dist_fast = alloc(4096);
+    _huff_dist_lens = alloc(240);
+    _huff_dist_codes = alloc(240);
+    _huff_cl_fast = alloc(4096);
+    _huff_cl_lens = alloc(152);
+    _huff_cl_codes = alloc(152);
+    _huff_tables_allocd = 1;
+    return 0;
+}
+
 # Build canonical Huffman codes from an array of code lengths.
-# lengths: pointer to array of code lengths (one i64 per symbol)
-# num_symbols: number of symbols
-# out_codes: pointer to output array for codes (one i64 per symbol)
-# out_fast: pointer to 512-entry fast lookup table
-# Returns 0 on success, negative error on failure.
 fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
-    # Step 1: Count codes of each length (RFC 1951 step 1)
+    # Step 1: Count codes of each length
     var bl_count[128];  # 16 entries * 8 bytes
     var i = 0;
     while (i < 16) {
@@ -67,23 +70,25 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
     while (i < num_symbols) {
         var len = load64(lengths + i * 8);
         if (len > 0 && len <= HUFF_MAX_BITS) {
-            store64(&bl_count + len * 8, load64(&bl_count + len * 8) + 1);
+            store64(&bl_count + len * 8,
+                    load64(&bl_count + len * 8) + 1);
         }
         i = i + 1;
     }
 
-    # Validate: check that tree is not oversubscribed
-    # Sum of (count[i] * 2^(MAX_BITS - i)) must not exceed 2^MAX_BITS
+    # Validate: tree must not be oversubscribed
     var check_sum = 0;
     var b = 1;
     while (b <= HUFF_MAX_BITS) {
-        check_sum = check_sum + (load64(&bl_count + b * 8) << (HUFF_MAX_BITS - b));
+        check_sum = check_sum +
+            (load64(&bl_count + b * 8) << (HUFF_MAX_BITS - b));
         b = b + 1;
     }
-    # check_sum must be <= 2^MAX_BITS (32768) — oversubscribed means codes collide
-    if (check_sum > (1 << HUFF_MAX_BITS)) { return 0 - ERR_INVALID_HUFFMAN; }
+    if (check_sum > (1 << HUFF_MAX_BITS)) {
+        return 0 - ERR_INVALID_HUFFMAN;
+    }
 
-    # Step 2: Find the numerical value of the smallest code for each length
+    # Step 2: smallest code for each length
     var next_code[128];
     store64(&next_code, 0);
     store64(&next_code + 8, 0);
@@ -95,77 +100,64 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
         bits = bits + 1;
     }
 
-    # Step 3: Assign codes to each symbol
+    # Step 3: assign codes
     i = 0;
     while (i < num_symbols) {
         var len = load64(lengths + i * 8);
         if (len > 0) {
-            store64(out_codes + i * 8, load64(&next_code + len * 8));
-            store64(&next_code + len * 8, load64(&next_code + len * 8) + 1);
+            store64(out_codes + i * 8,
+                    load64(&next_code + len * 8));
+            store64(&next_code + len * 8,
+                    load64(&next_code + len * 8) + 1);
         } else {
             store64(out_codes + i * 8, 0);
         }
         i = i + 1;
     }
 
-    # Step 4: Build fast lookup table (9-bit, LSB-first)
-    # Clear the table
+    # Step 4: build fast lookup table (9-bit, LSB-first)
     i = 0;
     while (i < HUFF_TABLE_SIZE) {
         store64(out_fast + i * 8, 0);
         i = i + 1;
     }
-
-    # Fill entries: for each symbol, reverse its code bits (DEFLATE is LSB-first),
-    # then fill all table slots that share this prefix.
     i = 0;
     while (i < num_symbols) {
         var len = load64(lengths + i * 8);
         if (len > 0 && len <= HUFF_TABLE_BITS) {
-            # Reverse the code to LSB-first order
             var c = load64(out_codes + i * 8);
             var rev = 0;
-            var b = 0;
-            while (b < len) {
+            var bb = 0;
+            while (bb < len) {
                 rev = (rev << 1) | (c & 1);
                 c = c >> 1;
-                b = b + 1;
+                bb = bb + 1;
             }
-            # Fill all entries where the low 'len' bits match
             var step = 1 << len;
             var idx = rev;
             while (idx < HUFF_TABLE_SIZE) {
-                store64(out_fast + idx * 8, (len << HUFF_FAST_SHIFT) | i);
+                store64(out_fast + idx * 8,
+                        (len << HUFF_FAST_SHIFT) | i);
                 idx = idx + step;
             }
         }
         i = i + 1;
     }
-
     return 0;
 }
 
-# Decode one symbol using the fast table, falling back to bit-by-bit
-# for codes longer than HUFF_TABLE_BITS.
-# br: bitreader
-# fast: fast lookup table pointer
-# lengths: code lengths array
-# codes: codes array
-# num_symbols: symbol count
-# Returns: symbol value, or negative error.
+# Decode one symbol using fast table + slow fallback.
 fn _huff_decode(br, fast, lengths, codes, num_symbols) {
-    # Peek 9 bits without consuming
     var data = load64(br);
     var bpos = load64(br + 8);
     var bbit = load64(br + 16);
     var dlen = load64(br + 24);
 
-    # Gather up to 9 bits for table lookup
+    # Peek up to 9 bits
     var peek = 0;
     var got = 0;
     var save_bpos = bpos;
     var save_bbit = bbit;
-
     while (got < HUFF_TABLE_BITS) {
         if (bpos >= dlen) { break; }
         var byte = load8(data + bpos);
@@ -178,23 +170,19 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
 
     var entry = load64(fast + peek * 8);
     var elen = entry >> HUFF_FAST_SHIFT;
-
     if (elen > 0 && elen <= got) {
-        # Fast path — consume only the bits we need
         var consume = elen;
         bpos = save_bpos;
-        bbit = save_bbit;
-        bbit = bbit + consume;
+        bbit = save_bbit + consume;
         while (bbit >= 8) { bbit = bbit - 8; bpos = bpos + 1; }
         store64(br + 8, bpos);
         store64(br + 16, bbit);
         return entry & 65535;
     }
 
-    # Slow path: restore position, decode bit-by-bit
+    # Slow path: bit-by-bit
     store64(br + 8, save_bpos);
     store64(br + 16, save_bbit);
-
     var acc = 0;
     var bits_read = 0;
     while (bits_read < HUFF_MAX_BITS) {
@@ -202,7 +190,6 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
         if (bit < 0) { return bit; }
         acc = (acc << 1) | bit;
         bits_read = bits_read + 1;
-
         var i = 0;
         while (i < num_symbols) {
             if (load64(lengths + i * 8) == bits_read) {
@@ -213,164 +200,127 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
             i = i + 1;
         }
     }
-
     return 0 - ERR_INVALID_HUFFMAN;
 }
 
-# Convenience: decode from literal/length table
 fn huff_decode_litlen(br) {
-    return _huff_decode(br, &_huff_litlen_fast, &_huff_litlen_lens,
-                        &_huff_litlen_codes, _huff_litlen_count);
+    return _huff_decode(br, _huff_litlen_fast, _huff_litlen_lens,
+                        _huff_litlen_codes, _huff_litlen_count);
 }
 
-# Convenience: decode from distance table
 fn huff_decode_dist(br) {
-    return _huff_decode(br, &_huff_dist_fast, &_huff_dist_lens,
-                        &_huff_dist_codes, _huff_dist_count);
+    return _huff_decode(br, _huff_dist_fast, _huff_dist_lens,
+                        _huff_dist_codes, _huff_dist_count);
 }
 
-# Convenience: decode from code-length alphabet table
 fn huff_decode_cl(br) {
-    return _huff_decode(br, &_huff_cl_fast, &_huff_cl_lens,
-                        &_huff_cl_codes, _huff_cl_count);
+    return _huff_decode(br, _huff_cl_fast, _huff_cl_lens,
+                        _huff_cl_codes, _huff_cl_count);
 }
 
-# Build the literal/length Huffman table from code lengths.
 fn huff_build_litlen(lengths, count) {
+    _huff_alloc_tables();
     _huff_litlen_count = count;
     var i = 0;
     while (i < count) {
-        store64(&_huff_litlen_lens + i * 8, load64(lengths + i * 8));
+        store64(_huff_litlen_lens + i * 8,
+                load64(lengths + i * 8));
         i = i + 1;
     }
-    return _huff_build(&_huff_litlen_lens, count, &_huff_litlen_codes, &_huff_litlen_fast);
+    return _huff_build(_huff_litlen_lens, count,
+                       _huff_litlen_codes, _huff_litlen_fast);
 }
 
-# Build the distance Huffman table from code lengths.
 fn huff_build_dist(lengths, count) {
+    _huff_alloc_tables();
     _huff_dist_count = count;
     var i = 0;
     while (i < count) {
-        store64(&_huff_dist_lens + i * 8, load64(lengths + i * 8));
+        store64(_huff_dist_lens + i * 8,
+                load64(lengths + i * 8));
         i = i + 1;
     }
-    return _huff_build(&_huff_dist_lens, count, &_huff_dist_codes, &_huff_dist_fast);
+    return _huff_build(_huff_dist_lens, count,
+                       _huff_dist_codes, _huff_dist_fast);
 }
 
-# Build the code-length alphabet table.
 fn huff_build_cl(lengths, count) {
+    _huff_alloc_tables();
     _huff_cl_count = count;
     var i = 0;
     while (i < count) {
-        store64(&_huff_cl_lens + i * 8, load64(lengths + i * 8));
+        store64(_huff_cl_lens + i * 8,
+                load64(lengths + i * 8));
         i = i + 1;
     }
-    return _huff_build(&_huff_cl_lens, count, &_huff_cl_codes, &_huff_cl_fast);
+    return _huff_build(_huff_cl_lens, count,
+                       _huff_cl_codes, _huff_cl_fast);
 }
 
 # ================================================================
 # Fixed Huffman tables (RFC 1951, Section 3.2.6)
 # ================================================================
-#
-# Literal/length codes 0-287:
-#   0-143:   8 bits  (codes 00110000 through 10111111)
-#   144-255: 9 bits  (codes 110010000 through 111111111)
-#   256-279: 7 bits  (codes 0000000 through 0010111)
-#   280-287: 8 bits  (codes 11000000 through 11000111)
-#
-# Distance codes 0-31: all 5 bits
 
 var _huff_fixed_built = 0;
-var _huff_fixed_litlen_lens[2304];  # 288 * 8
+var _huff_fixed_litlen_lens = 0;
 
 fn huff_build_fixed() {
     if (_huff_fixed_built == 1) { return 0; }
-
-    # Literal/length code lengths
+    if (_huff_fixed_litlen_lens == 0) {
+        _huff_fixed_litlen_lens = alloc(2304);
+    }
     var i = 0;
     while (i <= 143) {
-        store64(&_huff_fixed_litlen_lens + i * 8, 8);
+        store64(_huff_fixed_litlen_lens + i * 8, 8);
         i = i + 1;
     }
     while (i <= 255) {
-        store64(&_huff_fixed_litlen_lens + i * 8, 9);
+        store64(_huff_fixed_litlen_lens + i * 8, 9);
         i = i + 1;
     }
     while (i <= 279) {
-        store64(&_huff_fixed_litlen_lens + i * 8, 7);
+        store64(_huff_fixed_litlen_lens + i * 8, 7);
         i = i + 1;
     }
     while (i <= 287) {
-        store64(&_huff_fixed_litlen_lens + i * 8, 8);
+        store64(_huff_fixed_litlen_lens + i * 8, 8);
         i = i + 1;
     }
-    huff_build_litlen(&_huff_fixed_litlen_lens, 288);
+    huff_build_litlen(_huff_fixed_litlen_lens, 288);
 
-    # Distance code lengths: all 5 bits, 32 symbols
-    var dist_lens[256];  # 32 * 8
+    var dist_lens[256];  # 32 * 8 — small, stays on stack
     i = 0;
     while (i < 32) {
         store64(&dist_lens + i * 8, 5);
         i = i + 1;
     }
     huff_build_dist(&dist_lens, 32);
-
     _huff_fixed_built = 1;
     return 0;
 }
 
 # ================================================================
-# Optimal Huffman tree construction from symbol frequencies
+# Optimal Huffman tree from frequencies
 # ================================================================
-#
-# Given frequency counts, compute code lengths that minimize total
-# bits. Uses a simplified package-merge / length-limited approach:
-# build unlimited-depth tree, then clamp to HUFF_MAX_BITS (15).
-#
-# Algorithm:
-#   1. Sort symbols by frequency (insertion sort — small N)
-#   2. Build tree bottom-up (Huffman's algorithm with flat arrays)
-#   3. Extract depths, clamp to 15
-#   4. Canonical code assignment via _huff_build
 
-# Workspace for tree building (max 286 symbols for litlen)
-var _huff_tree_freq[2400];   # 300 * 8 — frequencies (includes internal nodes)
-var _huff_tree_left[2400];   # 300 * 8 — left child
-var _huff_tree_right[2400];  # 300 * 8 — right child
-var _huff_tree_depth[2400];  # 300 * 8 — depth of each leaf
-
-# Build optimal code lengths from frequencies.
-# freqs: pointer to frequency array (one i64 per symbol)
-# num_symbols: number of symbols
-# out_lens: pointer to output code lengths array
-# min_codes: minimum number of codes (ensure at least this many have len > 0)
 fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
-    # Count non-zero symbols
     var count = 0;
     var i = 0;
     while (i < num_symbols) {
-        if (load64(freqs + i * 8) > 0) {
-            count = count + 1;
-        }
+        if (load64(freqs + i * 8) > 0) { count = count + 1; }
         i = i + 1;
     }
 
-    # Special cases
     if (count == 0) {
-        # No symbols used — assign length 1 to first min_codes symbols
         i = 0;
         while (i < num_symbols) {
-            if (i < min_codes) {
-                store64(out_lens + i * 8, 1);
-            } else {
-                store64(out_lens + i * 8, 0);
-            }
+            if (i < min_codes) { store64(out_lens + i * 8, 1); }
+            else { store64(out_lens + i * 8, 0); }
             i = i + 1;
         }
         return 0;
     }
     if (count == 1) {
-        # One symbol — needs length 1, plus one dummy to form a valid tree
         i = 0;
         var found = 0;
         while (i < num_symbols) {
@@ -382,157 +332,148 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
             }
             i = i + 1;
         }
-        # Ensure at least 2 codes exist
-        if (count < 2) {
-            i = 0;
-            while (i < num_symbols) {
-                if (load64(out_lens + i * 8) == 0) {
-                    store64(out_lens + i * 8, 1);
-                    break;
-                }
-                i = i + 1;
+        # Need at least 2 codes
+        i = 0;
+        while (i < num_symbols) {
+            if (load64(out_lens + i * 8) == 0) {
+                store64(out_lens + i * 8, 1);
+                break;
             }
+            i = i + 1;
         }
         return 0;
     }
 
-    # Build sorted list of (freq, symbol) pairs
-    # Use tree_freq/tree_left as temp storage for sorted indices
-    var sorted_sym[2400];  # indices of symbols sorted by frequency
-    var sorted_freq[2400]; # corresponding frequencies
+    # Build sorted lists (heap-allocated for large symbol sets)
+    var sorted_sym = alloc(num_symbols * 8);
+    var sorted_freq = alloc(num_symbols * 8);
     var n = 0;
     i = 0;
     while (i < num_symbols) {
         var f = load64(freqs + i * 8);
         if (f > 0) {
-            store64(&sorted_sym + n * 8, i);
-            store64(&sorted_freq + n * 8, f);
+            store64(sorted_sym + n * 8, i);
+            store64(sorted_freq + n * 8, f);
             n = n + 1;
         }
         i = i + 1;
     }
 
-    # Insertion sort by frequency (ascending)
+    # Insertion sort by frequency
     i = 1;
     while (i < n) {
-        var key_f = load64(&sorted_freq + i * 8);
-        var key_s = load64(&sorted_sym + i * 8);
+        var key_f = load64(sorted_freq + i * 8);
+        var key_s = load64(sorted_sym + i * 8);
         var j = i - 1;
-        while (j >= 0 && load64(&sorted_freq + j * 8) > key_f) {
-            store64(&sorted_freq + (j + 1) * 8, load64(&sorted_freq + j * 8));
-            store64(&sorted_sym + (j + 1) * 8, load64(&sorted_sym + j * 8));
+        while (j >= 0 && load64(sorted_freq + j * 8) > key_f) {
+            store64(sorted_freq + (j + 1) * 8,
+                    load64(sorted_freq + j * 8));
+            store64(sorted_sym + (j + 1) * 8,
+                    load64(sorted_sym + j * 8));
             j = j - 1;
         }
-        store64(&sorted_freq + (j + 1) * 8, key_f);
-        store64(&sorted_sym + (j + 1) * 8, key_s);
+        store64(sorted_freq + (j + 1) * 8, key_f);
+        store64(sorted_sym + (j + 1) * 8, key_s);
         i = i + 1;
     }
 
-    # Build Huffman tree using two queues (optimal O(n) after sort)
-    # Queue 1: leaf nodes (sorted_freq), Queue 2: internal nodes
-    var q2_freq[2400];
-    var q2_left[2400];
-    var q2_right[2400];
-    var q1_head = 0;  # leaf queue head
-    var q2_head = 0;  # internal queue head
-    var q2_tail = 0;  # internal queue tail
-
-    # Helper: pick the minimum from front of q1 or q2
-    # Returns freq, and sets _pick_source (0=q1, 1=q2)
+    # Two-queue Huffman tree build
+    var q2_freq = alloc(n * 8);
+    var q2_left = alloc(n * 8);
+    var q2_right = alloc(n * 8);
+    var q1_head = 0;
+    var q2_head = 0;
+    var q2_tail = 0;
     var _pick_source = 0;
 
-    # Build tree: combine two smallest nodes until one remains
-    var total_nodes = n;  # starts with n leaves
-    var node_depths[4800];  # up to 600 nodes, tracks depth
-    # Leaf depths initially 0
-    i = 0;
-    while (i < n) {
-        store64(&node_depths + i * 8, 0);
-        i = i + 1;
-    }
-
-    while ((q1_head < n) || (q2_tail - q2_head > 1) || (q1_head < n && q2_tail > q2_head)) {
-        # We need at least 2 nodes total remaining
+    while (1) {
         var remaining = (n - q1_head) + (q2_tail - q2_head);
         if (remaining < 2) { break; }
 
         # Pick first minimum
         var f1 = 0;
         var n1 = 0;
-        if (q1_head < n && (q2_head >= q2_tail || load64(&sorted_freq + q1_head * 8) <= load64(&q2_freq + q2_head * 8))) {
-            f1 = load64(&sorted_freq + q1_head * 8);
+        var q1a = (q1_head < n);
+        var q2a = (q2_head < q2_tail);
+        var pq1 = 0;
+        if (q1a == 1) {
+            if (q2a == 0) { pq1 = 1; }
+            else {
+                if (load64(sorted_freq + q1_head * 8) <=
+                    load64(q2_freq + q2_head * 8)) { pq1 = 1; }
+            }
+        }
+        if (pq1 == 1) {
+            f1 = load64(sorted_freq + q1_head * 8);
             n1 = q1_head;
-            _pick_source = 0;
             q1_head = q1_head + 1;
         } else {
-            f1 = load64(&q2_freq + q2_head * 8);
-            n1 = q2_head + n;  # offset to distinguish from leaves
-            _pick_source = 1;
+            f1 = load64(q2_freq + q2_head * 8);
+            n1 = q2_head + n;
             q2_head = q2_head + 1;
         }
 
         # Pick second minimum
         var f2 = 0;
         var n2 = 0;
-        if (q1_head < n && (q2_head >= q2_tail || load64(&sorted_freq + q1_head * 8) <= load64(&q2_freq + q2_head * 8))) {
-            f2 = load64(&sorted_freq + q1_head * 8);
+        q1a = (q1_head < n);
+        q2a = (q2_head < q2_tail);
+        pq1 = 0;
+        if (q1a == 1) {
+            if (q2a == 0) { pq1 = 1; }
+            else {
+                if (load64(sorted_freq + q1_head * 8) <=
+                    load64(q2_freq + q2_head * 8)) { pq1 = 1; }
+            }
+        }
+        if (pq1 == 1) {
+            f2 = load64(sorted_freq + q1_head * 8);
             n2 = q1_head;
             q1_head = q1_head + 1;
         } else {
-            f2 = load64(&q2_freq + q2_head * 8);
+            f2 = load64(q2_freq + q2_head * 8);
             n2 = q2_head + n;
             q2_head = q2_head + 1;
         }
 
-        # Combine into internal node
-        store64(&q2_freq + q2_tail * 8, f1 + f2);
-        store64(&q2_left + q2_tail * 8, n1);
-        store64(&q2_right + q2_tail * 8, n2);
+        store64(q2_freq + q2_tail * 8, f1 + f2);
+        store64(q2_left + q2_tail * 8, n1);
+        store64(q2_right + q2_tail * 8, n2);
         q2_tail = q2_tail + 1;
     }
 
-    # Extract depths via BFS/DFS on the tree
-    # The root is the last internal node: q2_tail - 1
-    # Use a stack-based traversal
-    var stack_node[1200];  # 150 * 8
-    var stack_depth[1200];
-    var sp = 0;
-
-    # Initialize all output lengths to 0
+    # Extract depths via DFS
     i = 0;
-    while (i < num_symbols) {
-        store64(out_lens + i * 8, 0);
-        i = i + 1;
-    }
+    while (i < num_symbols) { store64(out_lens + i * 8, 0); i = i + 1; }
 
+    var stack_node = alloc(600 * 8);
+    var stack_depth = alloc(600 * 8);
+    var sp = 0;
     if (q2_tail > 0) {
-        store64(&stack_node, q2_tail - 1 + n);  # root is internal node
-        store64(&stack_depth, 0);
+        store64(stack_node, q2_tail - 1 + n);
+        store64(stack_depth, 0);
         sp = 1;
     }
 
     while (sp > 0) {
         sp = sp - 1;
-        var node = load64(&stack_node + sp * 8);
-        var depth = load64(&stack_depth + sp * 8);
-
+        var node = load64(stack_node + sp * 8);
+        var depth = load64(stack_depth + sp * 8);
         if (node < n) {
-            # Leaf node — record depth for this symbol
-            var sym = load64(&sorted_sym + node * 8);
+            var sym = load64(sorted_sym + node * 8);
             var d = depth;
             if (d > HUFF_MAX_BITS) { d = HUFF_MAX_BITS; }
             if (d == 0) { d = 1; }
             store64(out_lens + sym * 8, d);
         } else {
-            # Internal node — push children
             var idx = node - n;
-            var left = load64(&q2_left + idx * 8);
-            var right = load64(&q2_right + idx * 8);
-            store64(&stack_node + sp * 8, left);
-            store64(&stack_depth + sp * 8, depth + 1);
+            store64(stack_node + sp * 8,
+                    load64(q2_left + idx * 8));
+            store64(stack_depth + sp * 8, depth + 1);
             sp = sp + 1;
-            store64(&stack_node + sp * 8, right);
-            store64(&stack_depth + sp * 8, depth + 1);
+            store64(stack_node + sp * 8,
+                    load64(q2_right + idx * 8));
+            store64(stack_depth + sp * 8, depth + 1);
             sp = sp + 1;
         }
     }

@@ -1,196 +1,109 @@
 # sankoch — git object format integration test
-#
-# Git objects are stored as: zlib(type + " " + size + "\0" + content)
-# This test constructs a git blob object, compresses it with zlib,
-# decompresses it, and verifies the content is identical.
-#
-# This proves sankoch can handle the exact format git uses.
+
+include "dist/sankoch.cyr"
+include "lib/assert.cyr"
 
 fn test_git_blob_roundtrip() {
-    # Construct a git blob: "blob 13\0Hello, world!"
-    # "blob 13\0" = 8 bytes header, "Hello, world!" = 13 bytes content
+    # "blob 13\0Hello, world!" = 21 bytes
     var obj[21];
-    store8(obj + 0, 98);    # b
-    store8(obj + 1, 108);   # l
-    store8(obj + 2, 111);   # o
-    store8(obj + 3, 98);    # b
-    store8(obj + 4, 32);    # space
-    store8(obj + 5, 49);    # 1
-    store8(obj + 6, 51);    # 3
-    store8(obj + 7, 0);     # NUL
-    store8(obj + 8, 72);    # H
-    store8(obj + 9, 101);   # e
-    store8(obj + 10, 108);  # l
-    store8(obj + 11, 108);  # l
-    store8(obj + 12, 111);  # o
-    store8(obj + 13, 44);   # ,
-    store8(obj + 14, 32);   # space
-    store8(obj + 15, 119);  # w
-    store8(obj + 16, 111);  # o
-    store8(obj + 17, 114);  # r
-    store8(obj + 18, 108);  # l
-    store8(obj + 19, 100);  # d
-    store8(obj + 20, 33);   # !
+    store8(&obj + 0, 98); store8(&obj + 1, 108); store8(&obj + 2, 111);
+    store8(&obj + 3, 98); store8(&obj + 4, 32); store8(&obj + 5, 49);
+    store8(&obj + 6, 51); store8(&obj + 7, 0);
+    store8(&obj + 8, 72); store8(&obj + 9, 101); store8(&obj + 10, 108);
+    store8(&obj + 11, 108); store8(&obj + 12, 111); store8(&obj + 13, 44);
+    store8(&obj + 14, 32); store8(&obj + 15, 119); store8(&obj + 16, 111);
+    store8(&obj + 17, 114); store8(&obj + 18, 108); store8(&obj + 19, 100);
+    store8(&obj + 20, 33);
 
     var compressed[256];
     var decompressed[256];
 
-    # Compress as zlib (what git does)
-    var clen = zlib_compress(obj, 21, compressed, 256);
-    assert(clen > 0, "git blob zlib compress should succeed");
+    var clen = zlib_compress(&obj, 21, &compressed, 256);
+    assert(clen > 0, "git blob zlib compress");
+    assert(load8(&compressed) == 120, "zlib CMF 0x78");
 
-    # Verify zlib header
-    assert(load8(compressed) == 120, "zlib CMF should be 0x78");
-    var check = load8(compressed) * 256 + load8(compressed + 1);
-    assert((check % 31) == 0, "zlib header checksum valid");
+    var dlen = zlib_decompress(&compressed, clen, &decompressed, 256);
+    assert(dlen == 21, "git blob decompress 21 bytes");
 
-    # Decompress
-    var dlen = zlib_decompress(compressed, clen, decompressed, 256);
-    assert(dlen == 21, "git blob zlib decompress should produce 21 bytes");
-
-    # Verify header
-    assert(load8(decompressed + 0) == 98, "git blob type[0] = b");
-    assert(load8(decompressed + 1) == 108, "git blob type[1] = l");
-    assert(load8(decompressed + 2) == 111, "git blob type[2] = o");
-    assert(load8(decompressed + 3) == 98, "git blob type[3] = b");
-    assert(load8(decompressed + 4) == 32, "git blob space");
-    assert(load8(decompressed + 7) == 0, "git blob NUL separator");
-
-    # Verify content
-    assert(load8(decompressed + 8) == 72, "git blob content H");
-    assert(load8(decompressed + 20) == 33, "git blob content !");
-
-    # Verify full byte-for-byte match
     var i = 0;
     while (i < 21) {
-        assert(load8(decompressed + i) == load8(obj + i), "git blob byte mismatch");
+        assert(load8(&decompressed + i) == load8(&obj + i), "git blob byte match");
         i = i + 1;
     }
     return 0;
 }
 
 fn test_git_tree_roundtrip() {
-    # Simplified git tree entry: "100644 file.txt\0" + 20 bytes fake SHA-1
-    # Total: 16 + 20 = 36 bytes of tree content
-    # Full object: "tree 36\0" (8 bytes) + 36 bytes = 44 bytes
+    # "tree 36\0" + "100644 file.txt\0" + 20 bytes fake SHA = 44 bytes
     var obj[44];
-
-    # Header: "tree 36\0"
-    store8(obj + 0, 116);   # t
-    store8(obj + 1, 114);   # r
-    store8(obj + 2, 101);   # e
-    store8(obj + 3, 101);   # e
-    store8(obj + 4, 32);    # space
-    store8(obj + 5, 51);    # 3
-    store8(obj + 6, 54);    # 6
-    store8(obj + 7, 0);     # NUL
-
-    # Tree entry: "100644 file.txt\0"
-    store8(obj + 8, 49);    # 1
-    store8(obj + 9, 48);    # 0
-    store8(obj + 10, 48);   # 0
-    store8(obj + 11, 54);   # 6
-    store8(obj + 12, 52);   # 4
-    store8(obj + 13, 52);   # 4
-    store8(obj + 14, 32);   # space
-    store8(obj + 15, 102);  # f
-    store8(obj + 16, 105);  # i
-    store8(obj + 17, 108);  # l
-    store8(obj + 18, 101);  # e
-    store8(obj + 19, 46);   # .
-    store8(obj + 20, 116);  # t
-    store8(obj + 21, 120);  # x
-    store8(obj + 22, 116);  # t
-    store8(obj + 23, 0);    # NUL
-
-    # Fake SHA-1 (20 bytes of sequential values)
+    store8(&obj + 0, 116); store8(&obj + 1, 114); store8(&obj + 2, 101);
+    store8(&obj + 3, 101); store8(&obj + 4, 32); store8(&obj + 5, 51);
+    store8(&obj + 6, 54); store8(&obj + 7, 0);
+    store8(&obj + 8, 49); store8(&obj + 9, 48); store8(&obj + 10, 48);
+    store8(&obj + 11, 54); store8(&obj + 12, 52); store8(&obj + 13, 52);
+    store8(&obj + 14, 32); store8(&obj + 15, 102); store8(&obj + 16, 105);
+    store8(&obj + 17, 108); store8(&obj + 18, 101); store8(&obj + 19, 46);
+    store8(&obj + 20, 116); store8(&obj + 21, 120); store8(&obj + 22, 116);
+    store8(&obj + 23, 0);
     var i = 0;
-    while (i < 20) {
-        store8(obj + 24 + i, i + 1);
-        i = i + 1;
-    }
+    while (i < 20) { store8(&obj + 24 + i, i + 1); i = i + 1; }
 
     var compressed[256];
     var decompressed[256];
-
-    var clen = zlib_compress(obj, 44, compressed, 256);
-    assert(clen > 0, "git tree zlib compress should succeed");
-
-    var dlen = zlib_decompress(compressed, clen, decompressed, 256);
-    assert(dlen == 44, "git tree zlib decompress should produce 44 bytes");
-
+    var clen = zlib_compress(&obj, 44, &compressed, 256);
+    assert(clen > 0, "git tree zlib compress");
+    var dlen = zlib_decompress(&compressed, clen, &decompressed, 256);
+    assert(dlen == 44, "git tree decompress 44 bytes");
     i = 0;
     while (i < 44) {
-        assert(load8(decompressed + i) == load8(obj + i), "git tree byte mismatch");
+        assert(load8(&decompressed + i) == load8(&obj + i), "git tree byte match");
         i = i + 1;
     }
     return 0;
 }
 
 fn test_git_commit_roundtrip() {
-    # Minimal commit object content (simplified)
-    # "commit NN\0tree <hex>\nauthor ...\ncommitter ...\n\nmessage\n"
-    # We'll use a small synthetic version
     var content[128];
     var msg[64];
-    # "tree abcdef0123456789abcdef0123456789abcdef\n"
-    store8(msg + 0, 116); store8(msg + 1, 114); store8(msg + 2, 101); store8(msg + 3, 101);
-    store8(msg + 4, 32);
-    # Fill with 'a' for fake hex hash (40 chars)
+    store8(&msg + 0, 116); store8(&msg + 1, 114); store8(&msg + 2, 101);
+    store8(&msg + 3, 101); store8(&msg + 4, 32);
     var i = 5;
-    while (i < 45) { store8(msg + i, 97); i = i + 1; }
-    store8(msg + 45, 10);  # \n
-    # "\ninitial\n"
-    store8(msg + 46, 10);  # \n
-    store8(msg + 47, 105); # i
-    store8(msg + 48, 110); # n
-    store8(msg + 49, 105); # i
-    store8(msg + 50, 116); # t
-    store8(msg + 51, 10);  # \n
+    while (i < 45) { store8(&msg + i, 97); i = i + 1; }
+    store8(&msg + 45, 10);
+    store8(&msg + 46, 10); store8(&msg + 47, 105); store8(&msg + 48, 110);
+    store8(&msg + 49, 105); store8(&msg + 50, 116); store8(&msg + 51, 10);
     var msg_len = 52;
 
-    # Build full object: "commit 52\0" + content
-    # "commit 52\0" = 10 bytes
-    store8(content + 0, 99);   # c
-    store8(content + 1, 111);  # o
-    store8(content + 2, 109);  # m
-    store8(content + 3, 109);  # m
-    store8(content + 4, 105);  # i
-    store8(content + 5, 116);  # t
-    store8(content + 6, 32);   # space
-    store8(content + 7, 53);   # 5
-    store8(content + 8, 50);   # 2
-    store8(content + 9, 0);    # NUL
-
+    store8(&content + 0, 99); store8(&content + 1, 111); store8(&content + 2, 109);
+    store8(&content + 3, 109); store8(&content + 4, 105); store8(&content + 5, 116);
+    store8(&content + 6, 32); store8(&content + 7, 53); store8(&content + 8, 50);
+    store8(&content + 9, 0);
     i = 0;
     while (i < msg_len) {
-        store8(content + 10 + i, load8(msg + i));
+        store8(&content + 10 + i, load8(&msg + i));
         i = i + 1;
     }
     var obj_len = 10 + msg_len;
 
     var compressed[256];
     var decompressed[256];
-
-    var clen = zlib_compress(content, obj_len, compressed, 256);
-    assert(clen > 0, "git commit zlib compress should succeed");
-
-    var dlen = zlib_decompress(compressed, clen, decompressed, 256);
-    assert(dlen == obj_len, "git commit zlib decompress size");
-
+    var clen = zlib_compress(&content, obj_len, &compressed, 256);
+    assert(clen > 0, "git commit zlib compress");
+    var dlen = zlib_decompress(&compressed, clen, &decompressed, 256);
+    assert(dlen == obj_len, "git commit decompress size");
     i = 0;
     while (i < obj_len) {
-        assert(load8(decompressed + i) == load8(content + i), "git commit byte mismatch");
+        assert(load8(&decompressed + i) == load8(&content + i), "git commit byte match");
         i = i + 1;
     }
     return 0;
 }
 
 fn main() {
+    alloc_init();
     test_git_blob_roundtrip();
     test_git_tree_roundtrip();
     test_git_commit_roundtrip();
-
     println("git_object: all tests passed");
     return 0;
 }

@@ -1,0 +1,65 @@
+# investigate: stack array address behavior
+#
+# Finding: var buf[N] requires &buf to get the pointer for load8/store8.
+# Using bare buf (without &) segfaults at runtime.
+#
+# This test documents the behavior and verifies the correct pattern.
+# All sankoch source code that uses stack arrays must use &buf.
+#
+# Status: INVESTIGATION — documenting compiler behavior
+
+fn test_stack_array_with_ampersand() {
+    var buf[5];
+    store8(&buf + 0, 72);
+    store8(&buf + 1, 101);
+    store8(&buf + 2, 108);
+    store8(&buf + 3, 108);
+    store8(&buf + 4, 111);
+    var s1 = 0;
+    var i = 0;
+    while (i < 5) {
+        s1 = s1 + load8(&buf + i);
+        i = i + 1;
+    }
+    # 72+101+108+108+111 = 500
+    if (s1 == 500) {
+        syscall(1, 1, "PASS: &buf pattern works\n", 25);
+    } else {
+        syscall(1, 1, "FAIL: &buf pattern wrong value\n", 31);
+    }
+    return 0;
+}
+
+# This test documents the crash behavior with bare buf.
+# Uncomment to reproduce the segfault:
+#
+# fn test_stack_array_bare_crashes() {
+#     var buf[5];
+#     store8(buf + 0, 72);    # <-- segfault: buf without & is not a pointer
+#     return 0;
+# }
+
+fn test_heap_alloc_no_ampersand() {
+    # Heap pointers work without & — the variable IS the address
+    alloc_init();
+    var ptr = alloc(5);
+    store8(ptr + 0, 72);
+    store8(ptr + 1, 101);
+    var s = load8(ptr + 0) + load8(ptr + 1);
+    if (s == 173) {
+        syscall(1, 1, "PASS: heap ptr works without &\n", 31);
+    } else {
+        syscall(1, 1, "FAIL: heap ptr wrong value\n", 27);
+    }
+    return 0;
+}
+
+fn main() {
+    test_stack_array_with_ampersand();
+    test_heap_alloc_no_ampersand();
+    syscall(1, 1, "investigate_stack_array: done\n", 29);
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

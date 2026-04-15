@@ -403,28 +403,30 @@ fn deflate_decompress(src, src_len, dst, dst_cap) {
 # Fixed Huffman code table for literals/lengths (pre-reversed for LSB-first output).
 # We compute these once and cache them.
 var _deflate_enc_fixed_built = 0;
-var _deflate_enc_lit_codes[2304];   # 288 * 8 — the bit-reversed codes
-var _deflate_enc_lit_lens[2304];    # 288 * 8 — code lengths
+var _deflate_enc_lit_codes = 0;  # heap: 288 * 8
+var _deflate_enc_lit_lens = 0;   # heap: 288 * 8
 
 fn _deflate_build_enc_fixed() {
     if (_deflate_enc_fixed_built == 1) { return 0; }
-
-    # Code lengths (same as huff_build_fixed)
+    if (_deflate_enc_lit_codes == 0) {
+        _deflate_enc_lit_codes = alloc(2304);
+        _deflate_enc_lit_lens = alloc(2304);
+    }
     var i = 0;
     while (i <= 143) {
-        store64(&_deflate_enc_lit_lens + i * 8, 8);
+        store64(_deflate_enc_lit_lens +i * 8, 8);
         i = i + 1;
     }
     while (i <= 255) {
-        store64(&_deflate_enc_lit_lens + i * 8, 9);
+        store64(_deflate_enc_lit_lens +i * 8, 9);
         i = i + 1;
     }
     while (i <= 279) {
-        store64(&_deflate_enc_lit_lens + i * 8, 7);
+        store64(_deflate_enc_lit_lens +i * 8, 7);
         i = i + 1;
     }
     while (i <= 287) {
-        store64(&_deflate_enc_lit_lens + i * 8, 8);
+        store64(_deflate_enc_lit_lens +i * 8, 8);
         i = i + 1;
     }
 
@@ -434,7 +436,7 @@ fn _deflate_build_enc_fixed() {
     while (i < 16) { store64(&bl_count + i * 8, 0); i = i + 1; }
     i = 0;
     while (i < 288) {
-        var len = load64(&_deflate_enc_lit_lens + i * 8);
+        var len = load64(_deflate_enc_lit_lens +i * 8);
         store64(&bl_count + len * 8, load64(&bl_count + len * 8) + 1);
         i = i + 1;
     }
@@ -452,7 +454,7 @@ fn _deflate_build_enc_fixed() {
 
     i = 0;
     while (i < 288) {
-        var len = load64(&_deflate_enc_lit_lens + i * 8);
+        var len = load64(_deflate_enc_lit_lens +i * 8);
         if (len > 0) {
             var c = load64(&next_code + len * 8);
             store64(&next_code + len * 8, c + 1);
@@ -465,9 +467,9 @@ fn _deflate_build_enc_fixed() {
                 tmp = tmp >> 1;
                 b = b + 1;
             }
-            store64(&_deflate_enc_lit_codes + i * 8, rev);
+            store64(_deflate_enc_lit_codes +i * 8, rev);
         } else {
-            store64(&_deflate_enc_lit_codes + i * 8, 0);
+            store64(_deflate_enc_lit_codes +i * 8, 0);
         }
         i = i + 1;
     }
@@ -477,9 +479,12 @@ fn _deflate_build_enc_fixed() {
 }
 
 # Fixed distance codes: all 5 bits, codes 0-29.
-var _deflate_enc_dist_codes[240];  # 30 * 8
+var _deflate_enc_dist_codes = 0;  # heap: 30 * 8
 
 fn _deflate_build_enc_dist() {
+    if (_deflate_enc_dist_codes == 0) {
+        _deflate_enc_dist_codes = alloc(240);
+    }
     var i = 0;
     while (i < 30) {
         # Reverse 5 bits of i
@@ -491,7 +496,7 @@ fn _deflate_build_enc_dist() {
             v = v >> 1;
             b = b + 1;
         }
-        store64(&_deflate_enc_dist_codes + i * 8, rev);
+        store64(_deflate_enc_dist_codes +i * 8, rev);
         i = i + 1;
     }
     return 0;
@@ -499,18 +504,19 @@ fn _deflate_build_enc_dist() {
 
 # Direct lookup table: length (3-258) → code index (0-28).
 # 256 entries covers lengths 3-258 (index by length - 3).
-var _deflate_len_lookup[2048];  # 256 * 8
+var _deflate_len_lookup = 0;  # heap: 256 * 8
 var _deflate_len_lookup_built = 0;
 
 fn _deflate_build_len_lookup() {
     if (_deflate_len_lookup_built == 1) { return 0; }
+    if (_deflate_len_lookup == 0) { _deflate_len_lookup = alloc(2048); }
     _deflate_init_tables();
     var len = 3;
     while (len <= 258) {
         var i = 28;
         while (i >= 0) {
             if (len >= load64(&_deflate_len_base + i * 8)) {
-                store64(&_deflate_len_lookup + (len - 3) * 8, i);
+                store64(_deflate_len_lookup +(len - 3) * 8, i);
                 i = 0 - 1;  # break
             }
             i = i - 1;
@@ -524,18 +530,19 @@ fn _deflate_build_len_lookup() {
 # Direct lookup table: distance (1-32768) → code index (0-29).
 # Too large for a flat table, so use a tiered approach:
 # distances 1-256 → flat table, distances 257+ → binary search on 15 entries.
-var _deflate_dist_lookup[2048];  # 256 * 8
+var _deflate_dist_lookup = 0;  # heap: 256 * 8
 var _deflate_dist_lookup_built = 0;
 
 fn _deflate_build_dist_lookup() {
     if (_deflate_dist_lookup_built == 1) { return 0; }
+    if (_deflate_dist_lookup == 0) { _deflate_dist_lookup = alloc(2048); }
     _deflate_init_tables();
     var d = 1;
     while (d <= 256) {
         var i = 29;
         while (i >= 0) {
             if (d >= load64(&_deflate_dist_base + i * 8)) {
-                store64(&_deflate_dist_lookup + (d - 1) * 8, i);
+                store64(_deflate_dist_lookup +(d - 1) * 8, i);
                 i = 0 - 1;
             }
             i = i - 1;
@@ -548,13 +555,13 @@ fn _deflate_build_dist_lookup() {
 
 fn _deflate_len_code(length) {
     _deflate_build_len_lookup();
-    return load64(&_deflate_len_lookup + (length - 3) * 8);
+    return load64(_deflate_len_lookup +(length - 3) * 8);
 }
 
 fn _deflate_dist_code(dist) {
     if (dist <= 256) {
         _deflate_build_dist_lookup();
-        return load64(&_deflate_dist_lookup + (dist - 1) * 8);
+        return load64(_deflate_dist_lookup +(dist - 1) * 8);
     }
     # Distances > 256: binary search on the upper 15 codes (15-29)
     _deflate_init_tables();
@@ -573,15 +580,15 @@ fn _deflate_dist_code(dist) {
 
 # Write a literal byte using fixed Huffman codes.
 fn _deflate_write_literal(bw, byte) {
-    var code = load64(&_deflate_enc_lit_codes + byte * 8);
-    var len = load64(&_deflate_enc_lit_lens + byte * 8);
+    var code = load64(_deflate_enc_lit_codes +byte * 8);
+    var len = load64(_deflate_enc_lit_lens +byte * 8);
     return bw_write(bw, code, len);
 }
 
 # Write end-of-block symbol (256).
 fn _deflate_write_eob(bw) {
-    var code = load64(&_deflate_enc_lit_codes + 256 * 8);
-    var len = load64(&_deflate_enc_lit_lens + 256 * 8);
+    var code = load64(_deflate_enc_lit_codes +256 * 8);
+    var len = load64(_deflate_enc_lit_lens +256 * 8);
     return bw_write(bw, code, len);
 }
 
@@ -590,8 +597,8 @@ fn _deflate_write_match(bw, length, distance) {
     # Encode length
     var li = _deflate_len_code(length);
     var sym = li + 257;
-    var code = load64(&_deflate_enc_lit_codes + sym * 8);
-    var clen = load64(&_deflate_enc_lit_lens + sym * 8);
+    var code = load64(_deflate_enc_lit_codes +sym * 8);
+    var clen = load64(_deflate_enc_lit_lens +sym * 8);
     var rc = bw_write(bw, code, clen);
     if (rc < 0) { return rc; }
 
@@ -605,7 +612,7 @@ fn _deflate_write_match(bw, length, distance) {
 
     # Encode distance (fixed: 5 bits, reversed)
     var di = _deflate_dist_code(distance);
-    var dcode = load64(&_deflate_enc_dist_codes + di * 8);
+    var dcode = load64(_deflate_enc_dist_codes +di * 8);
     rc = bw_write(bw, dcode, 5);
     if (rc < 0) { return rc; }
 
