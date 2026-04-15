@@ -82,6 +82,7 @@ fn adler32(data, len) {
 # Table must be initialized once via crc32_init_table().
 var crc32_table = 0;  # heap-allocated: 256 entries * 8 bytes
 
+# Initialize the CRC-32 lookup table (must be called before crc32).
 fn crc32_init_table() {
     if (crc32_table == 0) { crc32_table = alloc(2048); }
     var i = 0;
@@ -103,6 +104,7 @@ fn crc32_init_table() {
     return 0;
 }
 
+# Compute CRC-32 of data[0..len). Call crc32_init_table() first.
 fn crc32(data, len) {
     # CRC starts inverted
     var crc = 4294967295;  # 0xFFFFFFFF
@@ -156,6 +158,7 @@ fn _xxh32_rotl(v, n) {
     return ((v32 << n) | (v32 >> (32 - n))) & 4294967295;
 }
 
+# Compute xxHash32 of data[0..len) with seed 0.
 fn xxhash32(data, len) {
     var m = 4294967295;
     var h = (0 + XXH32_PRIME5) & m;  # seed=0 + PRIME5

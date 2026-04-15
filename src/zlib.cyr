@@ -77,6 +77,7 @@ fn zlib_compress(src, src_len, dst, dst_cap) {
     return zlib_compress_level(src, src_len, dst, dst_cap, 6);
 }
 
+# Compress data into a zlib stream with explicit compression level.
 fn zlib_compress_level(src, src_len, dst, dst_cap, level) {
     # Need room for: 2-byte header + DEFLATE data + 4-byte Adler-32
     if (dst_cap < 6) { return 0 - ERR_BUFFER_TOO_SMALL; }

@@ -203,21 +203,25 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
     return 0 - ERR_INVALID_HUFFMAN;
 }
 
+# Decode one literal/length symbol from the bitstream.
 fn huff_decode_litlen(br) {
     return _huff_decode(br, _huff_litlen_fast, _huff_litlen_lens,
                         _huff_litlen_codes, _huff_litlen_count);
 }
 
+# Decode one distance symbol from the bitstream.
 fn huff_decode_dist(br) {
     return _huff_decode(br, _huff_dist_fast, _huff_dist_lens,
                         _huff_dist_codes, _huff_dist_count);
 }
 
+# Decode one code-length symbol from the bitstream.
 fn huff_decode_cl(br) {
     return _huff_decode(br, _huff_cl_fast, _huff_cl_lens,
                         _huff_cl_codes, _huff_cl_count);
 }
 
+# Build the literal/length Huffman table from code lengths.
 fn huff_build_litlen(lengths, count) {
     _huff_alloc_tables();
     _huff_litlen_count = count;
@@ -233,6 +237,7 @@ fn huff_build_litlen(lengths, count) {
                        _huff_litlen_codes, _huff_litlen_fast);
 }
 
+# Build the distance Huffman table from code lengths.
 fn huff_build_dist(lengths, count) {
     _huff_alloc_tables();
     _huff_dist_count = count;
@@ -246,6 +251,7 @@ fn huff_build_dist(lengths, count) {
                        _huff_dist_codes, _huff_dist_fast);
 }
 
+# Build the code-length Huffman table from code lengths.
 fn huff_build_cl(lengths, count) {
     _huff_alloc_tables();
     _huff_cl_count = count;
@@ -266,6 +272,7 @@ fn huff_build_cl(lengths, count) {
 var _huff_fixed_built = 0;
 var _huff_fixed_litlen_lens = 0;
 
+# Build the fixed Huffman tables defined in RFC 1951 Section 3.2.6.
 fn huff_build_fixed() {
     if (_huff_fixed_built == 1) { return 0; }
     if (_huff_fixed_litlen_lens == 0) {
@@ -308,6 +315,7 @@ fn huff_build_fixed() {
 # Pre-allocated workspace for huff_compute_lengths (allocated once)
 var _hcl_ws = 0;
 
+# Compute optimal Huffman code lengths from symbol frequencies.
 fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
     var count = 0;
     var i = 0;

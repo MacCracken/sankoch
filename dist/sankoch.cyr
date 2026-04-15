@@ -136,6 +136,7 @@ fn adler32(data, len) {
 # Table must be initialized once via crc32_init_table().
 var crc32_table = 0;  # heap-allocated: 256 entries * 8 bytes
 
+# Initialize the CRC-32 lookup table (must be called before crc32).
 fn crc32_init_table() {
     if (crc32_table == 0) { crc32_table = alloc(2048); }
     var i = 0;
@@ -157,6 +158,7 @@ fn crc32_init_table() {
     return 0;
 }
 
+# Compute CRC-32 of data[0..len). Call crc32_init_table() first.
 fn crc32(data, len) {
     # CRC starts inverted
     var crc = 4294967295;  # 0xFFFFFFFF
@@ -210,6 +212,7 @@ fn _xxh32_rotl(v, n) {
     return ((v32 << n) | (v32 >> (32 - n))) & 4294967295;
 }
 
+# Compute xxHash32 of data[0..len) with seed 0.
 fn xxhash32(data, len) {
     var m = 4294967295;
     var h = (0 + XXH32_PRIME5) & m;  # seed=0 + PRIME5
@@ -413,6 +416,7 @@ fn bw_write(bw, value, n) {
     return 0;
 }
 
+# Write a single bit.
 fn bw_write_bit(bw, b) {
     return bw_write(bw, b, 1);
 }
@@ -696,21 +700,25 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
     return 0 - ERR_INVALID_HUFFMAN;
 }
 
+# Decode one literal/length symbol from the bitstream.
 fn huff_decode_litlen(br) {
     return _huff_decode(br, _huff_litlen_fast, _huff_litlen_lens,
                         _huff_litlen_codes, _huff_litlen_count);
 }
 
+# Decode one distance symbol from the bitstream.
 fn huff_decode_dist(br) {
     return _huff_decode(br, _huff_dist_fast, _huff_dist_lens,
                         _huff_dist_codes, _huff_dist_count);
 }
 
+# Decode one code-length symbol from the bitstream.
 fn huff_decode_cl(br) {
     return _huff_decode(br, _huff_cl_fast, _huff_cl_lens,
                         _huff_cl_codes, _huff_cl_count);
 }
 
+# Build the literal/length Huffman table from code lengths.
 fn huff_build_litlen(lengths, count) {
     _huff_alloc_tables();
     _huff_litlen_count = count;
@@ -726,6 +734,7 @@ fn huff_build_litlen(lengths, count) {
                        _huff_litlen_codes, _huff_litlen_fast);
 }
 
+# Build the distance Huffman table from code lengths.
 fn huff_build_dist(lengths, count) {
     _huff_alloc_tables();
     _huff_dist_count = count;
@@ -739,6 +748,7 @@ fn huff_build_dist(lengths, count) {
                        _huff_dist_codes, _huff_dist_fast);
 }
 
+# Build the code-length Huffman table from code lengths.
 fn huff_build_cl(lengths, count) {
     _huff_alloc_tables();
     _huff_cl_count = count;
@@ -759,6 +769,7 @@ fn huff_build_cl(lengths, count) {
 var _huff_fixed_built = 0;
 var _huff_fixed_litlen_lens = 0;
 
+# Build the fixed Huffman tables defined in RFC 1951 Section 3.2.6.
 fn huff_build_fixed() {
     if (_huff_fixed_built == 1) { return 0; }
     if (_huff_fixed_litlen_lens == 0) {
@@ -801,6 +812,7 @@ fn huff_build_fixed() {
 # Pre-allocated workspace for huff_compute_lengths (allocated once)
 var _hcl_ws = 0;
 
+# Compute optimal Huffman code lengths from symbol frequencies.
 fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
     var count = 0;
     var i = 0;
@@ -1896,6 +1908,7 @@ fn _deflate_read_dynamic(br) {
 # Wrappers (zlib, gzip) use this to find the trailer position.
 var _deflate_bytes_consumed = 0;
 
+# Return bytes consumed by the last deflate_decompress call.
 fn deflate_bytes_consumed() {
     return _deflate_bytes_consumed;
 }
@@ -2911,6 +2924,7 @@ fn zlib_compress(src, src_len, dst, dst_cap) {
     return zlib_compress_level(src, src_len, dst, dst_cap, 6);
 }
 
+# Compress data into a zlib stream with explicit compression level.
 fn zlib_compress_level(src, src_len, dst, dst_cap, level) {
     # Need room for: 2-byte header + DEFLATE data + 4-byte Adler-32
     if (dst_cap < 6) { return 0 - ERR_BUFFER_TOO_SMALL; }
@@ -3059,6 +3073,7 @@ fn gzip_compress(src, src_len, dst, dst_cap) {
     return gzip_compress_level(src, src_len, dst, dst_cap, 6);
 }
 
+# Compress data into a gzip stream with explicit compression level.
 fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
     # Need: 10-byte header + DEFLATE + 8-byte trailer
     if (dst_cap < 18) { return 0 - ERR_BUFFER_TOO_SMALL; }
@@ -3133,6 +3148,7 @@ fn _sankoch_unlock() {
     return 0;
 }
 
+# Compress data using the specified format at default level (6).
 fn compress(format, src, src_len, dst, dst_cap) {
     return compress_level(format, src, src_len, dst, dst_cap, 6);
 }
@@ -3164,6 +3180,7 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level) {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
+# Decompress data using the specified format.
 fn decompress(format, src, src_len, dst, dst_cap) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
@@ -3188,6 +3205,7 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap) {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
+# Detect compression format from magic bytes. Returns FORMAT_* or negative error.
 fn detect_format(src, src_len) {
     if (src_len < 2) {
         return 0 - ERR_INVALID_INPUT;

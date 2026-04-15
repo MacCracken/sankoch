@@ -322,6 +322,7 @@ fn _deflate_read_dynamic(br) {
 # Wrappers (zlib, gzip) use this to find the trailer position.
 var _deflate_bytes_consumed = 0;
 
+# Return bytes consumed by the last deflate_decompress call.
 fn deflate_bytes_consumed() {
     return _deflate_bytes_consumed;
 }

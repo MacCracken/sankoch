@@ -120,6 +120,7 @@ fn gzip_compress(src, src_len, dst, dst_cap) {
     return gzip_compress_level(src, src_len, dst, dst_cap, 6);
 }
 
+# Compress data into a gzip stream with explicit compression level.
 fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
     # Need: 10-byte header + DEFLATE + 8-byte trailer
     if (dst_cap < 18) { return 0 - ERR_BUFFER_TOO_SMALL; }

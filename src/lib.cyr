@@ -32,6 +32,7 @@ fn _sankoch_unlock() {
     return 0;
 }
 
+# Compress data using the specified format at default level (6).
 fn compress(format, src, src_len, dst, dst_cap) {
     return compress_level(format, src, src_len, dst, dst_cap, 6);
 }
@@ -63,6 +64,7 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level) {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
+# Decompress data using the specified format.
 fn decompress(format, src, src_len, dst, dst_cap) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
@@ -87,6 +89,7 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap) {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
+# Detect compression format from magic bytes. Returns FORMAT_* or negative error.
 fn detect_format(src, src_len) {
     if (src_len < 2) {
         return 0 - ERR_INVALID_INPUT;

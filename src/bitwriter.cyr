@@ -65,6 +65,7 @@ fn bw_write(bw, value, n) {
     return 0;
 }
 
+# Write a single bit.
 fn bw_write_bit(bw, b) {
     return bw_write(bw, b, 1);
 }
