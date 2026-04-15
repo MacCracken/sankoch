@@ -6,7 +6,8 @@ license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/sankoch"
 
 [deps]
-# Zero external dependencies. CRC-32 and Adler-32 implemented inline.
+# thread.cyr for mutex-based thread safety on compress/decompress globals
+stdlib = ["thread", "alloc", "syscalls", "fnptr"]
 
 [build]
 src = "src/lib.cyr"

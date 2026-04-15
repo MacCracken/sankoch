@@ -24,7 +24,7 @@ echo "# Formats: FORMAT_LZ4, FORMAT_DEFLATE, FORMAT_ZLIB, FORMAT_GZIP"
 echo ""
 for f in src/types.cyr src/checksum.cyr src/bitreader.cyr src/bitwriter.cyr \
          src/huffman.cyr src/lz4.cyr src/lz77.cyr src/deflate.cyr \
-         src/zlib.cyr src/gzip.cyr src/lib.cyr; do
+         src/zlib.cyr src/gzip.cyr src/lib.cyr src/stream.cyr; do
     echo ""
     echo "# --- $(basename "$f") ---"
     echo ""

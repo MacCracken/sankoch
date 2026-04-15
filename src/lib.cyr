@@ -2,11 +2,10 @@
 # Sanskrit: संकोच — contraction, compression
 #
 # Phase 1: LZ4 block compression
-# Phase 2: DEFLATE decompression (RFC 1951)
-# Phase 3: DEFLATE compression
+# Phase 2-3: DEFLATE decompression + compression (RFC 1951)
 # Phase 4: zlib (RFC 1950) + gzip (RFC 1952) wrappers
 #
-# Zero external dependencies. Zero C FFI.
+# Thread-safe via mutex on global compression/decompression state.
 
 # Public API
 #
@@ -15,21 +14,26 @@
 # decompress(format, src, src_len, dst, dst_cap) -> decompressed_len or negative error
 # detect_format(src, src_len) -> Format enum value or ERR_UNSUPPORTED_FORMAT
 
+# Global mutex protecting all mutable compression/decompression state
+# (bitreader, bitwriter, hash tables, Huffman tables, symbol buffers).
+# Initialized lazily on first use.
+var _sankoch_mtx = 0;
+
+fn _sankoch_lock() {
+    if (_sankoch_mtx == 0) {
+        _sankoch_mtx = mutex_new();
+    }
+    mutex_lock(_sankoch_mtx);
+    return 0;
+}
+
+fn _sankoch_unlock() {
+    mutex_unlock(_sankoch_mtx);
+    return 0;
+}
+
 fn compress(format, src, src_len, dst, dst_cap) {
-    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
-    if (format == FORMAT_LZ4) {
-        return lz4_compress(src, src_len, dst, dst_cap);
-    }
-    if (format == FORMAT_DEFLATE) {
-        return deflate_compress(src, src_len, dst, dst_cap);
-    }
-    if (format == FORMAT_ZLIB) {
-        return zlib_compress(src, src_len, dst, dst_cap);
-    }
-    if (format == FORMAT_GZIP) {
-        return gzip_compress(src, src_len, dst, dst_cap);
-    }
-    return 0 - ERR_UNSUPPORTED_FORMAT;
+    return compress_level(format, src, src_len, dst, dst_cap, 6);
 }
 
 # Compress with explicit level (1=fast, 6=default, 9=best).
@@ -37,6 +41,13 @@ fn compress(format, src, src_len, dst, dst_cap) {
 # LZ4 ignores the level parameter.
 fn compress_level(format, src, src_len, dst, dst_cap, level) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    _sankoch_lock();
+    var result = _compress_inner(format, src, src_len, dst, dst_cap, level);
+    _sankoch_unlock();
+    return result;
+}
+
+fn _compress_inner(format, src, src_len, dst, dst_cap, level) {
     if (format == FORMAT_LZ4) {
         return lz4_compress(src, src_len, dst, dst_cap);
     }
@@ -54,6 +65,13 @@ fn compress_level(format, src, src_len, dst, dst_cap, level) {
 
 fn decompress(format, src, src_len, dst, dst_cap) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    _sankoch_lock();
+    var result = _decompress_inner(format, src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return result;
+}
+
+fn _decompress_inner(format, src, src_len, dst, dst_cap) {
     if (format == FORMAT_LZ4) {
         return lz4_decompress(src, src_len, dst, dst_cap);
     }

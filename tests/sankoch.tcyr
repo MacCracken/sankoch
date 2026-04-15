@@ -536,7 +536,165 @@ fn test_zlib_compress_level() {
     return 0;
 }
 
+# ================================================================
+# Dynamic Huffman encoding tests
+# ================================================================
+
+fn test_dynamic_huffman_roundtrip() {
+    # Use level 6 which triggers dynamic Huffman
+    var src[256];
+    var i = 0;
+    while (i < 256) {
+        store8(src + i, 65 + (i % 10));  # ABCDEFGHIJ repeating
+        i = i + 1;
+    }
+
+    var compressed[512];
+    var decompressed[512];
+
+    var clen = deflate_compress_level(src, 256, compressed, 512, 6);
+    assert(clen > 0, "dynamic huffman compress should succeed");
+    assert(clen < 256, "dynamic huffman should compress");
+
+    # Verify BTYPE=10 (dynamic) in the first byte
+    # Bits: BFINAL(1 bit) + BTYPE(2 bits) = first 3 bits of first byte
+    # BFINAL=1, BTYPE=10 → bits 1,0,1 → byte value & 7 = 5
+    var header_bits = load8(compressed) & 7;
+    assert(header_bits == 5, "dynamic block should have BTYPE=10");
+
+    var dlen = deflate_decompress(compressed, clen, decompressed, 512);
+    assert(dlen == 256, "dynamic huffman roundtrip size");
+
+    i = 0;
+    while (i < 256) {
+        assert(load8(decompressed + i) == load8(src + i), "dynamic huffman content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dynamic_vs_fixed_ratio() {
+    # Skewed distribution — dynamic should beat fixed
+    var src[512];
+    var i = 0;
+    while (i < 512) {
+        # 90% 'A', 10% others — very skewed, dynamic should win
+        if ((i % 10) == 0) {
+            store8(src + i, 66 + (i % 5));
+        } else {
+            store8(src + i, 65);
+        }
+        i = i + 1;
+    }
+
+    var c_fixed[1024];
+    var c_dynamic[1024];
+
+    var len_fixed = deflate_compress_level(src, 512, c_fixed, 1024, 1);
+    var len_dynamic = deflate_compress_level(src, 512, c_dynamic, 1024, 6);
+
+    assert(len_fixed > 0, "fixed compress should succeed");
+    assert(len_dynamic > 0, "dynamic compress should succeed");
+
+    # Both should decompress correctly
+    var dec[512];
+    var dlen = deflate_decompress(c_dynamic, len_dynamic, dec, 512);
+    assert(dlen == 512, "dynamic decompress size");
+    i = 0;
+    while (i < 512) {
+        assert(load8(dec + i) == load8(src + i), "dynamic decompress content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# Streaming API tests
+# ================================================================
+
+fn test_stream_compress_zlib() {
+    var ctx = stream_compress_init(FORMAT_ZLIB, 6);
+
+    # Write data in chunks
+    var chunk1[5];
+    store8(chunk1 + 0, 72); store8(chunk1 + 1, 101); store8(chunk1 + 2, 108);
+    store8(chunk1 + 3, 108); store8(chunk1 + 4, 111);
+
+    var chunk2[7];
+    store8(chunk2 + 0, 44); store8(chunk2 + 1, 32); store8(chunk2 + 2, 119);
+    store8(chunk2 + 3, 111); store8(chunk2 + 4, 114); store8(chunk2 + 5, 108);
+    store8(chunk2 + 6, 100);
+
+    stream_write(ctx, chunk1, 5);
+    stream_write(ctx, chunk2, 7);
+    assert(stream_buffered(ctx) == 12, "stream should buffer 12 bytes");
+
+    var compressed[128];
+    var clen = stream_compress_finish(ctx, compressed, 128);
+    assert(clen > 0, "stream compress finish should succeed");
+
+    # Decompress and verify
+    var dec[64];
+    var dlen = decompress(FORMAT_ZLIB, compressed, clen, dec, 64);
+    assert(dlen == 12, "stream compressed data should decompress to 12 bytes");
+    assert(load8(dec + 0) == 72, "stream content[0] = H");
+    assert(load8(dec + 11) == 100, "stream content[11] = d");
+    return 0;
+}
+
+fn test_stream_decompress_gzip() {
+    # First compress normally
+    var src[12];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111); store8(src + 5, 44);
+    store8(src + 6, 32); store8(src + 7, 119); store8(src + 8, 111);
+    store8(src + 9, 114); store8(src + 10, 108); store8(src + 11, 100);
+
+    var compressed[128];
+    var clen = gzip_compress(src, 12, compressed, 128);
+    assert(clen > 0, "gzip compress for stream test");
+
+    # Decompress via streaming API (feed compressed data in two chunks)
+    var ctx = stream_decompress_init(FORMAT_GZIP);
+    var half = clen / 2;
+    stream_write(ctx, compressed, half);
+    stream_write(ctx, compressed + half, clen - half);
+
+    var dec[64];
+    var dlen = stream_decompress_finish(ctx, dec, 64);
+    assert(dlen == 12, "stream decompress should produce 12 bytes");
+    assert(load8(dec + 0) == 72, "stream decompress[0] = H");
+    assert(load8(dec + 11) == 100, "stream decompress[11] = d");
+    return 0;
+}
+
+fn test_stream_reset() {
+    var ctx = stream_compress_init(FORMAT_DEFLATE, 1);
+    var data[8];
+    var i = 0;
+    while (i < 8) { store8(data + i, i + 65); i = i + 1; }
+
+    stream_write(ctx, data, 8);
+    assert(stream_buffered(ctx) == 8, "buffered before reset");
+
+    stream_reset(ctx);
+    assert(stream_buffered(ctx) == 0, "buffered after reset");
+
+    # Write new data and compress
+    stream_write(ctx, data, 4);
+    var compressed[64];
+    var clen = stream_compress_finish(ctx, compressed, 64);
+    assert(clen > 0, "compress after reset");
+
+    var dec[64];
+    var dlen = deflate_decompress(compressed, clen, dec, 64);
+    assert(dlen == 4, "decompress after reset should be 4 bytes");
+    return 0;
+}
+
 fn main() {
+    alloc_init();
+
     test_adler32_empty();
     test_adler32_hello();
     test_crc32_empty();
@@ -563,6 +721,11 @@ fn main() {
     test_format_roundtrip_detect();
     test_compress_level_api();
     test_zlib_compress_level();
+    test_dynamic_huffman_roundtrip();
+    test_dynamic_vs_fixed_ratio();
+    test_stream_compress_zlib();
+    test_stream_decompress_gzip();
+    test_stream_reset();
 
     println("sankoch: all tests passed");
     return 0;

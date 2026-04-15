@@ -82,9 +82,10 @@ The framing layer. Thin wrappers over DEFLATE with checksums.
 
 | Item | Effort | Notes |
 |------|--------|-------|
-| Dynamic Huffman encoding | Medium | Currently fixed-only; dynamic gives better ratio on varied data |
-| Streaming API | Large | Incremental compress/decompress for files > DECOMPRESS_MAX_OUTPUT |
-| MED-01: Thread-safe state | Medium | Replace globals with caller-provided context when Cyrius has threading |
+| Dynamic Huffman encoding | ~~Medium~~ | **Done** — levels 4-9 use optimal frequency-based Huffman trees |
+| Streaming API | ~~Large~~ | **Done** — buffered streaming via stream_compress_init/write/finish |
+| ~~MED-01: Thread-safe state~~ | ~~Medium~~ | **Done** — global mutex via stdlib thread.cyr; all public API calls lock/unlock |
+| True incremental DEFLATE | Large | Block-by-block streaming without full buffering (future) |
 
 ## Future (post-1.0)
 

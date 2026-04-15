@@ -1,0 +1,126 @@
+# sankoch — streaming compression/decompression API
+#
+# For data larger than a single buffer, or when input arrives incrementally.
+#
+# Usage:
+#   var ctx = stream_compress_init(FORMAT_ZLIB, level)
+#   stream_compress_write(ctx, chunk1, len1)
+#   stream_compress_write(ctx, chunk2, len2)
+#   var result_len = stream_compress_finish(ctx, out_buf, out_cap)
+#
+#   var ctx = stream_decompress_init(FORMAT_ZLIB)
+#   stream_decompress_write(ctx, compressed_data, compressed_len)
+#   var result_len = stream_decompress_finish(ctx, out_buf, out_cap)
+#
+# Internally, the stream context accumulates input in a resizable buffer,
+# then compresses/decompresses in one shot on finish(). This is a buffered
+# streaming API — true incremental block-by-block is future work.
+
+# Context layout (48 bytes):
+#   +0:  format
+#   +8:  level (compress only)
+#   +16: input buffer pointer
+#   +24: input buffer capacity
+#   +32: input bytes written
+#   +40: mode (0=compress, 1=decompress)
+
+enum Stream {
+    STREAM_COMPRESS = 0;
+    STREAM_DECOMPRESS = 1;
+    STREAM_INIT_CAP = 65536;  # 64KB initial buffer
+}
+
+var _stream_ctx[48];
+
+fn _stream_grow(ctx) {
+    var buf = load64(ctx + 16);
+    var cap = load64(ctx + 24);
+    var new_cap = cap * 2;
+    var new_buf = alloc(new_cap);
+    # Copy old data
+    var len = load64(ctx + 32);
+    var i = 0;
+    while (i < len) {
+        store8(new_buf + i, load8(buf + i));
+        i = i + 1;
+    }
+    store64(ctx + 16, new_buf);
+    store64(ctx + 24, new_cap);
+    return 0;
+}
+
+# Initialize a streaming compression context.
+fn stream_compress_init(format, level) {
+    var ctx = &_stream_ctx;
+    store64(ctx, format);
+    store64(ctx + 8, level);
+    store64(ctx + 16, alloc(STREAM_INIT_CAP));
+    store64(ctx + 24, STREAM_INIT_CAP);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, STREAM_COMPRESS);
+    return ctx;
+}
+
+# Initialize a streaming decompression context.
+fn stream_decompress_init(format) {
+    var ctx = &_stream_ctx;
+    store64(ctx, format);
+    store64(ctx + 8, 0);
+    store64(ctx + 16, alloc(STREAM_INIT_CAP));
+    store64(ctx + 24, STREAM_INIT_CAP);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, STREAM_DECOMPRESS);
+    return ctx;
+}
+
+# Append data to the stream buffer.
+fn stream_write(ctx, data, len) {
+    if (len <= 0) { return 0; }
+    var written = load64(ctx + 32);
+    var cap = load64(ctx + 24);
+
+    # Grow buffer if needed
+    while (written + len > cap) {
+        _stream_grow(ctx);
+        cap = load64(ctx + 24);
+    }
+
+    var buf = load64(ctx + 16);
+    var i = 0;
+    while (i < len) {
+        store8(buf + written + i, load8(data + i));
+        i = i + 1;
+    }
+    store64(ctx + 32, written + len);
+    return len;
+}
+
+# Finish compression: compress all buffered input into dst.
+# Returns compressed length, or negative error.
+fn stream_compress_finish(ctx, dst, dst_cap) {
+    var format = load64(ctx);
+    var level = load64(ctx + 8);
+    var buf = load64(ctx + 16);
+    var len = load64(ctx + 32);
+    return compress_level(format, buf, len, dst, dst_cap, level);
+}
+
+# Finish decompression: decompress all buffered input into dst.
+# Returns decompressed length, or negative error.
+fn stream_decompress_finish(ctx, dst, dst_cap) {
+    var format = load64(ctx);
+    var buf = load64(ctx + 16);
+    var len = load64(ctx + 32);
+    return decompress(format, buf, len, dst, dst_cap);
+}
+
+# Return the number of bytes currently buffered.
+fn stream_buffered(ctx) {
+    return load64(ctx + 32);
+}
+
+# Reset the stream context (reuse buffer, clear data).
+fn stream_reset(ctx) {
+    store64(ctx + 32, 0);
+    return 0;
+}
