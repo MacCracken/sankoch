@@ -490,11 +490,11 @@ var _huff_tables_allocd = 0;
 fn _huff_alloc_tables() {
     if (_huff_tables_allocd == 1) { return 0; }
     _huff_litlen_fast = alloc(4096);
-    _huff_litlen_lens = alloc(2288);
-    _huff_litlen_codes = alloc(2288);
+    _huff_litlen_lens = alloc(2304);   # 288 * 8
+    _huff_litlen_codes = alloc(2304);  # 288 * 8
     _huff_dist_fast = alloc(4096);
-    _huff_dist_lens = alloc(240);
-    _huff_dist_codes = alloc(240);
+    _huff_dist_lens = alloc(256);      # 32 * 8
+    _huff_dist_codes = alloc(256);     # 32 * 8
     _huff_cl_fast = alloc(4096);
     _huff_cl_lens = alloc(152);
     _huff_cl_codes = alloc(152);
@@ -666,6 +666,8 @@ fn huff_decode_cl(br) {
 fn huff_build_litlen(lengths, count) {
     _huff_alloc_tables();
     _huff_litlen_count = count;
+    # Dynamic tables overwrite fixed — force rebuild on next huff_build_fixed()
+    _huff_fixed_built = 0;
     var i = 0;
     while (i < count) {
         store64(_huff_litlen_lens + i * 8,

@@ -336,6 +336,7 @@ fn test_deflate_rt_hello() {
     return 0;
 }
 
+
 fn test_deflate_rt_repetitive() {
     var src = alloc(120);
     var i = 0;
@@ -584,7 +585,7 @@ fn test_stream_decompress() {
     var ctx = stream_decompress_init(FORMAT_GZIP);
     var half = clen / 2;
     stream_write(ctx, c, half);
-    stream_write(ctx, &c + half, clen - half);
+    stream_write(ctx, c + half, clen - half);
     var d = alloc(64);
     assert(stream_decompress_finish(ctx, d, 64) == 12, "stream decompress rt");
     assert(load8(d) == 72 && load8(d + 11) == 100, "stream decompress content");
@@ -709,34 +710,29 @@ fn main() {
     test_deflate_dec_hello();
     test_deflate_dec_stored();
     test_deflate_dec_zero_stored();
-    # TODO: dynamic Huffman decompression of this specific vector needs debugging
-    # test_deflate_dec_backref();
+    test_deflate_dec_backref();
     test_deflate_dec_via_api();
     test_deflate_rt_empty();
     test_deflate_rt_1byte();
     test_deflate_rt_hello();
-    # TODO: DEFLATE compress round-trip content mismatch on larger data
-    # test_deflate_rt_repetitive();
-    # test_deflate_rt_all_bytes();
-    # test_deflate_rt_2kb();
-    # TODO: zlib/gzip wrapper round-trips need deflate_bytes_consumed fix
-    # test_zlib_rt_hello();
-    # test_zlib_rt_via_api();
-    # test_zlib_corrupt_checksum();
-    # test_gzip_rt_hello();
-    # test_gzip_rt_via_api();
-    # test_gzip_corrupt_crc();
-    # test_gzip_truncated();
-    # test_format_detect_roundtrip();
-    # test_levels_deflate();
-    # test_levels_zlib();
-    # TODO: _deflate_compress_dynamic has stack corruption — investigate
-    # test_dynamic_huffman_rt();
-    # test_dynamic_vs_fixed();
-    # TODO: streaming tests depend on zlib/gzip working
-    # test_stream_compress();
-    # test_stream_decompress();
-    # test_stream_reset();
+    test_deflate_rt_repetitive();
+    test_deflate_rt_all_bytes();
+    test_deflate_rt_2kb();
+    test_zlib_rt_hello();
+    test_zlib_rt_via_api();
+    test_zlib_corrupt_checksum();
+    test_gzip_rt_hello();
+    test_gzip_rt_via_api();
+    test_gzip_corrupt_crc();
+    test_gzip_truncated();
+    test_format_detect_roundtrip();
+    test_levels_deflate();
+    test_levels_zlib();
+    test_dynamic_huffman_rt();
+    test_dynamic_vs_fixed();
+    test_stream_compress();
+    test_stream_decompress();
+    test_stream_reset();
     test_err_negative_len();
     test_err_unsupported_format();
     test_err_deflate_invalid_btype();
