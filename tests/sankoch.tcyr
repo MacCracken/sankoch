@@ -294,9 +294,14 @@ fn test_deflate_dec_via_api() {
 # DEFLATE compression round-trip
 # ================================================================
 
+# Shared buffers for round-trip tests (allocated once)
+var _rt_c = 0;
+var _rt_d = 0;
+
 fn _verify_roundtrip(src, len, label) {
-    var c = alloc(4096);
-    var d = alloc(4096);
+    if (_rt_c == 0) { _rt_c = alloc(4096); _rt_d = alloc(4096); }
+    var c = _rt_c;
+    var d = _rt_d;
     var clen = deflate_compress(src, len, c, 4096);
     assert(clen > 0, label);
     var dlen = deflate_decompress(c, clen, d, 4096);
@@ -661,8 +666,26 @@ fn test_err_gzip_bad_magic() {
 # main
 # ================================================================
 
+# Pre-allocate shared test buffers to avoid heap exhaustion.
+# Tests reuse these instead of calling alloc() individually.
+var _tb_small = 0;   # 64 bytes
+var _tb_med = 0;     # 512 bytes
+var _tb_large = 0;   # 8192 bytes
+
+fn _init_test_bufs() {
+    _tb_small = alloc(64);
+    _tb_med = alloc(512);
+    _tb_large = alloc(8192);
+    return 0;
+}
+
 fn main() {
-    alloc_init();
+    # Custom heap init: 4MB instead of default 1MB
+    _heap_base = syscall(12, 0);
+    _heap_end = _heap_base + 4194304;
+    syscall(12, _heap_end);
+    _heap_ptr = _heap_base;
+    _init_test_bufs();
 
     test_adler32_empty();
     test_adler32_hello();
@@ -686,17 +709,17 @@ fn main() {
     test_deflate_dec_hello();
     test_deflate_dec_stored();
     test_deflate_dec_zero_stored();
-    # INVESTIGATE: dynamic Huffman decompression of backref vector
+    # TODO: dynamic Huffman decompression of this specific vector needs debugging
     # test_deflate_dec_backref();
-    # test_deflate_dec_via_api();
-    # test_deflate_rt_empty();
-    # test_deflate_rt_1byte();
-    # test_deflate_rt_hello();
-    # INVESTIGATE: DEFLATE compress round-trip on larger data
+    test_deflate_dec_via_api();
+    test_deflate_rt_empty();
+    test_deflate_rt_1byte();
+    test_deflate_rt_hello();
+    # TODO: DEFLATE compress round-trip content mismatch on larger data
     # test_deflate_rt_repetitive();
     # test_deflate_rt_all_bytes();
     # test_deflate_rt_2kb();
-    # INVESTIGATE: zlib/gzip trailer location via deflate_bytes_consumed
+    # TODO: zlib/gzip wrapper round-trips need deflate_bytes_consumed fix
     # test_zlib_rt_hello();
     # test_zlib_rt_via_api();
     # test_zlib_corrupt_checksum();
@@ -707,8 +730,10 @@ fn main() {
     # test_format_detect_roundtrip();
     # test_levels_deflate();
     # test_levels_zlib();
+    # TODO: _deflate_compress_dynamic has stack corruption — investigate
     # test_dynamic_huffman_rt();
     # test_dynamic_vs_fixed();
+    # TODO: streaming tests depend on zlib/gzip working
     # test_stream_compress();
     # test_stream_decompress();
     # test_stream_reset();
@@ -716,9 +741,8 @@ fn main() {
     test_err_unsupported_format();
     test_err_deflate_invalid_btype();
     test_err_deflate_corrupt_stored();
-    # INVESTIGATE: zlib/gzip header validation with heap buffers
-    # test_err_zlib_bad_header();
-    # test_err_gzip_bad_magic();
+    test_err_zlib_bad_header();
+    test_err_gzip_bad_magic();
 
     var r = assert_summary();
     return r;

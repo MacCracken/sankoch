@@ -10,14 +10,15 @@
 #   +16: bit position (0-7, counts from LSB)
 #   +24: data length in bytes
 
-var _br_storage[32];  # single static bitreader — no alloc needed
-
+# Each br_init allocates a fresh 32-byte context on the heap.
+# No shared static state — safe for repeat and nested calls.
 fn br_init(data, len) {
-    store64(&_br_storage, data);
-    store64(&_br_storage + 8, 0);
-    store64(&_br_storage + 16, 0);
-    store64(&_br_storage + 24, len);
-    return &_br_storage;
+    var br = alloc(32);
+    store64(br, data);
+    store64(br + 8, 0);
+    store64(br + 16, 0);
+    store64(br + 24, len);
+    return br;
 }
 
 # Read n bits LSB-first. Returns the value, or negative error.

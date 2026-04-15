@@ -303,6 +303,9 @@ fn huff_build_fixed() {
 # Optimal Huffman tree from frequencies
 # ================================================================
 
+# Pre-allocated workspace for huff_compute_lengths (allocated once)
+var _hcl_ws = 0;
+
 fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
     var count = 0;
     var i = 0;
@@ -344,9 +347,13 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
         return 0;
     }
 
-    # Build sorted lists (heap-allocated for large symbol sets)
-    var sorted_sym = alloc(num_symbols * 8);
-    var sorted_freq = alloc(num_symbols * 8);
+    # Workspace — allocated once, reused across calls.
+    # 7 arrays, each 600 entries * 8 bytes = 4800 bytes. Total = 33600.
+    if (_hcl_ws == 0) {
+        _hcl_ws = alloc(33600);
+    }
+    var sorted_sym = _hcl_ws;
+    var sorted_freq = _hcl_ws + 4800;
     var n = 0;
     i = 0;
     while (i < num_symbols) {
@@ -377,10 +384,10 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
         i = i + 1;
     }
 
-    # Two-queue Huffman tree build
-    var q2_freq = alloc(n * 8);
-    var q2_left = alloc(n * 8);
-    var q2_right = alloc(n * 8);
+    # Two-queue Huffman tree build (reuse workspace)
+    var q2_freq = _hcl_ws + 9600;
+    var q2_left = _hcl_ws + 14400;
+    var q2_right = _hcl_ws + 19200;
     var q1_head = 0;
     var q2_head = 0;
     var q2_tail = 0;
@@ -446,8 +453,8 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
     i = 0;
     while (i < num_symbols) { store64(out_lens + i * 8, 0); i = i + 1; }
 
-    var stack_node = alloc(600 * 8);
-    var stack_depth = alloc(600 * 8);
+    var stack_node = _hcl_ws + 24000;
+    var stack_depth = _hcl_ws + 28800;
     var sp = 0;
     if (q2_tail > 0) {
         store64(stack_node, q2_tail - 1 + n);

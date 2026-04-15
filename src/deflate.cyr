@@ -641,7 +641,7 @@ fn _deflate_write_match(bw, length, distance) {
 var _dyn_sym_buf = 0;      # heap-allocated symbol buffer
 var _dyn_sym_count = 0;
 enum DynEnc {
-    DYN_SYM_MAX = 131072;  # max symbols we buffer (enough for 64KB input)
+    DYN_SYM_MAX = 16384;  # max symbols we buffer
 }
 
 fn _dyn_pack(sym, extra_bits, extra_val) {
@@ -657,35 +657,39 @@ fn _dyn_extra_val(packed) { return (packed >> 20) & 4294967295; }
 # dist_lens: code lengths for distance alphabet (hdist entries)
 # hlit: number of literal/length codes (257-286)
 # hdist: number of distance codes (1-32)
+# Pre-allocated workspace for dynamic header writing
+var _dh_ws = 0;
+
 fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
-    # Combine lit + dist lengths for code-length encoding
-    var all_lens[2560];  # 320 * 8
+    # Heap workspace: all_lens(2560) + cl_syms(2560) + cl_extra(2560) + cl_ebits(2560) = 10240
+    if (_dh_ws == 0) { _dh_ws = alloc(10240); }
+    var all_lens = _dh_ws;
     var total = hlit + hdist;
     var i = 0;
     while (i < hlit) {
-        store64(&all_lens + i * 8, load64(lit_lens + i * 8));
+        store64(all_lens + i * 8, load64(lit_lens + i * 8));
         i = i + 1;
     }
     i = 0;
     while (i < hdist) {
-        store64(&all_lens + (hlit + i) * 8, load64(dist_lens + i * 8));
+        store64(all_lens + (hlit + i) * 8, load64(dist_lens + i * 8));
         i = i + 1;
     }
 
     # RLE-encode the combined lengths into a symbol stream
     # Symbols: 0-15 = literal length, 16 = repeat prev, 17 = repeat 0 short, 18 = repeat 0 long
-    var cl_syms[2560];    # encoded symbols
-    var cl_extra[2560];   # extra bits for each symbol
-    var cl_ebits[2560];   # number of extra bits
+    var cl_syms = _dh_ws + 2560;
+    var cl_extra = _dh_ws + 5120;
+    var cl_ebits = _dh_ws + 7680;
     var cl_count = 0;
 
     i = 0;
     while (i < total) {
-        var val = load64(&all_lens + i * 8);
+        var val = load64(all_lens + i * 8);
 
         # Count run of same value
         var run = 1;
-        while (i + run < total && load64(&all_lens + (i + run) * 8) == val) {
+        while (i + run < total && load64(all_lens + (i + run) * 8) == val) {
             run = run + 1;
         }
 
@@ -694,25 +698,25 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
                 if (run >= 11) {
                     var r = run;
                     if (r > 138) { r = 138; }
-                    store64(&cl_syms + cl_count * 8, 18);
-                    store64(&cl_extra + cl_count * 8, r - 11);
-                    store64(&cl_ebits + cl_count * 8, 7);
+                    store64(cl_syms + cl_count * 8, 18);
+                    store64(cl_extra + cl_count * 8, r - 11);
+                    store64(cl_ebits + cl_count * 8, 7);
                     cl_count = cl_count + 1;
                     run = run - r;
                     i = i + r;
                 } elif (run >= 3) {
                     var r = run;
                     if (r > 10) { r = 10; }
-                    store64(&cl_syms + cl_count * 8, 17);
-                    store64(&cl_extra + cl_count * 8, r - 3);
-                    store64(&cl_ebits + cl_count * 8, 3);
+                    store64(cl_syms + cl_count * 8, 17);
+                    store64(cl_extra + cl_count * 8, r - 3);
+                    store64(cl_ebits + cl_count * 8, 3);
                     cl_count = cl_count + 1;
                     run = run - r;
                     i = i + r;
                 } else {
-                    store64(&cl_syms + cl_count * 8, 0);
-                    store64(&cl_extra + cl_count * 8, 0);
-                    store64(&cl_ebits + cl_count * 8, 0);
+                    store64(cl_syms + cl_count * 8, 0);
+                    store64(cl_extra + cl_count * 8, 0);
+                    store64(cl_ebits + cl_count * 8, 0);
                     cl_count = cl_count + 1;
                     run = run - 1;
                     i = i + 1;
@@ -720,9 +724,9 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
             }
         } else {
             # Emit the value itself first
-            store64(&cl_syms + cl_count * 8, val);
-            store64(&cl_extra + cl_count * 8, 0);
-            store64(&cl_ebits + cl_count * 8, 0);
+            store64(cl_syms + cl_count * 8, val);
+            store64(cl_extra + cl_count * 8, 0);
+            store64(cl_ebits + cl_count * 8, 0);
             cl_count = cl_count + 1;
             run = run - 1;
             i = i + 1;
@@ -732,16 +736,16 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
                 if (run >= 3) {
                     var r = run;
                     if (r > 6) { r = 6; }
-                    store64(&cl_syms + cl_count * 8, 16);
-                    store64(&cl_extra + cl_count * 8, r - 3);
-                    store64(&cl_ebits + cl_count * 8, 2);
+                    store64(cl_syms + cl_count * 8, 16);
+                    store64(cl_extra + cl_count * 8, r - 3);
+                    store64(cl_ebits + cl_count * 8, 2);
                     cl_count = cl_count + 1;
                     run = run - r;
                     i = i + r;
                 } else {
-                    store64(&cl_syms + cl_count * 8, val);
-                    store64(&cl_extra + cl_count * 8, 0);
-                    store64(&cl_ebits + cl_count * 8, 0);
+                    store64(cl_syms + cl_count * 8, val);
+                    store64(cl_extra + cl_count * 8, 0);
+                    store64(cl_ebits + cl_count * 8, 0);
                     cl_count = cl_count + 1;
                     run = run - 1;
                     i = i + 1;
@@ -756,7 +760,7 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
     while (i < 19) { store64(&cl_freqs + i * 8, 0); i = i + 1; }
     i = 0;
     while (i < cl_count) {
-        var s = load64(&cl_syms + i * 8);
+        var s = load64(cl_syms + i * 8);
         store64(&cl_freqs + s * 8, load64(&cl_freqs + s * 8) + 1);
         i = i + 1;
     }
@@ -810,7 +814,7 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
     # Write the RLE-encoded code lengths using the code-length Huffman codes
     i = 0;
     while (i < cl_count) {
-        var s = load64(&cl_syms + i * 8);
+        var s = load64(cl_syms + i * 8);
         var clen = load64(&cl_lens_opt + s * 8);
         var code = load64(&cl_codes_opt + s * 8);
         # Reverse bits for LSB-first
@@ -822,9 +826,9 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
         if (rc < 0) { return rc; }
 
         # Write extra bits if any
-        var eb = load64(&cl_ebits + i * 8);
+        var eb = load64(cl_ebits + i * 8);
         if (eb > 0) {
-            rc = bw_write(bw, load64(&cl_extra + i * 8), eb);
+            rc = bw_write(bw, load64(cl_extra + i * 8), eb);
             if (rc < 0) { return rc; }
         }
         i = i + 1;
@@ -897,8 +901,10 @@ fn _deflate_write_syms_dynamic(bw, lit_lens, lit_codes, dist_lens, dist_codes) {
 # dst: pointer to output buffer
 # dst_cap: capacity of output buffer
 # Returns: compressed length, or negative error code.
+# Default to fixed Huffman (level 1) — dynamic (level 4+) has a stack
+# corruption issue under investigation in _deflate_compress_dynamic.
 fn deflate_compress(src, src_len, dst, dst_cap) {
-    return deflate_compress_level(src, src_len, dst, dst_cap, 6);
+    return deflate_compress_level(src, src_len, dst, dst_cap, 1);
 }
 
 # Compress with explicit level (1=fast, 6=default, 9=best).
@@ -1012,6 +1018,16 @@ fn _deflate_compress_fixed(src, src_len, dst, dst_cap) {
 
 # Dynamic Huffman compression (better ratio, levels 4-9).
 # Two-pass: 1) collect LZ77 symbols, 2) build optimal trees, 3) encode.
+# Pre-allocated workspace for dynamic compress
+var _dyn_lit_freq = 0;
+var _dyn_dist_freq = 0;
+var _dyn_opt_lit_lens = 0;
+var _dyn_opt_dist_lens = 0;
+var _dyn_opt_lit_codes = 0;
+var _dyn_opt_dist_codes = 0;
+var _dyn_lit_fast_tmp = 0;
+var _dyn_dist_fast_tmp = 0;
+
 fn _deflate_compress_dynamic(src, src_len, dst, dst_cap) {
     # Allocate symbol buffer on first use
     if (_dyn_sym_buf == 0) {
@@ -1019,13 +1035,23 @@ fn _deflate_compress_dynamic(src, src_len, dst, dst_cap) {
     }
     _dyn_sym_count = 0;
 
-    # Frequency counters
-    var lit_freq[2304];   # 288 * 8
-    var dist_freq[240];   # 30 * 8
+    # Frequency counters (heap — stack too large for this function)
+    if (_dyn_lit_freq == 0) {
+        _dyn_lit_freq = alloc(2304);
+        _dyn_dist_freq = alloc(240);
+        _dyn_opt_lit_lens = alloc(2304);
+        _dyn_opt_dist_lens = alloc(240);
+        _dyn_opt_lit_codes = alloc(2304);
+        _dyn_opt_dist_codes = alloc(240);
+        _dyn_lit_fast_tmp = alloc(4096);
+        _dyn_dist_fast_tmp = alloc(4096);
+    }
+    var lit_freq = _dyn_lit_freq;
+    var dist_freq = _dyn_dist_freq;
     var i = 0;
-    while (i < 288) { store64(&lit_freq + i * 8, 0); i = i + 1; }
+    while (i < 288) { store64(lit_freq + i * 8, 0); i = i + 1; }
     i = 0;
-    while (i < 30) { store64(&dist_freq + i * 8, 0); i = i + 1; }
+    while (i < 30) { store64(dist_freq + i * 8, 0); i = i + 1; }
 
     # Pass 1: run LZ77 and collect symbols + frequencies
     var sp = 0;
@@ -1051,7 +1077,7 @@ fn _deflate_compress_dynamic(src, src_len, dst, dst_cap) {
                 store64(_dyn_sym_buf + _dyn_sym_count * 8,
                         _dyn_pack(lsym, lextra, mlen - lbase));
                 _dyn_sym_count = _dyn_sym_count + 1;
-                store64(&lit_freq + lsym * 8, load64(&lit_freq + lsym * 8) + 1);
+                store64(lit_freq + lsym * 8, load64(lit_freq + lsym * 8) + 1);
 
                 # Distance symbol
                 var di = _deflate_dist_code(mdist);
@@ -1060,7 +1086,7 @@ fn _deflate_compress_dynamic(src, src_len, dst, dst_cap) {
                 store64(_dyn_sym_buf + _dyn_sym_count * 8,
                         _dyn_pack(di, dextra, mdist - dbase));
                 _dyn_sym_count = _dyn_sym_count + 1;
-                store64(&dist_freq + di * 8, load64(&dist_freq + di * 8) + 1);
+                store64(dist_freq + di * 8, load64(dist_freq + di * 8) + 1);
 
                 var k = 1;
                 while (k < mlen) {
@@ -1078,52 +1104,50 @@ fn _deflate_compress_dynamic(src, src_len, dst, dst_cap) {
         var byte = load8(src + sp);
         store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(byte, 0, 0));
         _dyn_sym_count = _dyn_sym_count + 1;
-        store64(&lit_freq + byte * 8, load64(&lit_freq + byte * 8) + 1);
+        store64(lit_freq + byte * 8, load64(lit_freq + byte * 8) + 1);
         sp = sp + 1;
     }
 
     # Add EOB
     store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(256, 0, 0));
     _dyn_sym_count = _dyn_sym_count + 1;
-    store64(&lit_freq + 256 * 8, load64(&lit_freq + 256 * 8) + 1);
+    store64(lit_freq + 256 * 8, load64(lit_freq + 256 * 8) + 1);
 
     # Pass 2: build optimal Huffman trees from frequencies
-    var opt_lit_lens[2304];
-    huff_compute_lengths(&lit_freq, 286, &opt_lit_lens, 257);
+    var opt_lit_lens = _dyn_opt_lit_lens;
+    huff_compute_lengths(lit_freq, 286, opt_lit_lens, 257);
 
     # Determine HLIT: last non-zero literal/length code (min 257)
     var hlit = 286;
-    while (hlit > 257 && load64(&opt_lit_lens + (hlit - 1) * 8) == 0) {
+    while (hlit > 257 && load64(opt_lit_lens + (hlit - 1) * 8) == 0) {
         hlit = hlit - 1;
     }
 
-    var opt_dist_lens[240];
-    # Ensure at least one distance code exists
+    var opt_dist_lens = _dyn_opt_dist_lens;
     var has_dist = 0;
     i = 0;
     while (i < 30) {
-        if (load64(&dist_freq + i * 8) > 0) { has_dist = 1; }
+        if (load64(dist_freq + i * 8) > 0) { has_dist = 1; }
         i = i + 1;
     }
     if (has_dist == 0) {
-        # No distances used — still need at least 1 distance code
-        store64(&dist_freq, 1);
+        store64(dist_freq, 1);
     }
-    huff_compute_lengths(&dist_freq, 30, &opt_dist_lens, 1);
+    huff_compute_lengths(dist_freq, 30, opt_dist_lens, 1);
 
     var hdist = 30;
-    while (hdist > 1 && load64(&opt_dist_lens + (hdist - 1) * 8) == 0) {
+    while (hdist > 1 && load64(opt_dist_lens + (hdist - 1) * 8) == 0) {
         hdist = hdist - 1;
     }
 
     # Build canonical codes
-    var opt_lit_codes[2304];
-    var lit_fast_tmp[4096];
-    _huff_build(&opt_lit_lens, hlit, &opt_lit_codes, &lit_fast_tmp);
+    var opt_lit_codes = _dyn_opt_lit_codes;
+    var lit_fast_tmp = _dyn_lit_fast_tmp;
+    _huff_build(opt_lit_lens, hlit, opt_lit_codes, lit_fast_tmp);
 
-    var opt_dist_codes[240];
-    var dist_fast_tmp[4096];
-    _huff_build(&opt_dist_lens, hdist, &opt_dist_codes, &dist_fast_tmp);
+    var opt_dist_codes = _dyn_opt_dist_codes;
+    var dist_fast_tmp = _dyn_dist_fast_tmp;
+    _huff_build(opt_dist_lens, hdist, opt_dist_codes, dist_fast_tmp);
 
     # Pass 3: write the block
     var bw = bw_init(dst, dst_cap);
@@ -1133,12 +1157,12 @@ fn _deflate_compress_dynamic(src, src_len, dst, dst_cap) {
     if (rc < 0) { return rc; }
 
     # Write dynamic header (tree descriptions)
-    rc = _deflate_write_dynamic_header(bw, &opt_lit_lens, hlit, &opt_dist_lens, hdist);
+    rc = _deflate_write_dynamic_header(bw, opt_lit_lens, hlit, opt_dist_lens, hdist);
     if (rc < 0) { return rc; }
 
     # Write encoded symbols
-    rc = _deflate_write_syms_dynamic(bw, &opt_lit_lens, &opt_lit_codes,
-                                      &opt_dist_lens, &opt_dist_codes);
+    rc = _deflate_write_syms_dynamic(bw, opt_lit_lens, opt_lit_codes,
+                                      opt_dist_lens, opt_dist_codes);
     if (rc < 0) { return rc; }
 
     return bw_finish(bw);

@@ -13,15 +13,15 @@
 #   +24: current partial byte
 #   +32: bit position in partial byte (0-7, from LSB)
 
-var _bw_storage[40];
-
+# Each bw_init allocates a fresh 40-byte context on the heap.
 fn bw_init(buf, cap) {
-    store64(&_bw_storage, buf);
-    store64(&_bw_storage + 8, cap);
-    store64(&_bw_storage + 16, 0);
-    store64(&_bw_storage + 24, 0);
-    store64(&_bw_storage + 32, 0);
-    return &_bw_storage;
+    var bw = alloc(40);
+    store64(bw, buf);
+    store64(bw + 8, cap);
+    store64(bw + 16, 0);
+    store64(bw + 24, 0);
+    store64(bw + 32, 0);
+    return bw;
 }
 
 # Write n bits LSB-first. value's low n bits are written.

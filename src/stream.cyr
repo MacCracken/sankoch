@@ -30,8 +30,6 @@ enum Stream {
     STREAM_INIT_CAP = 65536;  # 64KB initial buffer
 }
 
-var _stream_ctx[48];
-
 fn _stream_grow(ctx) {
     var buf = load64(ctx + 16);
     var cap = load64(ctx + 24);
@@ -51,7 +49,7 @@ fn _stream_grow(ctx) {
 
 # Initialize a streaming compression context.
 fn stream_compress_init(format, level) {
-    var ctx = &_stream_ctx;
+    var ctx = alloc(48);
     store64(ctx, format);
     store64(ctx + 8, level);
     store64(ctx + 16, alloc(STREAM_INIT_CAP));
@@ -63,7 +61,7 @@ fn stream_compress_init(format, level) {
 
 # Initialize a streaming decompression context.
 fn stream_decompress_init(format) {
-    var ctx = &_stream_ctx;
+    var ctx = alloc(48);
     store64(ctx, format);
     store64(ctx + 8, 0);
     store64(ctx + 16, alloc(STREAM_INIT_CAP));
