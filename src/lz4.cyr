@@ -10,7 +10,7 @@
 
 # Hash table size for match-finder: 4096 entries (12-bit hash).
 # Each entry stores a source position (i64). Initialized to -1 (no match).
-var _lz4_htab[32768];  # 4096 * 8 bytes
+var _lz4_htab = 0;  # heap-allocated: 4096 * 8 bytes
 enum LZ4 {
     LZ4_HTAB_SIZE = 4096;
     LZ4_HTAB_MASK = 4095;
@@ -201,10 +201,11 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
         return _lz4_emit(src, dst, 0, dst_cap, 0, src_len, 0, 0);
     }
 
-    # Clear hash table (4096 entries * 8 bytes each)
+    # Heap-allocate hash table on first use, then clear
+    if (_lz4_htab == 0) { _lz4_htab = alloc(32768); }
     var i = 0;
     while (i < LZ4_HTAB_SIZE) {
-        store64(&_lz4_htab + i * 8, 0 - 1);  # -1 = no entry
+        store64(_lz4_htab + i * 8, 0 - 1);  # -1 = no entry
         i = i + 1;
     }
 
@@ -214,10 +215,10 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
 
     while (sp + LZ4_MIN_MATCH <= src_len) {
         var h = _lz4_hash4(src, sp);
-        var ref = load64(&_lz4_htab + h * 8);
+        var ref = load64(_lz4_htab + h * 8);
 
         # Update hash table with current position
-        store64(&_lz4_htab + h * 8, sp);
+        store64(_lz4_htab + h * 8, sp);
 
         # Check for a valid match
         if (ref >= 0) {
@@ -244,7 +245,7 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
                                 # Hash the positions we skipped (improves future matches)
                                 if (sp + LZ4_MIN_MATCH <= src_len) {
                                     var hh = _lz4_hash4(src, sp);
-                                    store64(&_lz4_htab + hh * 8, sp);
+                                    store64(_lz4_htab + hh * 8, sp);
                                 }
                                 continue;
                             }

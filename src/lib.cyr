@@ -11,6 +11,7 @@
 # Public API
 #
 # compress(format, src, src_len, dst, dst_cap) -> compressed_len or negative error
+# compress_level(format, src, src_len, dst, dst_cap, level) -> same, with level 1-9
 # decompress(format, src, src_len, dst, dst_cap) -> decompressed_len or negative error
 # detect_format(src, src_len) -> Format enum value or ERR_UNSUPPORTED_FORMAT
 
@@ -27,6 +28,26 @@ fn compress(format, src, src_len, dst, dst_cap) {
     }
     if (format == FORMAT_GZIP) {
         return gzip_compress(src, src_len, dst, dst_cap);
+    }
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}
+
+# Compress with explicit level (1=fast, 6=default, 9=best).
+# Level only affects DEFLATE-based formats (DEFLATE, zlib, gzip).
+# LZ4 ignores the level parameter.
+fn compress_level(format, src, src_len, dst, dst_cap, level) {
+    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    if (format == FORMAT_LZ4) {
+        return lz4_compress(src, src_len, dst, dst_cap);
+    }
+    if (format == FORMAT_DEFLATE) {
+        return deflate_compress_level(src, src_len, dst, dst_cap, level);
+    }
+    if (format == FORMAT_ZLIB) {
+        return zlib_compress_level(src, src_len, dst, dst_cap, level);
+    }
+    if (format == FORMAT_GZIP) {
+        return gzip_compress_level(src, src_len, dst, dst_cap, level);
     }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }

@@ -256,6 +256,9 @@ fn _deflate_read_dynamic(br) {
     # Decode literal/length + distance code lengths
     var total = hlit + hdist;
     var all_lens[4672];  # 584 * 8 (max hlit=286 + hdist=32 = 318, but allow 320+)
+    var rep = 0;
+    var j = 0;
+    var prev = 0;
     i = 0;
     while (i < total) {
         var sym = huff_decode_cl(br);
@@ -268,11 +271,11 @@ fn _deflate_read_dynamic(br) {
         } elif (sym == 16) {
             # Repeat previous 3-6 times
             if (i == 0) { return 0 - ERR_CORRUPT_DATA; }
-            var rep = br_read(br, 2);
+            rep = br_read(br, 2);
             if (rep < 0) { return rep; }
             rep = rep + 3;
-            var prev = load64(&all_lens + (i - 1) * 8);
-            var j = 0;
+            prev = load64(&all_lens + (i - 1) * 8);
+            j = 0;
             while (j < rep) {
                 if (i >= total) { return 0 - ERR_CORRUPT_DATA; }
                 store64(&all_lens + i * 8, prev);
@@ -281,10 +284,10 @@ fn _deflate_read_dynamic(br) {
             }
         } elif (sym == 17) {
             # Repeat 0 for 3-10 times
-            var rep = br_read(br, 3);
+            rep = br_read(br, 3);
             if (rep < 0) { return rep; }
             rep = rep + 3;
-            var j = 0;
+            j = 0;
             while (j < rep) {
                 if (i >= total) { return 0 - ERR_CORRUPT_DATA; }
                 store64(&all_lens + i * 8, 0);
@@ -293,10 +296,10 @@ fn _deflate_read_dynamic(br) {
             }
         } elif (sym == 18) {
             # Repeat 0 for 11-138 times
-            var rep = br_read(br, 7);
+            rep = br_read(br, 7);
             if (rep < 0) { return rep; }
             rep = rep + 11;
-            var j = 0;
+            j = 0;
             while (j < rep) {
                 if (i >= total) { return 0 - ERR_CORRUPT_DATA; }
                 store64(&all_lens + i * 8, 0);
@@ -313,6 +316,14 @@ fn _deflate_read_dynamic(br) {
     huff_build_dist(&all_lens + hlit * 8, hdist);
 
     return 0;
+}
+
+# Bytes consumed by the last deflate_decompress call.
+# Wrappers (zlib, gzip) use this to find the trailer position.
+var _deflate_bytes_consumed = 0;
+
+fn deflate_bytes_consumed() {
+    return _deflate_bytes_consumed;
 }
 
 # Decompress a DEFLATE stream.
@@ -378,6 +389,7 @@ fn deflate_decompress(src, src_len, dst, dst_cap) {
         }
     }
 
+    _deflate_bytes_consumed = br_bytes_consumed(br);
     return dp;
 }
 
@@ -485,30 +497,78 @@ fn _deflate_build_enc_dist() {
     return 0;
 }
 
-# Find the length code index for a given length (3-258).
-fn _deflate_len_code(length) {
+# Direct lookup table: length (3-258) → code index (0-28).
+# 256 entries covers lengths 3-258 (index by length - 3).
+var _deflate_len_lookup[2048];  # 256 * 8
+var _deflate_len_lookup_built = 0;
+
+fn _deflate_build_len_lookup() {
+    if (_deflate_len_lookup_built == 1) { return 0; }
     _deflate_init_tables();
-    var i = 28;
-    while (i >= 0) {
-        if (length >= load64(&_deflate_len_base + i * 8)) {
-            return i;
+    var len = 3;
+    while (len <= 258) {
+        var i = 28;
+        while (i >= 0) {
+            if (len >= load64(&_deflate_len_base + i * 8)) {
+                store64(&_deflate_len_lookup + (len - 3) * 8, i);
+                i = 0 - 1;  # break
+            }
+            i = i - 1;
         }
-        i = i - 1;
+        len = len + 1;
     }
+    _deflate_len_lookup_built = 1;
     return 0;
 }
 
-# Find the distance code for a given distance (1-32768).
-fn _deflate_dist_code(dist) {
+# Direct lookup table: distance (1-32768) → code index (0-29).
+# Too large for a flat table, so use a tiered approach:
+# distances 1-256 → flat table, distances 257+ → binary search on 15 entries.
+var _deflate_dist_lookup[2048];  # 256 * 8
+var _deflate_dist_lookup_built = 0;
+
+fn _deflate_build_dist_lookup() {
+    if (_deflate_dist_lookup_built == 1) { return 0; }
     _deflate_init_tables();
-    var i = 29;
-    while (i >= 0) {
-        if (dist >= load64(&_deflate_dist_base + i * 8)) {
-            return i;
+    var d = 1;
+    while (d <= 256) {
+        var i = 29;
+        while (i >= 0) {
+            if (d >= load64(&_deflate_dist_base + i * 8)) {
+                store64(&_deflate_dist_lookup + (d - 1) * 8, i);
+                i = 0 - 1;
+            }
+            i = i - 1;
         }
-        i = i - 1;
+        d = d + 1;
     }
+    _deflate_dist_lookup_built = 1;
     return 0;
+}
+
+fn _deflate_len_code(length) {
+    _deflate_build_len_lookup();
+    return load64(&_deflate_len_lookup + (length - 3) * 8);
+}
+
+fn _deflate_dist_code(dist) {
+    if (dist <= 256) {
+        _deflate_build_dist_lookup();
+        return load64(&_deflate_dist_lookup + (dist - 1) * 8);
+    }
+    # Distances > 256: binary search on the upper 15 codes (15-29)
+    _deflate_init_tables();
+    var lo = 14;
+    var hi = 29;
+    while (lo < hi) {
+        var mid = (lo + hi + 1) >> 1;
+        if (dist >= load64(&_deflate_dist_base + mid * 8)) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return lo;
 }
 
 # Write a literal byte using fixed Huffman codes.
@@ -567,9 +627,15 @@ fn _deflate_write_match(bw, length, distance) {
 # dst_cap: capacity of output buffer
 # Returns: compressed length, or negative error code.
 fn deflate_compress(src, src_len, dst, dst_cap) {
+    return deflate_compress_level(src, src_len, dst, dst_cap, 6);
+}
+
+# Compress with explicit level (1=fast, 6=default, 9=best).
+fn deflate_compress_level(src, src_len, dst, dst_cap, level) {
     _deflate_init_tables();
     _deflate_build_enc_fixed();
     _deflate_build_enc_dist();
+    lz77_set_level(level);
     lz77_init();
 
     var bw = bw_init(dst, dst_cap);
@@ -583,12 +649,12 @@ fn deflate_compress(src, src_len, dst, dst_cap) {
     var sp = 0;
     while (sp < src_len) {
         if (sp + LZ77_MIN_MATCH <= src_len) {
-            var match = _lz77_find_match(src, src_len, sp);
+            var mresult = _lz77_find_match(src, src_len, sp);
             _lz77_insert(src, sp);
 
-            if (match > 0) {
-                var mlen = match & 65535;
-                var mdist = match >> 16;
+            if (mresult > 0) {
+                var mlen = mresult & 65535;
+                var mdist = mresult >> 16;
                 rc = _deflate_write_match(bw, mlen, mdist);
                 if (rc < 0) { return rc; }
 

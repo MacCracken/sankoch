@@ -88,3 +88,11 @@ fn br_remaining(br) {
     if (rem < 0) { rem = 0; }
     return rem;
 }
+
+# Return total bytes consumed (rounds up to include any partial byte).
+fn br_bytes_consumed(br) {
+    var bpos = load64(br + 8);
+    var bbit = load64(br + 16);
+    if (bbit > 0) { return bpos + 1; }
+    return bpos;
+}

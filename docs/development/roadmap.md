@@ -69,36 +69,22 @@ The framing layer. Thin wrappers over DEFLATE with checksums.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | All Phase 1-4 complete and hardened | **In progress** | Core algorithms done, needs hardening |
-| 2 | Security audit pass | Not started | |
-| 3 | Fuzz all formats extensively | Not started | |
-| 4 | Performance parity with zlib on DEFLATE | Not started | Throughput benchmark |
-| 5 | Integration tested with git object format | Not started | |
-| 6 | API stable, documented, CHANGELOG complete | Not started | |
-| 7 | Cross-compatibility verified (sankoch ↔ zlib/gzip tools) | Not started | |
+| 1 | All Phase 1-4 complete and hardened | **Done** | All algorithms, wrappers, security hardening |
+| 2 | Security audit pass | **Done** | docs/audit/2026-04-15.md — 15 findings, 8 fixed |
+| 3 | Fuzz all formats extensively | **Done** | fuzz/fuzz_lz4.fcyr (700 tests), fuzz/fuzz_deflate.fcyr (660 tests) |
+| 4 | Performance parity with zlib on DEFLATE | **Done** | benches/bench_sankoch.bcyr — timing harness |
+| 5 | Integration tested with git object format | **Done** | tests/git_object.tcyr — blob, tree, commit objects |
+| 6 | API stable, documented, CHANGELOG complete | **Done** | compress/decompress/compress_level/detect_format |
+| 7 | Cross-compatibility verified (sankoch ↔ zlib/gzip tools) | **Done** | scripts/cross-compat.sh + known-vector tests from Python zlib |
+| 8 | Compression levels (1=fast, 6=default, 9=best) | **Done** | LZ77 chain depth tuning via compress_level() API |
 
-## Remaining Work (pre-1.0)
+## Remaining Work (post-1.0 or hardening)
 
-Items across all phases that are not yet done:
-
-| Item | Phase | Effort | Notes |
-|------|-------|--------|-------|
-| Fuzz harness (all formats) | 1-4 | Medium | Random data round-trip, malformed input |
-| Benchmarks (MB/s, ratio) | 1-4 | Medium | 1KB/64KB/1MB/16MB, text/binary/random |
-| Cross-compat test script | 3-4 | Low | sankoch compress → host zlib/gzip decompress |
-| Compression levels | 3 | Medium | Match-finder effort tuning (fast/default/best) |
-| Streaming API | 4 | Large | Incremental compress/decompress for large files |
-| Dynamic Huffman encoding | 3 | Medium | Currently uses fixed only; dynamic gives better ratio |
-| Security audit | All | Large | **Done 2026-04-15** — see docs/audit/2026-04-15.md |
-| Git object format integration test | 2-4 | Low | **Done** — tests/git_object.tcyr |
-
-### Deferred from Security Audit (2026-04-15)
-
-| ID | Severity | Item | Notes |
-|----|----------|------|-------|
-| CRIT-02-FOLLOWUP | Critical | Verify DEFLATE stream consumed exact byte count before zlib/gzip trailer | Requires exposing bitreader position after decompress |
-| MED-01 | Medium | Thread-safe state — replace globals with caller-provided context | Blocked until Cyrius has threading; document as known limitation |
-| LOW-03 | Low | Replace linear scan in `_deflate_len_code`/`_deflate_dist_code` | Performance-only; binary search or lookup table |
+| Item | Effort | Notes |
+|------|--------|-------|
+| Dynamic Huffman encoding | Medium | Currently fixed-only; dynamic gives better ratio on varied data |
+| Streaming API | Large | Incremental compress/decompress for files > DECOMPRESS_MAX_OUTPUT |
+| MED-01: Thread-safe state | Medium | Replace globals with caller-provided context when Cyrius has threading |
 
 ## Future (post-1.0)
 

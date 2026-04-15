@@ -30,13 +30,15 @@ fn zlib_decompress(src, src_len, dst, dst_cap) {
     # FDICT not supported
     if ((flg & 32) != 0) { return 0 - ERR_UNSUPPORTED_FORMAT; }
 
-    # Decompress DEFLATE payload (skip 2-byte header, exclude 4-byte trailer)
-    var deflate_len = src_len - 6;
+    # Decompress DEFLATE payload (skip 2-byte header)
+    var deflate_len = src_len - 2;
     var dlen = deflate_decompress(src + 2, deflate_len, dst, dst_cap);
     if (dlen < 0) { return dlen; }
 
-    # Verify Adler-32 (big-endian, last 4 bytes)
-    var trailer = src + src_len - 4;
+    # Trailer starts right after the DEFLATE stream consumed bytes
+    var consumed = deflate_bytes_consumed();
+    var trailer = src + 2 + consumed;
+    if (2 + consumed + 4 > src_len) { return 0 - ERR_CORRUPT_DATA; }
     var stored_adler = (load8(trailer) << 24) | (load8(trailer + 1) << 16) |
                        (load8(trailer + 2) << 8) | load8(trailer + 3);
     var computed_adler = adler32(dst, dlen);
@@ -47,6 +49,10 @@ fn zlib_decompress(src, src_len, dst, dst_cap) {
 
 # Compress data into a zlib stream.
 fn zlib_compress(src, src_len, dst, dst_cap) {
+    return zlib_compress_level(src, src_len, dst, dst_cap, 6);
+}
+
+fn zlib_compress_level(src, src_len, dst, dst_cap, level) {
     # Need room for: 2-byte header + DEFLATE data + 4-byte Adler-32
     if (dst_cap < 6) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
@@ -56,7 +62,7 @@ fn zlib_compress(src, src_len, dst, dst_cap) {
     store8(dst + 1, 1); # 0x01
 
     # Compress DEFLATE into dst+2
-    var clen = deflate_compress(src, src_len, dst + 2, dst_cap - 6);
+    var clen = deflate_compress_level(src, src_len, dst + 2, dst_cap - 6, level);
     if (clen < 0) { return clen; }
 
     # Write Adler-32 (big-endian)

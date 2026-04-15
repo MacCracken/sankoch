@@ -476,6 +476,66 @@ fn test_format_roundtrip_detect() {
     return 0;
 }
 
+# ================================================================
+# Compression level tests
+# ================================================================
+
+fn test_compress_level_api() {
+    var src[120];
+    var i = 0;
+    while (i < 120) {
+        store8(src + i, 65 + (i % 3));
+        i = i + 1;
+    }
+
+    var c1[256];
+    var c9[256];
+    var dec[256];
+
+    # Level 1 (fast) should produce valid output
+    var len1 = compress_level(FORMAT_DEFLATE, src, 120, c1, 256, 1);
+    assert(len1 > 0, "compress_level 1 should succeed");
+
+    # Level 9 (best) should also produce valid output
+    var len9 = compress_level(FORMAT_DEFLATE, src, 120, c9, 256, 9);
+    assert(len9 > 0, "compress_level 9 should succeed");
+
+    # Both should round-trip correctly
+    var dlen = decompress(FORMAT_DEFLATE, c1, len1, dec, 256);
+    assert(dlen == 120, "level 1 roundtrip size");
+    i = 0;
+    while (i < 120) {
+        assert(load8(dec + i) == load8(src + i), "level 1 roundtrip content");
+        i = i + 1;
+    }
+
+    dlen = decompress(FORMAT_DEFLATE, c9, len9, dec, 256);
+    assert(dlen == 120, "level 9 roundtrip size");
+    i = 0;
+    while (i < 120) {
+        assert(load8(dec + i) == load8(src + i), "level 9 roundtrip content");
+        i = i + 1;
+    }
+
+    return 0;
+}
+
+fn test_zlib_compress_level() {
+    var src[120];
+    var i = 0;
+    while (i < 120) { store8(src + i, 65 + (i % 3)); i = i + 1; }
+
+    var compressed[256];
+    var decompressed[256];
+
+    var clen = compress_level(FORMAT_ZLIB, src, 120, compressed, 256, 9);
+    assert(clen > 0, "zlib level 9 should succeed");
+
+    var dlen = decompress(FORMAT_ZLIB, compressed, clen, decompressed, 256);
+    assert(dlen == 120, "zlib level 9 roundtrip size");
+    return 0;
+}
+
 fn main() {
     test_adler32_empty();
     test_adler32_hello();
@@ -501,6 +561,8 @@ fn main() {
     test_gzip_roundtrip_hello();
     test_gzip_roundtrip_via_api();
     test_format_roundtrip_detect();
+    test_compress_level_api();
+    test_zlib_compress_level();
 
     println("sankoch: all tests passed");
     return 0;

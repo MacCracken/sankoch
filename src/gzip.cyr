@@ -38,8 +38,9 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
     }
 
     # Skip optional FNAME (null-terminated)
+    var found = 0;
     if ((flg & 8) != 0) {
-        var found = 0;
+        found = 0;
         while (offset < src_len) {
             if (load8(src + offset) == 0) { offset = offset + 1; found = 1; break; }
             offset = offset + 1;
@@ -49,7 +50,7 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
 
     # Skip optional FCOMMENT (null-terminated)
     if ((flg & 16) != 0) {
-        var found = 0;
+        found = 0;
         while (offset < src_len) {
             if (load8(src + offset) == 0) { offset = offset + 1; found = 1; break; }
             offset = offset + 1;
@@ -64,14 +65,17 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
 
     if (offset + 8 > src_len) { return 0 - ERR_CORRUPT_DATA; }
 
-    # DEFLATE payload is between offset and src_len-8
-    var deflate_len = src_len - offset - 8;
+    # DEFLATE payload starts at offset
+    var deflate_len = src_len - offset;
     var dlen = deflate_decompress(src + offset, deflate_len, dst, dst_cap);
     if (dlen < 0) { return dlen; }
 
-    # Verify CRC-32 (little-endian, at src_len-8)
+    # Trailer starts right after the DEFLATE stream consumed bytes
+    var consumed = deflate_bytes_consumed();
+    var trailer = src + offset + consumed;
+    if (offset + consumed + 8 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+
     crc32_init_table();
-    var trailer = src + src_len - 8;
     var stored_crc = load8(trailer) | (load8(trailer + 1) << 8) |
                      (load8(trailer + 2) << 16) | (load8(trailer + 3) << 24);
     var computed_crc = crc32(dst, dlen);
@@ -87,6 +91,10 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
 
 # Compress data into a gzip stream.
 fn gzip_compress(src, src_len, dst, dst_cap) {
+    return gzip_compress_level(src, src_len, dst, dst_cap, 6);
+}
+
+fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
     # Need: 10-byte header + DEFLATE + 8-byte trailer
     if (dst_cap < 18) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
@@ -103,7 +111,7 @@ fn gzip_compress(src, src_len, dst, dst_cap) {
     store8(dst + 9, 255);  # OS = unknown
 
     # Compress DEFLATE into dst+10
-    var clen = deflate_compress(src, src_len, dst + 10, dst_cap - 18);
+    var clen = deflate_compress_level(src, src_len, dst + 10, dst_cap - 18, level);
     if (clen < 0) { return clen; }
 
     # Write trailer: CRC-32 (little-endian) + ISIZE (little-endian)

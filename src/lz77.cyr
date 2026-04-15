@@ -16,13 +16,19 @@ enum LZ77 {
     LZ77_WINDOW = 32768;
     LZ77_MIN_MATCH = 3;
     LZ77_MAX_MATCH = 258;
-    LZ77_MAX_CHAIN = 64;  # max chain depth to search
+    LZ77_MAX_CHAIN = 64;  # default chain depth
 }
 
-# Hash table: maps hash → most recent position
-var _lz77_head[262144];   # 32768 * 8 bytes
+# Compression levels:
+#   1 (fast)    — chain depth 4, skip hash insertion on match interiors
+#   6 (default) — chain depth 64
+#   9 (best)    — chain depth 256
+var _lz77_chain_depth = 64;
+
+# Hash table: maps hash → most recent position (heap-allocated, 256KB each)
+var _lz77_head = 0;
 # Chain: prev[pos & WINDOW-1] = previous position with same hash
-var _lz77_prev[262144];   # 32768 * 8 bytes
+var _lz77_prev = 0;
 
 # Hash 3 bytes into a 15-bit index.
 fn _lz77_hash3(src, pos) {
@@ -35,9 +41,9 @@ fn _lz77_hash3(src, pos) {
 # Insert position into hash chain.
 fn _lz77_insert(src, pos) {
     var h = _lz77_hash3(src, pos);
-    var prev = load64(&_lz77_head + h * 8);
-    store64(&_lz77_prev + (pos & LZ77_HASH_MASK) * 8, prev);
-    store64(&_lz77_head + h * 8, pos);
+    var prev = load64(_lz77_head + h * 8);
+    store64(_lz77_prev + (pos & LZ77_HASH_MASK) * 8, prev);
+    store64(_lz77_head + h * 8, pos);
     return 0;
 }
 
@@ -48,7 +54,7 @@ fn _lz77_find_match(src, src_len, pos) {
     if (pos + LZ77_MIN_MATCH > src_len) { return 0; }
 
     var h = _lz77_hash3(src, pos);
-    var chain = load64(&_lz77_head + h * 8);
+    var chain = load64(_lz77_head + h * 8);
 
     var best_len = 0;
     var best_dist = 0;
@@ -56,7 +62,7 @@ fn _lz77_find_match(src, src_len, pos) {
     if (max_len > LZ77_MAX_MATCH) { max_len = LZ77_MAX_MATCH; }
 
     var depth = 0;
-    while (depth < LZ77_MAX_CHAIN) {
+    while (depth < _lz77_chain_depth) {
         if (chain < 0) { break; }  # end of chain
         var dist = pos - chain;
         if (dist <= 0 || dist > LZ77_WINDOW) { break; }
@@ -78,7 +84,7 @@ fn _lz77_find_match(src, src_len, pos) {
             }
         }
 
-        chain = load64(&_lz77_prev + (chain & LZ77_HASH_MASK) * 8);
+        chain = load64(_lz77_prev + (chain & LZ77_HASH_MASK) * 8);
         depth = depth + 1;
     }
 
@@ -86,12 +92,32 @@ fn _lz77_find_match(src, src_len, pos) {
     return best_len | (best_dist << 16);
 }
 
-# Initialize hash tables (clear to -1).
+# Set compression level (1=fast, 6=default, 9=best).
+fn lz77_set_level(level) {
+    if (level <= 1) {
+        _lz77_chain_depth = 4;
+    } elif (level <= 3) {
+        _lz77_chain_depth = 16;
+    } elif (level <= 6) {
+        _lz77_chain_depth = 64;
+    } elif (level <= 8) {
+        _lz77_chain_depth = 128;
+    } else {
+        _lz77_chain_depth = 256;
+    }
+    return 0;
+}
+
+# Initialize hash tables (heap-allocate + clear to -1).
 fn lz77_init() {
+    if (_lz77_head == 0) {
+        _lz77_head = alloc(262144);
+        _lz77_prev = alloc(262144);
+    }
     var i = 0;
     while (i < LZ77_HASH_SIZE) {
-        store64(&_lz77_head + i * 8, 0 - 1);
-        store64(&_lz77_prev + i * 8, 0 - 1);
+        store64(_lz77_head + i * 8, 0 - 1);
+        store64(_lz77_prev + i * 8, 0 - 1);
         i = i + 1;
     }
     return 0;
