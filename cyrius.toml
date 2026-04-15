@@ -1,0 +1,17 @@
+[project]
+name = "sankoch"
+version = "0.1.0"
+description = "Lossless compression library — LZ4, DEFLATE, zlib, gzip"
+license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/sankoch"
+
+[deps]
+# Zero external dependencies. CRC-32 and Adler-32 implemented inline.
+# sakshi for structured logging/tracing (when available)
+
+[build]
+src = "src/lib.cyr"
+out = "build/sankoch"
+
+[toolchain]
+min = "4.8.5"

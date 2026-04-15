@@ -1,0 +1,60 @@
+// sankoch — lossless compression library
+// Sanskrit: संकोच — contraction, compression
+//
+// Phase 1: LZ4 block compression
+// Phase 2: DEFLATE decompression (RFC 1951)
+// Phase 3: DEFLATE compression
+// Phase 4: zlib (RFC 1950) + gzip (RFC 1952) wrappers
+//
+// Zero external dependencies. Zero C FFI.
+
+// Public API
+//
+// compress(format, src, src_len, dst, dst_cap) -> compressed_len or negative error
+// decompress(format, src, src_len, dst, dst_cap) -> decompressed_len or negative error
+// detect_format(src, src_len) -> Format enum value or ERR_UNSUPPORTED_FORMAT
+
+fn compress(format, src, src_len, dst, dst_cap) {
+    if (format == FORMAT_LZ4) {
+        return lz4_compress(src, src_len, dst, dst_cap);
+    }
+    // Phase 3: FORMAT_DEFLATE
+    // Phase 4: FORMAT_ZLIB, FORMAT_GZIP
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}
+
+fn decompress(format, src, src_len, dst, dst_cap) {
+    if (format == FORMAT_LZ4) {
+        return lz4_decompress(src, src_len, dst, dst_cap);
+    }
+    // Phase 2: FORMAT_DEFLATE
+    // Phase 4: FORMAT_ZLIB, FORMAT_GZIP
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}
+
+fn detect_format(src, src_len) {
+    if (src_len < 2) {
+        return 0 - ERR_INVALID_INPUT;
+    }
+    var b0 = load8(src);
+    var b1 = load8(src + 1);
+
+    // gzip: 0x1f 0x8b
+    if (b0 == GZIP_MAGIC_0) {
+        if (b1 == GZIP_MAGIC_1) {
+            return FORMAT_GZIP;
+        }
+    }
+
+    // zlib: first byte CMF where CM=8 (deflate), second byte flags
+    // CMF & 0x0F == 8 and (CMF*256 + FLG) % 31 == 0
+    if ((b0 & 15) == 8) {
+        var check = b0 * 256 + b1;
+        if ((check % 31) == 0) {
+            return FORMAT_ZLIB;
+        }
+    }
+
+    // LZ4 and raw DEFLATE have no magic bytes — caller must know the format
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}

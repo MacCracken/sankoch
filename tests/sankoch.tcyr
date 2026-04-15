@@ -1,0 +1,127 @@
+// sankoch — test suite
+// Round-trip tests, known-vector tests, edge cases.
+
+fn test_adler32_empty() {
+    // Adler-32 of empty data = 1 (initial s1=1, s2=0)
+    var buf[1];
+    var result = adler32(buf, 0);
+    assert(result == 1, "adler32 of empty data should be 1");
+    return 0;
+}
+
+fn test_adler32_hello() {
+    // Known value: adler32("Hello") = 0x058C01F5 = 93126133
+    var buf[5];
+    store8(buf + 0, 72);   // H
+    store8(buf + 1, 101);  // e
+    store8(buf + 2, 108);  // l
+    store8(buf + 3, 108);  // l
+    store8(buf + 4, 111);  // o
+    var result = adler32(buf, 5);
+    assert(result == 93126133, "adler32 of 'Hello'");
+    return 0;
+}
+
+fn test_crc32_empty() {
+    crc32_init_table();
+    var buf[1];
+    var result = crc32(buf, 0);
+    // CRC-32 of empty data = 0x00000000
+    assert(result == 0, "crc32 of empty data should be 0");
+    return 0;
+}
+
+fn test_lz4_roundtrip_empty() {
+    var src[1];
+    var compressed[64];
+    var decompressed[64];
+
+    var clen = lz4_compress(src, 0, compressed, 64);
+    assert(clen >= 0, "lz4 compress empty should succeed");
+
+    var dlen = lz4_decompress(compressed, clen, decompressed, 64);
+    assert(dlen == 0, "lz4 decompress empty should return 0 bytes");
+    return 0;
+}
+
+fn test_lz4_roundtrip_small() {
+    var src[16];
+    var i = 0;
+    while (i < 16) {
+        store8(src + i, i + 65);  // "ABCDEFGHIJKLMNOP"
+        i = i + 1;
+    }
+
+    var compressed[64];
+    var decompressed[64];
+
+    var clen = lz4_compress(src, 16, compressed, 64);
+    assert(clen > 0, "lz4 compress should produce output");
+
+    var dlen = lz4_decompress(compressed, clen, decompressed, 64);
+    assert(dlen == 16, "lz4 roundtrip should produce 16 bytes");
+
+    // Verify content
+    i = 0;
+    while (i < 16) {
+        assert(load8(decompressed + i) == load8(src + i), "lz4 roundtrip content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_lz4_buffer_too_small() {
+    var src[16];
+    var i = 0;
+    while (i < 16) {
+        store8(src + i, 42);
+        i = i + 1;
+    }
+
+    var compressed[64];
+    var clen = lz4_compress(src, 16, compressed, 64);
+    assert(clen > 0, "compress should succeed");
+
+    // Try to decompress into too-small buffer
+    var tiny[4];
+    var dlen = lz4_decompress(compressed, clen, tiny, 4);
+    assert(dlen < 0, "decompress into tiny buffer should fail");
+    return 0;
+}
+
+fn test_detect_format_gzip() {
+    var buf[2];
+    store8(buf + 0, 31);   // 0x1f
+    store8(buf + 1, 139);  // 0x8b
+    var fmt = detect_format(buf, 2);
+    assert(fmt == FORMAT_GZIP, "should detect gzip");
+    return 0;
+}
+
+fn test_detect_format_zlib() {
+    // zlib: CMF=0x78 (deflate, window=32K), FLG=0x9C
+    // (0x78 * 256 + 0x9C) % 31 == 0
+    var buf[2];
+    store8(buf + 0, 120);  // 0x78
+    store8(buf + 1, 156);  // 0x9C
+    var fmt = detect_format(buf, 2);
+    assert(fmt == FORMAT_ZLIB, "should detect zlib");
+    return 0;
+}
+
+fn main() {
+    test_adler32_empty();
+    test_adler32_hello();
+    test_crc32_empty();
+    test_lz4_roundtrip_empty();
+    test_lz4_roundtrip_small();
+    test_lz4_buffer_too_small();
+    test_detect_format_gzip();
+    test_detect_format_zlib();
+
+    println("sankoch: all tests passed");
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

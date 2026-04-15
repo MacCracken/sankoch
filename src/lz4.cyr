@@ -1,0 +1,154 @@
+// sankoch — LZ4 block compression
+// Spec: https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md
+//
+// LZ4 is byte-aligned (no bit-reader needed).
+// Format: sequence of tokens, each = literal run + optional match copy.
+//
+// Token byte: high nibble = literal length, low nibble = match length - 4
+// If nibble == 15, read additional bytes (each 255 = +255, first <255 = final add)
+// Literals follow the token, then 2-byte little-endian match offset, then next token.
+//
+// Phase 1 target: ~500 lines total for compress + decompress.
+
+// Decompress an LZ4 block.
+// src: pointer to compressed data
+// src_len: length of compressed data
+// dst: pointer to output buffer
+// dst_cap: capacity of output buffer
+// Returns: decompressed length, or negative error code
+fn lz4_decompress(src, src_len, dst, dst_cap) {
+    var sp = 0;   // source position
+    var dp = 0;   // destination position
+
+    while (sp < src_len) {
+        // Read token
+        var token = load8(src + sp);
+        sp = sp + 1;
+
+        // Literal length (high nibble)
+        var lit_len = (token >> 4) & 15;
+        if (lit_len == 15) {
+            // Extended literal length
+            var extra = 255;
+            while (extra == 255) {
+                if (sp >= src_len) { return 0 - ERR_CORRUPT_DATA; }
+                extra = load8(src + sp);
+                sp = sp + 1;
+                lit_len = lit_len + extra;
+            }
+        }
+
+        // Copy literals
+        if (dp + lit_len > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        if (sp + lit_len > src_len) { return 0 - ERR_CORRUPT_DATA; }
+        var i = 0;
+        while (i < lit_len) {
+            store8(dst + dp, load8(src + sp));
+            sp = sp + 1;
+            dp = dp + 1;
+            i = i + 1;
+        }
+
+        // End of block — last sequence has no match
+        if (sp >= src_len) {
+            return dp;
+        }
+
+        // Match offset (2 bytes, little-endian)
+        if (sp + 2 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+        var offset = load8(src + sp) + (load8(src + sp + 1) * 256);
+        sp = sp + 2;
+
+        if (offset == 0) { return 0 - ERR_CORRUPT_DATA; }
+        if (offset > dp) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+
+        // Match length (low nibble + 4 minimum)
+        var match_len = (token & 15) + 4;
+        if (match_len == 19) {
+            // 15 + 4 = 19 means extended match length
+            var extra = 255;
+            while (extra == 255) {
+                if (sp >= src_len) { return 0 - ERR_CORRUPT_DATA; }
+                extra = load8(src + sp);
+                sp = sp + 1;
+                match_len = match_len + extra;
+            }
+        }
+
+        // Copy match (byte-by-byte for overlapping matches)
+        if (dp + match_len > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        var match_pos = dp - offset;
+        i = 0;
+        while (i < match_len) {
+            store8(dst + dp, load8(dst + match_pos));
+            dp = dp + 1;
+            match_pos = match_pos + 1;
+            i = i + 1;
+        }
+    }
+
+    return dp;
+}
+
+// Compress data in LZ4 block format.
+// src: pointer to input data
+// src_len: length of input data
+// dst: pointer to output buffer
+// dst_cap: capacity of output buffer
+// Returns: compressed length, or negative error code
+fn lz4_compress(src, src_len, dst, dst_cap) {
+    // TODO: Phase 1 — implement hash table match-finder
+    // For now, store-only compression (all literals, no matches)
+    // This produces valid LZ4 but with no compression benefit.
+    return lz4_compress_store(src, src_len, dst, dst_cap);
+}
+
+// Store-only LZ4 compression (valid format, no actual compression).
+// Useful as a baseline and correctness test before the match-finder lands.
+fn lz4_compress_store(src, src_len, dst, dst_cap) {
+    var sp = 0;
+    var dp = 0;
+
+    while (sp < src_len) {
+        // Emit one token per chunk (max 255 + 15 = 270 literals per token for simplicity,
+        // but we'll do full extended lengths)
+        var remaining = src_len - sp;
+
+        // Token: literal length in high nibble, match length 0 in low nibble
+        var lit_len = remaining;
+
+        // Write token
+        if (dp >= dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        if (lit_len < 15) {
+            store8(dst + dp, lit_len * 16);  // high nibble = lit_len, low = 0
+            dp = dp + 1;
+        } else {
+            store8(dst + dp, 15 * 16);  // high nibble = 15
+            dp = dp + 1;
+            var extra = lit_len - 15;
+            while (extra >= 255) {
+                if (dp >= dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+                store8(dst + dp, 255);
+                dp = dp + 1;
+                extra = extra - 255;
+            }
+            if (dp >= dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+            store8(dst + dp, extra);
+            dp = dp + 1;
+        }
+
+        // Copy literals
+        if (dp + lit_len > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        var i = 0;
+        while (i < lit_len) {
+            store8(dst + dp, load8(src + sp));
+            dp = dp + 1;
+            sp = sp + 1;
+            i = i + 1;
+        }
+
+        // Last sequence — no match, we're done
+    }
+
+    return dp;
+}
