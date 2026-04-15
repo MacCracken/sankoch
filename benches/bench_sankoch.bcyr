@@ -6,6 +6,15 @@
 # Output: one line per benchmark with name, input size, compressed size,
 # ratio, total ns, and ns/byte.
 
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/syscalls.cyr"
+include "lib/fnptr.cyr"
+include "lib/vec.cyr"
+include "lib/thread.cyr"
+include "dist/sankoch.cyr"
+
 var _bench_state = 0;
 fn _bseed(s) { _bench_state = s; return 0; }
 fn _bnext() {
@@ -159,10 +168,10 @@ fn bench_checksum(name, data, len, iters) {
 fn main() {
     alloc_init();
 
-    var src1k[1024];
-    var src4k[4096];
-    var c[16384];
-    var d[16384];
+    var src1k = alloc(1024);
+    var src4k = alloc(4096);
+    var c = alloc(16384);
+    var d = alloc(16384);
     var iters = 100;
 
     println("=== sankoch benchmarks ===");

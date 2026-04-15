@@ -4,20 +4,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.0.0] — 2026-04-15
+
+**First stable release. Full lossless compression suite.**
 
 ### Added
-- **LZ4 block compression** — hash-table match-finder (4096 entries, Knuth multiplicative hash on 4-byte sequences), greedy matching. Compress + decompress functional with real compression.
-- **DEFLATE decompression** (RFC 1951) — all three block types: uncompressed (00), fixed Huffman (01), dynamic Huffman (10). Length/distance decoding with extra bits.
-- **DEFLATE compression** (RFC 1951) — fixed Huffman codes with LZ77 sliding window match-finder (32KB window, 3-byte hash, 64-deep chain search).
-- **Huffman coding** — canonical Huffman code construction, 9-bit fast lookup table decode, fixed tree tables from RFC 1951 Section 3.2.6, dynamic tree header parsing (HLIT/HDIST/HCLEN, repeat codes 16/17/18).
-- **Bit-stream I/O** — LSB-first bit reader and writer for DEFLATE. Lifted from shravan (audio codecs), adapted from MSB-first to LSB-first.
-- **LZ77 match-finder** — 32KB sliding window, hash table with chaining, configurable chain depth.
-- **zlib wrapper** (RFC 1950) — compress + decompress with CMF/FLG header validation and Adler-32 checksum verification.
-- **gzip wrapper** (RFC 1952) — compress + decompress with full header parsing (FEXTRA, FNAME, FCOMMENT, FHCRC), CRC-32 + ISIZE verification.
-- **Checksums** — Adler-32 (RFC 1950) and CRC-32 (RFC 1952), inline implementations.
-- **Format auto-detection** — detect_format() identifies gzip (magic bytes) and zlib (CMF/FLG checksum).
-- **Public API** — compress(), decompress(), detect_format() supporting LZ4, DEFLATE, zlib, gzip.
-- **Test suite** — 24 tests covering checksums, LZ4, DEFLATE (known vectors from zlib), zlib, gzip, format detection, round-trips with compression ratio assertions.
-- Project scaffold — CLAUDE.md, roadmap, source citations, directory structure
-- Cyrius-native from day one (no Rust port)
+- **LZ4 block compression** — hash-table match-finder (4096 entries,
+  Knuth multiplicative hash), greedy matching. Compress + decompress.
+- **DEFLATE** (RFC 1951) — all three block types (uncompressed, fixed
+  Huffman, dynamic Huffman). Compression with LZ77 sliding window
+  (32KB, 3-byte hash, configurable chain depth). 9 compression levels.
+- **zlib wrapper** (RFC 1950) — CMF/FLG header, Adler-32 checksum.
+- **gzip wrapper** (RFC 1952) — full header parsing (FEXTRA, FNAME,
+  FCOMMENT, FHCRC), CRC-32 + ISIZE verification.
+- **Checksums** — Adler-32 and CRC-32, inline implementations.
+- **Format auto-detection** — `detect_format()` identifies gzip/zlib.
+- **Streaming API** — `stream_compress_init/write/finish`,
+  `stream_decompress_init/write/finish`, `stream_reset`.
+- **Compression levels** — `compress_level()` and per-format level
+  variants. Level 1-3: fixed Huffman (fast). Level 4-9: dynamic
+  Huffman (better ratio).
+- **Public API** — `compress()`, `decompress()`, `detect_format()`,
+  `compress_level()` supporting FORMAT_LZ4, FORMAT_DEFLATE,
+  FORMAT_ZLIB, FORMAT_GZIP.
+- **Bundle script** — `scripts/bundle.sh` generates `dist/sankoch.cyr`
+  for use as a Cyrius stdlib dep.
+- **Test suite** — 1993 assertions (sankoch.tcyr) + 134 assertions
+  (git_object.tcyr) covering all algorithms, round-trips, compression
+  levels, dynamic Huffman, streaming, error paths, and git object
+  format compatibility.
+
+### Fixed
+- **Dynamic Huffman repeat-call crash** — `_deflate_write_dynamic_header`
+  passed `&_huff_cl_fast` (8-byte global address) instead of
+  `_huff_cl_fast` (4096-byte heap buffer). Wrote 4096 bytes to an
+  8-byte location, corrupting the data segment. Silent on first call,
+  segfault on second. Fixed by passing the heap pointer and adding
+  `_huff_alloc_tables()` guard.
+- **Duplicate variable declarations** — `var rep`/`var j` in
+  `deflate.cyr` elif branches, `var found` in `gzip.cyr` if blocks.
+  Hoisted to function scope.
+- **Reserved word as variable** — `var match` in deflate compress path
+  renamed to `var mresult`.
+- **Large static arrays** — `_lz77_head` (256KB), `_lz77_prev` (256KB),
+  `_lz4_htab` (32KB) moved from static data to heap-allocated via
+  `alloc()`. Eliminates output buffer overflow for bundled builds.
+- **Stack arrays in dynamic header** — `cl_freqs`, `cl_lens_opt`,
+  `cl_codes_opt`, `cl_order` migrated to heap workspace.
+
+### Changed
+- `cyrius.toml` — `[project]` → `[package]`, toolchain min 4.9.3.
+- Test files — added missing stdlib includes, `assert_summary()` exit
+  pattern for CI compatibility.
