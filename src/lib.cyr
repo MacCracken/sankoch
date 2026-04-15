@@ -18,8 +18,15 @@ fn compress(format, src, src_len, dst, dst_cap) {
     if (format == FORMAT_LZ4) {
         return lz4_compress(src, src_len, dst, dst_cap);
     }
-    # Phase 3: FORMAT_DEFLATE
-    # Phase 4: FORMAT_ZLIB, FORMAT_GZIP
+    if (format == FORMAT_DEFLATE) {
+        return deflate_compress(src, src_len, dst, dst_cap);
+    }
+    if (format == FORMAT_ZLIB) {
+        return zlib_compress(src, src_len, dst, dst_cap);
+    }
+    if (format == FORMAT_GZIP) {
+        return gzip_compress(src, src_len, dst, dst_cap);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
@@ -30,7 +37,12 @@ fn decompress(format, src, src_len, dst, dst_cap) {
     if (format == FORMAT_DEFLATE) {
         return deflate_decompress(src, src_len, dst, dst_cap);
     }
-    # Phase 4: FORMAT_ZLIB, FORMAT_GZIP
+    if (format == FORMAT_ZLIB) {
+        return zlib_decompress(src, src_len, dst, dst_cap);
+    }
+    if (format == FORMAT_GZIP) {
+        return gzip_decompress(src, src_len, dst, dst_cap);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 

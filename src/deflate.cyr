@@ -378,3 +378,240 @@ fn deflate_decompress(src, src_len, dst, dst_cap) {
 
     return dp;
 }
+
+# ================================================================
+# DEFLATE compression (Phase 3)
+# ================================================================
+#
+# Uses fixed Huffman codes for simplicity and reasonable compression.
+# The LZ77 match-finder handles finding back-references.
+
+# Fixed Huffman code table for literals/lengths (pre-reversed for LSB-first output).
+# We compute these once and cache them.
+var _deflate_enc_fixed_built = 0;
+var _deflate_enc_lit_codes[2304];   # 288 * 8 — the bit-reversed codes
+var _deflate_enc_lit_lens[2304];    # 288 * 8 — code lengths
+
+fn _deflate_build_enc_fixed() {
+    if (_deflate_enc_fixed_built == 1) { return 0; }
+
+    # Code lengths (same as huff_build_fixed)
+    var i = 0;
+    while (i <= 143) {
+        store64(&_deflate_enc_lit_lens + i * 8, 8);
+        i = i + 1;
+    }
+    while (i <= 255) {
+        store64(&_deflate_enc_lit_lens + i * 8, 9);
+        i = i + 1;
+    }
+    while (i <= 279) {
+        store64(&_deflate_enc_lit_lens + i * 8, 7);
+        i = i + 1;
+    }
+    while (i <= 287) {
+        store64(&_deflate_enc_lit_lens + i * 8, 8);
+        i = i + 1;
+    }
+
+    # Build canonical codes (same algorithm as _huff_build step 1-3)
+    var bl_count[128];
+    i = 0;
+    while (i < 16) { store64(&bl_count + i * 8, 0); i = i + 1; }
+    i = 0;
+    while (i < 288) {
+        var len = load64(&_deflate_enc_lit_lens + i * 8);
+        store64(&bl_count + len * 8, load64(&bl_count + len * 8) + 1);
+        i = i + 1;
+    }
+
+    var next_code[128];
+    store64(&next_code, 0);
+    store64(&next_code + 8, 0);
+    var code = 0;
+    var bits = 1;
+    while (bits <= 15) {
+        code = (code + load64(&bl_count + (bits - 1) * 8)) << 1;
+        store64(&next_code + bits * 8, code);
+        bits = bits + 1;
+    }
+
+    i = 0;
+    while (i < 288) {
+        var len = load64(&_deflate_enc_lit_lens + i * 8);
+        if (len > 0) {
+            var c = load64(&next_code + len * 8);
+            store64(&next_code + len * 8, c + 1);
+            # Reverse bits for LSB-first output
+            var rev = 0;
+            var b = 0;
+            var tmp = c;
+            while (b < len) {
+                rev = (rev << 1) | (tmp & 1);
+                tmp = tmp >> 1;
+                b = b + 1;
+            }
+            store64(&_deflate_enc_lit_codes + i * 8, rev);
+        } else {
+            store64(&_deflate_enc_lit_codes + i * 8, 0);
+        }
+        i = i + 1;
+    }
+
+    _deflate_enc_fixed_built = 1;
+    return 0;
+}
+
+# Fixed distance codes: all 5 bits, codes 0-29.
+var _deflate_enc_dist_codes[240];  # 30 * 8
+
+fn _deflate_build_enc_dist() {
+    var i = 0;
+    while (i < 30) {
+        # Reverse 5 bits of i
+        var rev = 0;
+        var v = i;
+        var b = 0;
+        while (b < 5) {
+            rev = (rev << 1) | (v & 1);
+            v = v >> 1;
+            b = b + 1;
+        }
+        store64(&_deflate_enc_dist_codes + i * 8, rev);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Find the length code index for a given length (3-258).
+fn _deflate_len_code(length) {
+    _deflate_init_tables();
+    var i = 28;
+    while (i >= 0) {
+        if (length >= load64(&_deflate_len_base + i * 8)) {
+            return i;
+        }
+        i = i - 1;
+    }
+    return 0;
+}
+
+# Find the distance code for a given distance (1-32768).
+fn _deflate_dist_code(dist) {
+    _deflate_init_tables();
+    var i = 29;
+    while (i >= 0) {
+        if (dist >= load64(&_deflate_dist_base + i * 8)) {
+            return i;
+        }
+        i = i - 1;
+    }
+    return 0;
+}
+
+# Write a literal byte using fixed Huffman codes.
+fn _deflate_write_literal(bw, byte) {
+    var code = load64(&_deflate_enc_lit_codes + byte * 8);
+    var len = load64(&_deflate_enc_lit_lens + byte * 8);
+    return bw_write(bw, code, len);
+}
+
+# Write end-of-block symbol (256).
+fn _deflate_write_eob(bw) {
+    var code = load64(&_deflate_enc_lit_codes + 256 * 8);
+    var len = load64(&_deflate_enc_lit_lens + 256 * 8);
+    return bw_write(bw, code, len);
+}
+
+# Write a length/distance pair using fixed Huffman codes.
+fn _deflate_write_match(bw, length, distance) {
+    # Encode length
+    var li = _deflate_len_code(length);
+    var sym = li + 257;
+    var code = load64(&_deflate_enc_lit_codes + sym * 8);
+    var clen = load64(&_deflate_enc_lit_lens + sym * 8);
+    var rc = bw_write(bw, code, clen);
+    if (rc < 0) { return rc; }
+
+    # Extra bits for length
+    var extra = load64(&_deflate_len_extra + li * 8);
+    if (extra > 0) {
+        var base = load64(&_deflate_len_base + li * 8);
+        rc = bw_write(bw, length - base, extra);
+        if (rc < 0) { return rc; }
+    }
+
+    # Encode distance (fixed: 5 bits, reversed)
+    var di = _deflate_dist_code(distance);
+    var dcode = load64(&_deflate_enc_dist_codes + di * 8);
+    rc = bw_write(bw, dcode, 5);
+    if (rc < 0) { return rc; }
+
+    # Extra bits for distance
+    var dextra = load64(&_deflate_dist_extra + di * 8);
+    if (dextra > 0) {
+        var dbase = load64(&_deflate_dist_base + di * 8);
+        rc = bw_write(bw, distance - dbase, dextra);
+        if (rc < 0) { return rc; }
+    }
+
+    return 0;
+}
+
+# Compress data into a raw DEFLATE stream using fixed Huffman codes.
+# src: pointer to input data
+# src_len: length of input data
+# dst: pointer to output buffer
+# dst_cap: capacity of output buffer
+# Returns: compressed length, or negative error code.
+fn deflate_compress(src, src_len, dst, dst_cap) {
+    _deflate_init_tables();
+    _deflate_build_enc_fixed();
+    _deflate_build_enc_dist();
+    lz77_init();
+
+    var bw = bw_init(dst, dst_cap);
+
+    # Write block header: BFINAL=1, BTYPE=01 (fixed Huffman)
+    var rc = bw_write(bw, 1, 1);  # BFINAL
+    if (rc < 0) { return rc; }
+    rc = bw_write(bw, 1, 2);      # BTYPE = 01
+    if (rc < 0) { return rc; }
+
+    var sp = 0;
+    while (sp < src_len) {
+        if (sp + LZ77_MIN_MATCH <= src_len) {
+            var match = _lz77_find_match(src, src_len, sp);
+            _lz77_insert(src, sp);
+
+            if (match > 0) {
+                var mlen = match & 65535;
+                var mdist = match >> 16;
+                rc = _deflate_write_match(bw, mlen, mdist);
+                if (rc < 0) { return rc; }
+
+                # Insert skipped positions into hash
+                var k = 1;
+                while (k < mlen) {
+                    if (sp + k + LZ77_MIN_MATCH <= src_len) {
+                        _lz77_insert(src, sp + k);
+                    }
+                    k = k + 1;
+                }
+                sp = sp + mlen;
+                continue;
+            }
+        }
+
+        # No match — emit literal
+        rc = _deflate_write_literal(bw, load8(src + sp));
+        if (rc < 0) { return rc; }
+        sp = sp + 1;
+    }
+
+    # End of block
+    rc = _deflate_write_eob(bw);
+    if (rc < 0) { return rc; }
+
+    return bw_finish(bw);
+}

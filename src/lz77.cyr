@@ -1,0 +1,98 @@
+# sankoch — LZ77 sliding window match-finder for DEFLATE
+#
+# DEFLATE uses a 32KB sliding window with:
+#   - Minimum match length: 3
+#   - Maximum match length: 258
+#   - Maximum distance: 32768
+#   - Hash on 3-byte sequences
+#
+# Strategy: hash table with chaining for collision resolution.
+# Greedy matching — take the longest match at each position.
+
+enum LZ77 {
+    LZ77_HASH_BITS = 15;
+    LZ77_HASH_SIZE = 32768;
+    LZ77_HASH_MASK = 32767;
+    LZ77_WINDOW = 32768;
+    LZ77_MIN_MATCH = 3;
+    LZ77_MAX_MATCH = 258;
+    LZ77_MAX_CHAIN = 64;  # max chain depth to search
+}
+
+# Hash table: maps hash → most recent position
+var _lz77_head[262144];   # 32768 * 8 bytes
+# Chain: prev[pos & WINDOW-1] = previous position with same hash
+var _lz77_prev[262144];   # 32768 * 8 bytes
+
+# Hash 3 bytes into a 15-bit index.
+fn _lz77_hash3(src, pos) {
+    var v = load8(src + pos);
+    v = v ^ (load8(src + pos + 1) << 5);
+    v = v ^ (load8(src + pos + 2) << 10);
+    return v & LZ77_HASH_MASK;
+}
+
+# Insert position into hash chain.
+fn _lz77_insert(src, pos) {
+    var h = _lz77_hash3(src, pos);
+    var prev = load64(&_lz77_head + h * 8);
+    store64(&_lz77_prev + (pos & LZ77_HASH_MASK) * 8, prev);
+    store64(&_lz77_head + h * 8, pos);
+    return 0;
+}
+
+# Find the longest match at position pos.
+# Returns match length in low 16 bits, distance in bits 16-31.
+# Returns 0 if no match found (length < 3).
+fn _lz77_find_match(src, src_len, pos) {
+    if (pos + LZ77_MIN_MATCH > src_len) { return 0; }
+
+    var h = _lz77_hash3(src, pos);
+    var chain = load64(&_lz77_head + h * 8);
+
+    var best_len = 0;
+    var best_dist = 0;
+    var max_len = src_len - pos;
+    if (max_len > LZ77_MAX_MATCH) { max_len = LZ77_MAX_MATCH; }
+
+    var depth = 0;
+    while (depth < LZ77_MAX_CHAIN) {
+        if (chain < 0) { break; }  # end of chain
+        var dist = pos - chain;
+        if (dist <= 0 || dist > LZ77_WINDOW) { break; }
+
+        # Quick check: compare first and last+1 byte of best match
+        if (load8(src + chain) == load8(src + pos)) {
+            if (best_len < 3 || load8(src + chain + best_len) == load8(src + pos + best_len)) {
+                # Count full match length
+                var mlen = 0;
+                while (mlen < max_len) {
+                    if (load8(src + chain + mlen) != load8(src + pos + mlen)) { break; }
+                    mlen = mlen + 1;
+                }
+                if (mlen >= LZ77_MIN_MATCH && mlen > best_len) {
+                    best_len = mlen;
+                    best_dist = dist;
+                    if (best_len >= max_len) { break; }
+                }
+            }
+        }
+
+        chain = load64(&_lz77_prev + (chain & LZ77_HASH_MASK) * 8);
+        depth = depth + 1;
+    }
+
+    if (best_len < LZ77_MIN_MATCH) { return 0; }
+    return best_len | (best_dist << 16);
+}
+
+# Initialize hash tables (clear to -1).
+fn lz77_init() {
+    var i = 0;
+    while (i < LZ77_HASH_SIZE) {
+        store64(&_lz77_head + i * 8, 0 - 1);
+        store64(&_lz77_prev + i * 8, 0 - 1);
+        i = i + 1;
+    }
+    return 0;
+}

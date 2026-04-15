@@ -1,0 +1,76 @@
+# sankoch — zlib wrapper (RFC 1950)
+#
+# zlib = 2-byte header + DEFLATE stream + 4-byte Adler-32 checksum.
+#
+# Header (2 bytes):
+#   CMF byte: bits 0-3 = CM (compression method, must be 8 = deflate)
+#             bits 4-7 = CINFO (window size = 2^(CINFO+8), max 15 = 32K)
+#   FLG byte: bits 0-4 = FCHECK (makes CMF*256+FLG divisible by 31)
+#             bit 5    = FDICT (preset dictionary, we don't support this)
+#             bits 6-7 = FLEVEL (compression level hint, informational only)
+#
+# Trailer: 4-byte big-endian Adler-32 of uncompressed data.
+#
+# This is what git objects use.
+
+# Decompress a zlib stream.
+fn zlib_decompress(src, src_len, dst, dst_cap) {
+    if (src_len < 6) { return 0 - ERR_INVALID_INPUT; }
+
+    # Parse header
+    var cmf = load8(src);
+    var flg = load8(src + 1);
+
+    # Verify checksum: (CMF*256 + FLG) % 31 == 0
+    if (((cmf * 256 + flg) % 31) != 0) { return 0 - ERR_CORRUPT_DATA; }
+
+    # CM must be 8 (deflate)
+    if ((cmf & 15) != 8) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+
+    # FDICT not supported
+    if ((flg & 32) != 0) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+
+    # Decompress DEFLATE payload (skip 2-byte header, exclude 4-byte trailer)
+    var deflate_len = src_len - 6;
+    var dlen = deflate_decompress(src + 2, deflate_len, dst, dst_cap);
+    if (dlen < 0) { return dlen; }
+
+    # Verify Adler-32 (big-endian, last 4 bytes)
+    var trailer = src + src_len - 4;
+    var stored_adler = (load8(trailer) << 24) | (load8(trailer + 1) << 16) |
+                       (load8(trailer + 2) << 8) | load8(trailer + 3);
+    var computed_adler = adler32(dst, dlen);
+    if (stored_adler != computed_adler) { return 0 - ERR_CHECKSUM_MISMATCH; }
+
+    return dlen;
+}
+
+# Compress data into a zlib stream.
+fn zlib_compress(src, src_len, dst, dst_cap) {
+    # Need room for: 2-byte header + DEFLATE data + 4-byte Adler-32
+    if (dst_cap < 6) { return 0 - ERR_BUFFER_TOO_SMALL; }
+
+    # Write header: CMF=0x78 (deflate, window=32K), FLG=0x01
+    # 0x78 = CM=8, CINFO=7 (32K window)
+    # FLG: FLEVEL=0 (fastest), FDICT=0, FCHECK to make (CMF*256+FLG)%31==0
+    # 0x78*256 + FLG must be % 31 == 0
+    # 0x78*256 = 30720, 30720 % 31 = 30720 - 991*31 = 30720 - 30721 = ... let me compute
+    # 30720 / 31 = 990.96... 990*31 = 30690, 30720 - 30690 = 30, so FCHECK = 31 - 30 = 1
+    # FLG = 0x01
+    store8(dst, 120);  # 0x78
+    store8(dst + 1, 1); # 0x01
+
+    # Compress DEFLATE into dst+2
+    var clen = deflate_compress(src, src_len, dst + 2, dst_cap - 6);
+    if (clen < 0) { return clen; }
+
+    # Write Adler-32 (big-endian)
+    var a = adler32(src, src_len);
+    var pos = 2 + clen;
+    store8(dst + pos, (a >> 24) & 255);
+    store8(dst + pos + 1, (a >> 16) & 255);
+    store8(dst + pos + 2, (a >> 8) & 255);
+    store8(dst + pos + 3, a & 255);
+
+    return pos + 4;
+}

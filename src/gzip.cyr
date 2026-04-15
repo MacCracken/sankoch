@@ -1,0 +1,120 @@
+# sankoch — gzip wrapper (RFC 1952)
+#
+# gzip = 10-byte header + DEFLATE stream + 4-byte CRC-32 + 4-byte ISIZE.
+#
+# Header (10 bytes minimum):
+#   ID1 = 0x1f, ID2 = 0x8b (magic)
+#   CM = 8 (deflate)
+#   FLG byte: FTEXT(0), FHCRC(1), FEXTRA(2), FNAME(3), FCOMMENT(4)
+#   MTIME (4 bytes, little-endian)
+#   XFL (extra flags: 2=best compression, 4=fastest)
+#   OS (operating system: 255=unknown)
+#
+# Trailer (8 bytes):
+#   CRC-32 of uncompressed data (4 bytes, little-endian)
+#   ISIZE = uncompressed size mod 2^32 (4 bytes, little-endian)
+
+# Decompress a gzip stream.
+fn gzip_decompress(src, src_len, dst, dst_cap) {
+    if (src_len < 18) { return 0 - ERR_INVALID_INPUT; }
+
+    # Verify magic bytes
+    if (load8(src) != 31 || load8(src + 1) != 139) {
+        return 0 - ERR_CORRUPT_DATA;
+    }
+
+    # CM must be 8
+    if (load8(src + 2) != 8) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+
+    var flg = load8(src + 3);
+    var offset = 10;
+
+    # Skip optional FEXTRA
+    if ((flg & 4) != 0) {
+        if (offset + 2 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+        var xlen = load8(src + offset) | (load8(src + offset + 1) << 8);
+        offset = offset + 2 + xlen;
+    }
+
+    # Skip optional FNAME (null-terminated)
+    if ((flg & 8) != 0) {
+        while (offset < src_len) {
+            if (load8(src + offset) == 0) { offset = offset + 1; break; }
+            offset = offset + 1;
+        }
+    }
+
+    # Skip optional FCOMMENT (null-terminated)
+    if ((flg & 16) != 0) {
+        while (offset < src_len) {
+            if (load8(src + offset) == 0) { offset = offset + 1; break; }
+            offset = offset + 1;
+        }
+    }
+
+    # Skip optional FHCRC (2 bytes)
+    if ((flg & 2) != 0) {
+        offset = offset + 2;
+    }
+
+    if (offset + 8 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+
+    # DEFLATE payload is between offset and src_len-8
+    var deflate_len = src_len - offset - 8;
+    var dlen = deflate_decompress(src + offset, deflate_len, dst, dst_cap);
+    if (dlen < 0) { return dlen; }
+
+    # Verify CRC-32 (little-endian, at src_len-8)
+    crc32_init_table();
+    var trailer = src + src_len - 8;
+    var stored_crc = load8(trailer) | (load8(trailer + 1) << 8) |
+                     (load8(trailer + 2) << 16) | (load8(trailer + 3) << 24);
+    var computed_crc = crc32(dst, dlen);
+    if (stored_crc != computed_crc) { return 0 - ERR_CHECKSUM_MISMATCH; }
+
+    # Verify ISIZE (original size mod 2^32)
+    var stored_size = load8(trailer + 4) | (load8(trailer + 5) << 8) |
+                      (load8(trailer + 6) << 16) | (load8(trailer + 7) << 24);
+    if (stored_size != (dlen & 4294967295)) { return 0 - ERR_CHECKSUM_MISMATCH; }
+
+    return dlen;
+}
+
+# Compress data into a gzip stream.
+fn gzip_compress(src, src_len, dst, dst_cap) {
+    # Need: 10-byte header + DEFLATE + 8-byte trailer
+    if (dst_cap < 18) { return 0 - ERR_BUFFER_TOO_SMALL; }
+
+    # Write header
+    store8(dst + 0, 31);   # ID1
+    store8(dst + 1, 139);  # ID2
+    store8(dst + 2, 8);    # CM = deflate
+    store8(dst + 3, 0);    # FLG = no extras
+    store8(dst + 4, 0);    # MTIME (4 bytes, all zero)
+    store8(dst + 5, 0);
+    store8(dst + 6, 0);
+    store8(dst + 7, 0);
+    store8(dst + 8, 0);    # XFL
+    store8(dst + 9, 255);  # OS = unknown
+
+    # Compress DEFLATE into dst+10
+    var clen = deflate_compress(src, src_len, dst + 10, dst_cap - 18);
+    if (clen < 0) { return clen; }
+
+    # Write trailer: CRC-32 (little-endian) + ISIZE (little-endian)
+    crc32_init_table();
+    var c = crc32(src, src_len);
+    var pos = 10 + clen;
+    store8(dst + pos, c & 255);
+    store8(dst + pos + 1, (c >> 8) & 255);
+    store8(dst + pos + 2, (c >> 16) & 255);
+    store8(dst + pos + 3, (c >> 24) & 255);
+
+    var isize = src_len & 4294967295;
+    store8(dst + pos + 4, isize & 255);
+    store8(dst + pos + 5, (isize >> 8) & 255);
+    store8(dst + pos + 6, (isize >> 16) & 255);
+    store8(dst + pos + 7, (isize >> 24) & 255);
+
+    return pos + 8;
+}

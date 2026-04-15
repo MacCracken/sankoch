@@ -1,0 +1,141 @@
+# sankoch — bit-stream writer (LSB-first)
+# Lifted from shravan/flac.cyr:1007-1057, adapted for DEFLATE.
+#
+# DEFLATE writes bits LSB-first within each byte.
+# FLAC writes MSB-first — the bit packing logic is inverted here.
+#
+# Writes directly into a caller-provided output buffer (no alloc).
+#
+# Layout (40 bytes):
+#   +0:  buffer pointer
+#   +8:  buffer capacity
+#   +16: bytes written (complete bytes)
+#   +24: current partial byte
+#   +32: bit position in partial byte (0-7, from LSB)
+
+var _bw_storage[40];
+
+fn bw_init(buf, cap) {
+    store64(&_bw_storage, buf);
+    store64(&_bw_storage + 8, cap);
+    store64(&_bw_storage + 16, 0);
+    store64(&_bw_storage + 24, 0);
+    store64(&_bw_storage + 32, 0);
+    return &_bw_storage;
+}
+
+# Write n bits LSB-first. value's low n bits are written.
+# Returns 0 on success, negative error on overflow.
+fn bw_write(bw, value, n) {
+    if (n == 0) { return 0; }
+    var buf = load64(bw);
+    var cap = load64(bw + 8);
+    var blen = load64(bw + 16);
+    var cur = load64(bw + 24);
+    var bpos = load64(bw + 32);
+
+    var remaining = n;
+    var val = value;
+
+    while (remaining > 0) {
+        var avail = 8 - bpos;
+        var take = remaining;
+        if (take > avail) { take = avail; }
+
+        # Place 'take' low bits of val into cur, starting at bit bpos
+        var mask = (1 << take) - 1;
+        cur = cur | ((val & mask) << bpos);
+        val = val >> take;
+        remaining = remaining - take;
+        bpos = bpos + take;
+
+        if (bpos >= 8) {
+            if (blen >= cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+            store8(buf + blen, cur & 255);
+            blen = blen + 1;
+            cur = 0;
+            bpos = 0;
+        }
+    }
+
+    store64(bw + 16, blen);
+    store64(bw + 24, cur);
+    store64(bw + 32, bpos);
+    return 0;
+}
+
+fn bw_write_bit(bw, b) {
+    return bw_write(bw, b, 1);
+}
+
+# Write n bits MSB-first (needed for Huffman codes in DEFLATE).
+# The code is stored with bit 0 being the first transmitted bit (MSB of the code).
+fn bw_write_bits_msb(bw, value, n) {
+    # Reverse bits then write LSB-first
+    var rev = 0;
+    var v = value;
+    var i = 0;
+    while (i < n) {
+        rev = (rev << 1) | (v & 1);
+        v = v >> 1;
+        i = i + 1;
+    }
+    return bw_write(bw, rev, n);
+}
+
+# Align to byte boundary, padding with zero bits.
+fn bw_align(bw) {
+    var bpos = load64(bw + 32);
+    if (bpos > 0) {
+        var buf = load64(bw);
+        var blen = load64(bw + 16);
+        var cap = load64(bw + 8);
+        var cur = load64(bw + 24);
+        if (blen >= cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        store8(buf + blen, cur & 255);
+        store64(bw + 16, blen + 1);
+        store64(bw + 24, 0);
+        store64(bw + 32, 0);
+    }
+    return 0;
+}
+
+# Flush partial byte and return total bytes written.
+fn bw_finish(bw) {
+    bw_align(bw);
+    return load64(bw + 16);
+}
+
+# Return bytes written so far (not counting partial byte).
+fn bw_len(bw) {
+    return load64(bw + 16);
+}
+
+# Write a raw byte directly (must be byte-aligned).
+fn bw_write_byte(bw, byte) {
+    var buf = load64(bw);
+    var cap = load64(bw + 8);
+    var blen = load64(bw + 16);
+    if (blen >= cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    store8(buf + blen, byte & 255);
+    store64(bw + 16, blen + 1);
+    return 0;
+}
+
+# Write a 16-bit value little-endian (must be byte-aligned).
+fn bw_write_u16le(bw, val) {
+    var rc = bw_write_byte(bw, val & 255);
+    if (rc < 0) { return rc; }
+    return bw_write_byte(bw, (val >> 8) & 255);
+}
+
+# Write a 32-bit value little-endian (must be byte-aligned).
+fn bw_write_u32le(bw, val) {
+    var rc = bw_write_byte(bw, val & 255);
+    if (rc < 0) { return rc; }
+    rc = bw_write_byte(bw, (val >> 8) & 255);
+    if (rc < 0) { return rc; }
+    rc = bw_write_byte(bw, (val >> 16) & 255);
+    if (rc < 0) { return rc; }
+    return bw_write_byte(bw, (val >> 24) & 255);
+}

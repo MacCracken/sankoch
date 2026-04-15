@@ -287,6 +287,195 @@ fn test_deflate_via_api() {
     return 0;
 }
 
+# ================================================================
+# DEFLATE compression round-trip tests (Phase 3)
+# ================================================================
+
+fn test_deflate_roundtrip_empty() {
+    var src[1];
+    var compressed[64];
+    var decompressed[64];
+
+    var clen = deflate_compress(src, 0, compressed, 64);
+    assert(clen > 0, "deflate compress empty should produce output");
+
+    var dlen = deflate_decompress(compressed, clen, decompressed, 64);
+    assert(dlen == 0, "deflate roundtrip empty should be 0 bytes");
+    return 0;
+}
+
+fn test_deflate_roundtrip_hello() {
+    var src[5];
+    store8(src + 0, 72);   # H
+    store8(src + 1, 101);  # e
+    store8(src + 2, 108);  # l
+    store8(src + 3, 108);  # l
+    store8(src + 4, 111);  # o
+
+    var compressed[64];
+    var decompressed[64];
+
+    var clen = deflate_compress(src, 5, compressed, 64);
+    assert(clen > 0, "deflate compress Hello should succeed");
+
+    var dlen = deflate_decompress(compressed, clen, decompressed, 64);
+    assert(dlen == 5, "deflate roundtrip Hello should be 5 bytes");
+    assert(load8(decompressed + 0) == 72, "deflate rt Hello[0]");
+    assert(load8(decompressed + 1) == 101, "deflate rt Hello[1]");
+    assert(load8(decompressed + 2) == 108, "deflate rt Hello[2]");
+    assert(load8(decompressed + 3) == 108, "deflate rt Hello[3]");
+    assert(load8(decompressed + 4) == 111, "deflate rt Hello[4]");
+    return 0;
+}
+
+fn test_deflate_roundtrip_repetitive() {
+    # "ABCABCABC..." — 120 bytes, should get back-references
+    var src[120];
+    var i = 0;
+    while (i < 120) {
+        store8(src + i, 65 + (i % 3));
+        i = i + 1;
+    }
+
+    var compressed[256];
+    var decompressed[256];
+
+    var clen = deflate_compress(src, 120, compressed, 256);
+    assert(clen > 0, "deflate compress repetitive should succeed");
+    assert(clen < 120, "deflate should compress repetitive data");
+
+    var dlen = deflate_decompress(compressed, clen, decompressed, 256);
+    assert(dlen == 120, "deflate roundtrip repetitive should restore 120 bytes");
+
+    i = 0;
+    while (i < 120) {
+        assert(load8(decompressed + i) == load8(src + i), "deflate repetitive content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# zlib wrapper tests (Phase 4)
+# ================================================================
+
+fn test_zlib_roundtrip_hello() {
+    var src[5];
+    store8(src + 0, 72);
+    store8(src + 1, 101);
+    store8(src + 2, 108);
+    store8(src + 3, 108);
+    store8(src + 4, 111);
+
+    var compressed[128];
+    var decompressed[64];
+
+    var clen = zlib_compress(src, 5, compressed, 128);
+    assert(clen > 0, "zlib compress Hello should succeed");
+
+    # Verify it starts with a valid zlib header
+    var cmf = load8(compressed);
+    assert((cmf & 15) == 8, "zlib header CM should be 8");
+    var check = load8(compressed) * 256 + load8(compressed + 1);
+    assert((check % 31) == 0, "zlib header checksum");
+
+    var dlen = zlib_decompress(compressed, clen, decompressed, 64);
+    assert(dlen == 5, "zlib roundtrip Hello should be 5 bytes");
+    assert(load8(decompressed + 0) == 72, "zlib rt Hello[0]");
+    assert(load8(decompressed + 4) == 111, "zlib rt Hello[4]");
+    return 0;
+}
+
+fn test_zlib_roundtrip_via_api() {
+    var src[5];
+    store8(src + 0, 72);
+    store8(src + 1, 101);
+    store8(src + 2, 108);
+    store8(src + 3, 108);
+    store8(src + 4, 111);
+
+    var compressed[128];
+    var decompressed[64];
+
+    var clen = compress(FORMAT_ZLIB, src, 5, compressed, 128);
+    assert(clen > 0, "zlib compress via API should succeed");
+
+    var dlen = decompress(FORMAT_ZLIB, compressed, clen, decompressed, 64);
+    assert(dlen == 5, "zlib decompress via API should succeed");
+    return 0;
+}
+
+# ================================================================
+# gzip wrapper tests (Phase 4)
+# ================================================================
+
+fn test_gzip_roundtrip_hello() {
+    var src[5];
+    store8(src + 0, 72);
+    store8(src + 1, 101);
+    store8(src + 2, 108);
+    store8(src + 3, 108);
+    store8(src + 4, 111);
+
+    var compressed[128];
+    var decompressed[64];
+
+    var clen = gzip_compress(src, 5, compressed, 128);
+    assert(clen > 0, "gzip compress Hello should succeed");
+
+    # Verify gzip magic
+    assert(load8(compressed) == 31, "gzip magic byte 0");
+    assert(load8(compressed + 1) == 139, "gzip magic byte 1");
+    assert(load8(compressed + 2) == 8, "gzip CM = deflate");
+
+    var dlen = gzip_decompress(compressed, clen, decompressed, 64);
+    assert(dlen == 5, "gzip roundtrip Hello should be 5 bytes");
+    assert(load8(decompressed + 0) == 72, "gzip rt Hello[0]");
+    assert(load8(decompressed + 4) == 111, "gzip rt Hello[4]");
+    return 0;
+}
+
+fn test_gzip_roundtrip_via_api() {
+    var src[5];
+    store8(src + 0, 72);
+    store8(src + 1, 101);
+    store8(src + 2, 108);
+    store8(src + 3, 108);
+    store8(src + 4, 111);
+
+    var compressed[128];
+    var decompressed[64];
+
+    var clen = compress(FORMAT_GZIP, src, 5, compressed, 128);
+    assert(clen > 0, "gzip compress via API should succeed");
+
+    var dlen = decompress(FORMAT_GZIP, compressed, clen, decompressed, 64);
+    assert(dlen == 5, "gzip decompress via API should succeed");
+    return 0;
+}
+
+fn test_format_roundtrip_detect() {
+    # Compress as zlib, then auto-detect the format
+    var src[5];
+    store8(src + 0, 72);
+    store8(src + 1, 101);
+    store8(src + 2, 108);
+    store8(src + 3, 108);
+    store8(src + 4, 111);
+
+    var zbuf[128];
+    var gbuf[128];
+    var zlen = zlib_compress(src, 5, zbuf, 128);
+    var glen = gzip_compress(src, 5, gbuf, 128);
+
+    var zfmt = detect_format(zbuf, zlen);
+    assert(zfmt == FORMAT_ZLIB, "detect_format should identify zlib output");
+
+    var gfmt = detect_format(gbuf, glen);
+    assert(gfmt == FORMAT_GZIP, "detect_format should identify gzip output");
+    return 0;
+}
+
 fn main() {
     test_adler32_empty();
     test_adler32_hello();
@@ -304,6 +493,14 @@ fn main() {
     test_deflate_stored();
     test_deflate_backreference();
     test_deflate_via_api();
+    test_deflate_roundtrip_empty();
+    test_deflate_roundtrip_hello();
+    test_deflate_roundtrip_repetitive();
+    test_zlib_roundtrip_hello();
+    test_zlib_roundtrip_via_api();
+    test_gzip_roundtrip_hello();
+    test_gzip_roundtrip_via_api();
+    test_format_roundtrip_detect();
 
     println("sankoch: all tests passed");
     return 0;
