@@ -185,6 +185,108 @@ fn test_detect_format_zlib() {
     return 0;
 }
 
+# ================================================================
+# DEFLATE decompression tests (known vectors from zlib)
+# ================================================================
+
+fn test_deflate_empty() {
+    # Raw DEFLATE of empty input: 0x03 0x00
+    # (BFINAL=1, BTYPE=01 fixed Huffman, symbol 256 = end of block)
+    var src[2];
+    store8(src + 0, 3);
+    store8(src + 1, 0);
+
+    var dst[64];
+    var dlen = deflate_decompress(src, 2, dst, 64);
+    assert(dlen == 0, "deflate empty should decompress to 0 bytes");
+    return 0;
+}
+
+fn test_deflate_hello() {
+    # Raw DEFLATE of "Hello" (fixed Huffman, level 1):
+    # 243 72 205 201 201 7 0
+    var src[7];
+    store8(src + 0, 243);
+    store8(src + 1, 72);
+    store8(src + 2, 205);
+    store8(src + 3, 201);
+    store8(src + 4, 201);
+    store8(src + 5, 7);
+    store8(src + 6, 0);
+
+    var dst[64];
+    var dlen = deflate_decompress(src, 7, dst, 64);
+    assert(dlen == 5, "deflate Hello should be 5 bytes");
+    assert(load8(dst + 0) == 72, "deflate Hello[0] = H");
+    assert(load8(dst + 1) == 101, "deflate Hello[1] = e");
+    assert(load8(dst + 2) == 108, "deflate Hello[2] = l");
+    assert(load8(dst + 3) == 108, "deflate Hello[3] = l");
+    assert(load8(dst + 4) == 111, "deflate Hello[4] = o");
+    return 0;
+}
+
+fn test_deflate_stored() {
+    # Raw DEFLATE of "ABCD" stored (uncompressed block):
+    # 1 4 0 251 255 65 66 67 68
+    var src[9];
+    store8(src + 0, 1);    # BFINAL=1, BTYPE=00 (stored)
+    store8(src + 1, 4);    # LEN low
+    store8(src + 2, 0);    # LEN high
+    store8(src + 3, 251);  # NLEN low
+    store8(src + 4, 255);  # NLEN high
+    store8(src + 5, 65);   # A
+    store8(src + 6, 66);   # B
+    store8(src + 7, 67);   # C
+    store8(src + 8, 68);   # D
+
+    var dst[64];
+    var dlen = deflate_decompress(src, 9, dst, 64);
+    assert(dlen == 4, "deflate stored ABCD should be 4 bytes");
+    assert(load8(dst + 0) == 65, "deflate stored[0] = A");
+    assert(load8(dst + 1) == 66, "deflate stored[1] = B");
+    assert(load8(dst + 2) == 67, "deflate stored[2] = C");
+    assert(load8(dst + 3) == 68, "deflate stored[3] = D");
+    return 0;
+}
+
+fn test_deflate_backreference() {
+    # Raw DEFLATE of "ABCABCABCABCABCABC" (dynamic Huffman, level 6):
+    # 115 116 114 118 68 69 0
+    var src[7];
+    store8(src + 0, 115);
+    store8(src + 1, 116);
+    store8(src + 2, 114);
+    store8(src + 3, 118);
+    store8(src + 4, 68);
+    store8(src + 5, 69);
+    store8(src + 6, 0);
+
+    var dst[64];
+    var dlen = deflate_decompress(src, 7, dst, 64);
+    assert(dlen == 18, "deflate ABC*6 should be 18 bytes");
+
+    # Verify: "ABCABCABCABCABCABC"
+    var i = 0;
+    while (i < 18) {
+        var expected = 65 + (i % 3);  # A=65, B=66, C=67
+        assert(load8(dst + i) == expected, "deflate backreference content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_deflate_via_api() {
+    # Test through the public decompress() API
+    var src[2];
+    store8(src + 0, 3);
+    store8(src + 1, 0);
+
+    var dst[64];
+    var dlen = decompress(FORMAT_DEFLATE, src, 2, dst, 64);
+    assert(dlen == 0, "decompress(DEFLATE) should work through public API");
+    return 0;
+}
+
 fn main() {
     test_adler32_empty();
     test_adler32_hello();
@@ -197,6 +299,11 @@ fn main() {
     test_lz4_buffer_too_small();
     test_detect_format_gzip();
     test_detect_format_zlib();
+    test_deflate_empty();
+    test_deflate_hello();
+    test_deflate_stored();
+    test_deflate_backreference();
+    test_deflate_via_api();
 
     println("sankoch: all tests passed");
     return 0;

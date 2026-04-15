@@ -1,0 +1,89 @@
+# sankoch — bit-stream reader
+# Lifted from shravan/main.cyr:1244-1283, generalized for DEFLATE.
+#
+# DEFLATE reads bits LSB-first (least significant bit first) within each byte.
+# This is the opposite of audio codecs (AAC, FLAC) which read MSB-first.
+#
+# Layout (32 bytes):
+#   +0:  data pointer
+#   +8:  byte position
+#   +16: bit position (0-7, counts from LSB)
+#   +24: data length in bytes
+
+var _br_storage[32];  # single static bitreader — no alloc needed
+
+fn br_init(data, len) {
+    store64(&_br_storage, data);
+    store64(&_br_storage + 8, 0);
+    store64(&_br_storage + 16, 0);
+    store64(&_br_storage + 24, len);
+    return &_br_storage;
+}
+
+# Read n bits LSB-first. Returns the value, or negative error.
+# Bits are consumed from the least significant bit of each byte upward.
+fn br_read(br, n) {
+    if (n == 0) { return 0; }
+    var data = load64(br);
+    var bpos = load64(br + 8);
+    var bbit = load64(br + 16);
+    var dlen = load64(br + 24);
+
+    var result = 0;
+    var shift = 0;  # where to place next bits in result
+
+    while (shift < n) {
+        if (bpos >= dlen) { return 0 - ERR_CORRUPT_DATA; }
+        var avail = 8 - bbit;
+        var need = n - shift;
+        var take = need;
+        if (take > avail) { take = avail; }
+
+        # Extract 'take' bits starting from bit position 'bbit' in current byte
+        var byte = load8(data + bpos);
+        var bits = (byte >> bbit) & ((1 << take) - 1);
+        result = result | (bits << shift);
+
+        shift = shift + take;
+        bbit = bbit + take;
+        if (bbit >= 8) {
+            bbit = 0;
+            bpos = bpos + 1;
+        }
+    }
+
+    store64(br + 8, bpos);
+    store64(br + 16, bbit);
+    return result;
+}
+
+# Read a single bit.
+fn br_read_bit(br) {
+    return br_read(br, 1);
+}
+
+# Align to the next byte boundary (skip remaining bits in current byte).
+fn br_align(br) {
+    var bbit = load64(br + 16);
+    if (bbit > 0) {
+        store64(br + 16, 0);
+        store64(br + 8, load64(br + 8) + 1);
+    }
+    return 0;
+}
+
+# Return current byte position.
+fn br_byte_pos(br) {
+    return load64(br + 8);
+}
+
+# Return how many bytes remain.
+fn br_remaining(br) {
+    var dlen = load64(br + 24);
+    var bpos = load64(br + 8);
+    var bbit = load64(br + 16);
+    var rem = dlen - bpos;
+    if (bbit > 0) { rem = rem - 1; }
+    if (rem < 0) { rem = 0; }
+    return rem;
+}

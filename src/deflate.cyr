@@ -1,0 +1,380 @@
+# sankoch — DEFLATE decompression (RFC 1951)
+#
+# Three block types:
+#   00 — uncompressed (stored)
+#   01 — fixed Huffman codes
+#   10 — dynamic Huffman codes
+#
+# Each block has a BFINAL bit (1 = last block) and BTYPE (2 bits).
+# Compressed blocks contain a stream of literal/length + distance pairs.
+# Literal bytes 0-255 are emitted directly.
+# Symbol 256 = end of block.
+# Symbols 257-285 = length codes (with extra bits), followed by a distance code.
+
+# Length code base values and extra bits (RFC 1951, Section 3.2.5)
+# Index by (code - 257)
+var _deflate_len_base[232];   # 29 * 8
+var _deflate_len_extra[232];  # 29 * 8
+
+# Distance code base values and extra bits
+# Index by distance code (0-29)
+var _deflate_dist_base[240];  # 30 * 8
+var _deflate_dist_extra[240]; # 30 * 8
+
+var _deflate_tables_built = 0;
+
+fn _deflate_init_tables() {
+    if (_deflate_tables_built == 1) { return 0; }
+
+    # Length bases: codes 257-285 → lengths 3-258
+    # 257: 3, 258: 4, 259: 5, 260: 6, 261: 7, 262: 8, 263: 9, 264: 10
+    store64(&_deflate_len_base + 0 * 8, 3);
+    store64(&_deflate_len_base + 1 * 8, 4);
+    store64(&_deflate_len_base + 2 * 8, 5);
+    store64(&_deflate_len_base + 3 * 8, 6);
+    store64(&_deflate_len_base + 4 * 8, 7);
+    store64(&_deflate_len_base + 5 * 8, 8);
+    store64(&_deflate_len_base + 6 * 8, 9);
+    store64(&_deflate_len_base + 7 * 8, 10);
+    # 265-268: 1 extra bit
+    store64(&_deflate_len_base + 8 * 8, 11);
+    store64(&_deflate_len_base + 9 * 8, 13);
+    store64(&_deflate_len_base + 10 * 8, 15);
+    store64(&_deflate_len_base + 11 * 8, 17);
+    # 269-272: 2 extra bits
+    store64(&_deflate_len_base + 12 * 8, 19);
+    store64(&_deflate_len_base + 13 * 8, 23);
+    store64(&_deflate_len_base + 14 * 8, 27);
+    store64(&_deflate_len_base + 15 * 8, 31);
+    # 273-276: 3 extra bits
+    store64(&_deflate_len_base + 16 * 8, 35);
+    store64(&_deflate_len_base + 17 * 8, 43);
+    store64(&_deflate_len_base + 18 * 8, 51);
+    store64(&_deflate_len_base + 19 * 8, 59);
+    # 277-280: 4 extra bits
+    store64(&_deflate_len_base + 20 * 8, 67);
+    store64(&_deflate_len_base + 21 * 8, 83);
+    store64(&_deflate_len_base + 22 * 8, 99);
+    store64(&_deflate_len_base + 23 * 8, 115);
+    # 281-284: 5 extra bits
+    store64(&_deflate_len_base + 24 * 8, 131);
+    store64(&_deflate_len_base + 25 * 8, 163);
+    store64(&_deflate_len_base + 26 * 8, 195);
+    store64(&_deflate_len_base + 27 * 8, 227);
+    # 285: 0 extra bits, length 258
+    store64(&_deflate_len_base + 28 * 8, 258);
+
+    # Length extra bits
+    var i = 0;
+    while (i < 8) {
+        store64(&_deflate_len_extra + i * 8, 0);
+        i = i + 1;
+    }
+    var eb = 1;
+    while (eb <= 5) {
+        var j = 0;
+        while (j < 4) {
+            store64(&_deflate_len_extra + i * 8, eb);
+            i = i + 1;
+            j = j + 1;
+        }
+        eb = eb + 1;
+    }
+    store64(&_deflate_len_extra + 28 * 8, 0);  # code 285 = 0 extra
+
+    # Distance bases: codes 0-29 → distances 1-32768
+    store64(&_deflate_dist_base + 0 * 8, 1);
+    store64(&_deflate_dist_base + 1 * 8, 2);
+    store64(&_deflate_dist_base + 2 * 8, 3);
+    store64(&_deflate_dist_base + 3 * 8, 4);
+    store64(&_deflate_dist_base + 4 * 8, 5);
+    store64(&_deflate_dist_base + 5 * 8, 7);
+    store64(&_deflate_dist_base + 6 * 8, 9);
+    store64(&_deflate_dist_base + 7 * 8, 13);
+    store64(&_deflate_dist_base + 8 * 8, 17);
+    store64(&_deflate_dist_base + 9 * 8, 25);
+    store64(&_deflate_dist_base + 10 * 8, 33);
+    store64(&_deflate_dist_base + 11 * 8, 49);
+    store64(&_deflate_dist_base + 12 * 8, 65);
+    store64(&_deflate_dist_base + 13 * 8, 97);
+    store64(&_deflate_dist_base + 14 * 8, 129);
+    store64(&_deflate_dist_base + 15 * 8, 193);
+    store64(&_deflate_dist_base + 16 * 8, 257);
+    store64(&_deflate_dist_base + 17 * 8, 385);
+    store64(&_deflate_dist_base + 18 * 8, 513);
+    store64(&_deflate_dist_base + 19 * 8, 769);
+    store64(&_deflate_dist_base + 20 * 8, 1025);
+    store64(&_deflate_dist_base + 21 * 8, 1537);
+    store64(&_deflate_dist_base + 22 * 8, 2049);
+    store64(&_deflate_dist_base + 23 * 8, 3073);
+    store64(&_deflate_dist_base + 24 * 8, 4097);
+    store64(&_deflate_dist_base + 25 * 8, 6145);
+    store64(&_deflate_dist_base + 26 * 8, 8193);
+    store64(&_deflate_dist_base + 27 * 8, 12289);
+    store64(&_deflate_dist_base + 28 * 8, 16385);
+    store64(&_deflate_dist_base + 29 * 8, 24577);
+
+    # Distance extra bits: 0,0,0,0, 1,1, 2,2, 3,3, ..., 13,13
+    store64(&_deflate_dist_extra + 0 * 8, 0);
+    store64(&_deflate_dist_extra + 1 * 8, 0);
+    store64(&_deflate_dist_extra + 2 * 8, 0);
+    store64(&_deflate_dist_extra + 3 * 8, 0);
+    i = 4;
+    eb = 1;
+    while (i < 30) {
+        store64(&_deflate_dist_extra + i * 8, eb);
+        store64(&_deflate_dist_extra + (i + 1) * 8, eb);
+        i = i + 2;
+        eb = eb + 1;
+    }
+
+    _deflate_tables_built = 1;
+    return 0;
+}
+
+# Decode a compressed block (fixed or dynamic Huffman).
+# br: bitreader
+# dst: output buffer
+# dp: current output position
+# dst_cap: output capacity
+# Returns: new dp, or negative error.
+fn _deflate_decode_block(br, dst, dp, dst_cap) {
+    while (1) {
+        var sym = huff_decode_litlen(br);
+        if (sym < 0) { return sym; }
+
+        if (sym < 256) {
+            # Literal byte
+            if (dp >= dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+            store8(dst + dp, sym);
+            dp = dp + 1;
+        } elif (sym == 256) {
+            # End of block
+            return dp;
+        } else {
+            # Length/distance pair
+            var len_idx = sym - 257;
+            if (len_idx >= 29) { return 0 - ERR_CORRUPT_DATA; }
+
+            var length = load64(&_deflate_len_base + len_idx * 8);
+            var extra = load64(&_deflate_len_extra + len_idx * 8);
+            if (extra > 0) {
+                var eb = br_read(br, extra);
+                if (eb < 0) { return eb; }
+                length = length + eb;
+            }
+
+            # Decode distance
+            var dist_sym = huff_decode_dist(br);
+            if (dist_sym < 0) { return dist_sym; }
+            if (dist_sym >= 30) { return 0 - ERR_CORRUPT_DATA; }
+
+            var distance = load64(&_deflate_dist_base + dist_sym * 8);
+            var dextra = load64(&_deflate_dist_extra + dist_sym * 8);
+            if (dextra > 0) {
+                var deb = br_read(br, dextra);
+                if (deb < 0) { return deb; }
+                distance = distance + deb;
+            }
+
+            # Copy from output window
+            if (distance > dp) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+            if (dp + length > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+
+            var src_pos = dp - distance;
+            var i = 0;
+            while (i < length) {
+                store8(dst + dp, load8(dst + src_pos));
+                dp = dp + 1;
+                src_pos = src_pos + 1;
+                i = i + 1;
+            }
+        }
+    }
+
+    return dp;
+}
+
+# Read dynamic Huffman tables from the stream (RFC 1951 Section 3.2.7).
+fn _deflate_read_dynamic(br) {
+    var hlit = br_read(br, 5);
+    if (hlit < 0) { return hlit; }
+    hlit = hlit + 257;  # number of literal/length codes
+
+    var hdist = br_read(br, 5);
+    if (hdist < 0) { return hdist; }
+    hdist = hdist + 1;  # number of distance codes
+
+    var hclen = br_read(br, 4);
+    if (hclen < 0) { return hclen; }
+    hclen = hclen + 4;  # number of code length codes
+
+    # Code length alphabet order (RFC 1951 Section 3.2.7)
+    # 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+    var cl_order[152];  # 19 * 8
+    store64(&cl_order + 0 * 8, 16);
+    store64(&cl_order + 1 * 8, 17);
+    store64(&cl_order + 2 * 8, 18);
+    store64(&cl_order + 3 * 8, 0);
+    store64(&cl_order + 4 * 8, 8);
+    store64(&cl_order + 5 * 8, 7);
+    store64(&cl_order + 6 * 8, 9);
+    store64(&cl_order + 7 * 8, 6);
+    store64(&cl_order + 8 * 8, 10);
+    store64(&cl_order + 9 * 8, 5);
+    store64(&cl_order + 10 * 8, 11);
+    store64(&cl_order + 11 * 8, 4);
+    store64(&cl_order + 12 * 8, 12);
+    store64(&cl_order + 13 * 8, 3);
+    store64(&cl_order + 14 * 8, 13);
+    store64(&cl_order + 15 * 8, 2);
+    store64(&cl_order + 16 * 8, 14);
+    store64(&cl_order + 17 * 8, 1);
+    store64(&cl_order + 18 * 8, 15);
+
+    # Read code length code lengths
+    var cl_lens[152];  # 19 * 8
+    var i = 0;
+    while (i < 19) {
+        store64(&cl_lens + i * 8, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < hclen) {
+        var val = br_read(br, 3);
+        if (val < 0) { return val; }
+        var idx = load64(&cl_order + i * 8);
+        store64(&cl_lens + idx * 8, val);
+        i = i + 1;
+    }
+
+    # Build code-length Huffman table
+    huff_build_cl(&cl_lens, 19);
+
+    # Decode literal/length + distance code lengths
+    var total = hlit + hdist;
+    var all_lens[4672];  # 584 * 8 (max hlit=286 + hdist=32 = 318, but allow 320+)
+    i = 0;
+    while (i < total) {
+        var sym = huff_decode_cl(br);
+        if (sym < 0) { return sym; }
+
+        if (sym <= 15) {
+            # Literal code length
+            store64(&all_lens + i * 8, sym);
+            i = i + 1;
+        } elif (sym == 16) {
+            # Repeat previous 3-6 times
+            if (i == 0) { return 0 - ERR_CORRUPT_DATA; }
+            var rep = br_read(br, 2);
+            if (rep < 0) { return rep; }
+            rep = rep + 3;
+            var prev = load64(&all_lens + (i - 1) * 8);
+            var j = 0;
+            while (j < rep) {
+                if (i >= total) { return 0 - ERR_CORRUPT_DATA; }
+                store64(&all_lens + i * 8, prev);
+                i = i + 1;
+                j = j + 1;
+            }
+        } elif (sym == 17) {
+            # Repeat 0 for 3-10 times
+            var rep = br_read(br, 3);
+            if (rep < 0) { return rep; }
+            rep = rep + 3;
+            var j = 0;
+            while (j < rep) {
+                if (i >= total) { return 0 - ERR_CORRUPT_DATA; }
+                store64(&all_lens + i * 8, 0);
+                i = i + 1;
+                j = j + 1;
+            }
+        } elif (sym == 18) {
+            # Repeat 0 for 11-138 times
+            var rep = br_read(br, 7);
+            if (rep < 0) { return rep; }
+            rep = rep + 11;
+            var j = 0;
+            while (j < rep) {
+                if (i >= total) { return 0 - ERR_CORRUPT_DATA; }
+                store64(&all_lens + i * 8, 0);
+                i = i + 1;
+                j = j + 1;
+            }
+        } else {
+            return 0 - ERR_INVALID_HUFFMAN;
+        }
+    }
+
+    # Split into literal/length and distance tables, build both
+    huff_build_litlen(&all_lens, hlit);
+    huff_build_dist(&all_lens + hlit * 8, hdist);
+
+    return 0;
+}
+
+# Decompress a DEFLATE stream.
+# src: pointer to compressed data (raw DEFLATE, no zlib/gzip wrapper)
+# src_len: length of compressed data
+# dst: pointer to output buffer
+# dst_cap: capacity of output buffer
+# Returns: decompressed length, or negative error code.
+fn deflate_decompress(src, src_len, dst, dst_cap) {
+    _deflate_init_tables();
+
+    var br = br_init(src, src_len);
+    var dp = 0;
+    var bfinal = 0;
+
+    while (bfinal == 0) {
+        bfinal = br_read(br, 1);
+        if (bfinal < 0) { return bfinal; }
+
+        var btype = br_read(br, 2);
+        if (btype < 0) { return btype; }
+
+        if (btype == 0) {
+            # Uncompressed block
+            br_align(br);
+            var len = br_read(br, 16);
+            if (len < 0) { return len; }
+            var nlen = br_read(br, 16);
+            if (nlen < 0) { return nlen; }
+            # nlen should be one's complement of len
+            if ((len ^ nlen) != 65535) { return 0 - ERR_CORRUPT_DATA; }
+
+            if (dp + len > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+
+            # Copy raw bytes from the stream
+            var data = load64(br);
+            var bpos = load64(br + 8);
+            var i = 0;
+            while (i < len) {
+                store8(dst + dp, load8(data + bpos));
+                dp = dp + 1;
+                bpos = bpos + 1;
+                i = i + 1;
+            }
+            store64(br + 8, bpos);
+
+        } elif (btype == 1) {
+            # Fixed Huffman codes
+            huff_build_fixed();
+            dp = _deflate_decode_block(br, dst, dp, dst_cap);
+            if (dp < 0) { return dp; }
+
+        } elif (btype == 2) {
+            # Dynamic Huffman codes
+            var rc = _deflate_read_dynamic(br);
+            if (rc < 0) { return rc; }
+            dp = _deflate_decode_block(br, dst, dp, dst_cap);
+            if (dp < 0) { return dp; }
+
+        } else {
+            # btype == 3 is reserved/invalid
+            return 0 - ERR_INVALID_BLOCK_TYPE;
+        }
+    }
+
+    return dp;
+}

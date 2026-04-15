@@ -1,0 +1,309 @@
+# sankoch — Huffman coding for DEFLATE
+# Lifted structure from shravan/aac.cyr:843-873, replaced AAC codebooks
+# with DEFLATE canonical Huffman.
+#
+# DEFLATE uses canonical Huffman codes:
+#   1. Code lengths are transmitted (or fixed by spec)
+#   2. Codes are assigned by the canonical algorithm (RFC 1951 Section 3.2.2)
+#   3. Bits are read LSB-first
+#
+# Decode strategy: table-based for codes up to 9 bits (covers most cases),
+# fallback to bit-by-bit for longer codes.
+
+# Maximum code length in DEFLATE is 15 bits.
+# We use a primary lookup table of 512 entries (9-bit index).
+# Each entry: symbol in low 16 bits, length in bits 16-20.
+# If length == 0, the entry is unused (no code of that pattern).
+
+enum Huffman {
+    HUFF_TABLE_BITS = 9;
+    HUFF_TABLE_SIZE = 512;
+    HUFF_MAX_BITS = 15;
+    HUFF_FAST_SHIFT = 16;
+}
+
+# Storage for two Huffman tables (literal/length + distance).
+# Each table: 512 entries * 8 bytes = 4096 bytes for the fast table,
+# plus overflow entries for codes > 9 bits.
+# Table entry: (bit_length << 16) | symbol
+# For overflow: bit_length == 0 means "not a fast entry, use slow path"
+
+# Literal/length table (up to 286 symbols)
+var _huff_litlen_fast[4096];    # 512 entries * 8 bytes
+var _huff_litlen_syms[2288];    # 286 entries * 8 bytes — full symbol table
+var _huff_litlen_lens[2288];    # 286 entries * 8 bytes — code lengths
+var _huff_litlen_codes[2288];   # 286 entries * 8 bytes — actual codes
+var _huff_litlen_count = 0;
+
+# Distance table (up to 30 symbols)
+var _huff_dist_fast[4096];
+var _huff_dist_syms[240];
+var _huff_dist_lens[240];
+var _huff_dist_codes[240];
+var _huff_dist_count = 0;
+
+# Code-length alphabet table (up to 19 symbols, used for dynamic trees)
+var _huff_cl_fast[4096];
+var _huff_cl_syms[152];
+var _huff_cl_lens[152];
+var _huff_cl_codes[152];
+var _huff_cl_count = 0;
+
+# Build canonical Huffman codes from an array of code lengths.
+# lengths: pointer to array of code lengths (one i64 per symbol)
+# num_symbols: number of symbols
+# out_codes: pointer to output array for codes (one i64 per symbol)
+# out_fast: pointer to 512-entry fast lookup table
+# Returns 0 on success, negative error on failure.
+fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
+    # Step 1: Count codes of each length (RFC 1951 step 1)
+    var bl_count[128];  # 16 entries * 8 bytes
+    var i = 0;
+    while (i < 16) {
+        store64(&bl_count + i * 8, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0 && len <= HUFF_MAX_BITS) {
+            store64(&bl_count + len * 8, load64(&bl_count + len * 8) + 1);
+        }
+        i = i + 1;
+    }
+
+    # Step 2: Find the numerical value of the smallest code for each length
+    var next_code[128];
+    store64(&next_code, 0);
+    store64(&next_code + 8, 0);
+    var code = 0;
+    var bits = 1;
+    while (bits <= HUFF_MAX_BITS) {
+        code = (code + load64(&bl_count + (bits - 1) * 8)) << 1;
+        store64(&next_code + bits * 8, code);
+        bits = bits + 1;
+    }
+
+    # Step 3: Assign codes to each symbol
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0) {
+            store64(out_codes + i * 8, load64(&next_code + len * 8));
+            store64(&next_code + len * 8, load64(&next_code + len * 8) + 1);
+        } else {
+            store64(out_codes + i * 8, 0);
+        }
+        i = i + 1;
+    }
+
+    # Step 4: Build fast lookup table (9-bit, LSB-first)
+    # Clear the table
+    i = 0;
+    while (i < HUFF_TABLE_SIZE) {
+        store64(out_fast + i * 8, 0);
+        i = i + 1;
+    }
+
+    # Fill entries: for each symbol, reverse its code bits (DEFLATE is LSB-first),
+    # then fill all table slots that share this prefix.
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0 && len <= HUFF_TABLE_BITS) {
+            # Reverse the code to LSB-first order
+            var c = load64(out_codes + i * 8);
+            var rev = 0;
+            var b = 0;
+            while (b < len) {
+                rev = (rev << 1) | (c & 1);
+                c = c >> 1;
+                b = b + 1;
+            }
+            # Fill all entries where the low 'len' bits match
+            var step = 1 << len;
+            var idx = rev;
+            while (idx < HUFF_TABLE_SIZE) {
+                store64(out_fast + idx * 8, (len << HUFF_FAST_SHIFT) | i);
+                idx = idx + step;
+            }
+        }
+        i = i + 1;
+    }
+
+    return 0;
+}
+
+# Decode one symbol using the fast table, falling back to bit-by-bit
+# for codes longer than HUFF_TABLE_BITS.
+# br: bitreader
+# fast: fast lookup table pointer
+# lengths: code lengths array
+# codes: codes array
+# num_symbols: symbol count
+# Returns: symbol value, or negative error.
+fn _huff_decode(br, fast, lengths, codes, num_symbols) {
+    # Peek 9 bits without consuming
+    var data = load64(br);
+    var bpos = load64(br + 8);
+    var bbit = load64(br + 16);
+    var dlen = load64(br + 24);
+
+    # Gather up to 9 bits for table lookup
+    var peek = 0;
+    var got = 0;
+    var save_bpos = bpos;
+    var save_bbit = bbit;
+
+    while (got < HUFF_TABLE_BITS) {
+        if (bpos >= dlen) { break; }
+        var byte = load8(data + bpos);
+        var bit = (byte >> bbit) & 1;
+        peek = peek | (bit << got);
+        got = got + 1;
+        bbit = bbit + 1;
+        if (bbit >= 8) { bbit = 0; bpos = bpos + 1; }
+    }
+
+    var entry = load64(fast + peek * 8);
+    var elen = entry >> HUFF_FAST_SHIFT;
+
+    if (elen > 0 && elen <= got) {
+        # Fast path — consume only the bits we need
+        var consume = elen;
+        bpos = save_bpos;
+        bbit = save_bbit;
+        bbit = bbit + consume;
+        while (bbit >= 8) { bbit = bbit - 8; bpos = bpos + 1; }
+        store64(br + 8, bpos);
+        store64(br + 16, bbit);
+        return entry & 65535;
+    }
+
+    # Slow path: restore position, decode bit-by-bit
+    store64(br + 8, save_bpos);
+    store64(br + 16, save_bbit);
+
+    var acc = 0;
+    var bits_read = 0;
+    while (bits_read < HUFF_MAX_BITS) {
+        var bit = br_read_bit(br);
+        if (bit < 0) { return bit; }
+        acc = (acc << 1) | bit;
+        bits_read = bits_read + 1;
+
+        var i = 0;
+        while (i < num_symbols) {
+            if (load64(lengths + i * 8) == bits_read) {
+                if (load64(codes + i * 8) == acc) {
+                    return i;
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    return 0 - ERR_INVALID_HUFFMAN;
+}
+
+# Convenience: decode from literal/length table
+fn huff_decode_litlen(br) {
+    return _huff_decode(br, &_huff_litlen_fast, &_huff_litlen_lens,
+                        &_huff_litlen_codes, _huff_litlen_count);
+}
+
+# Convenience: decode from distance table
+fn huff_decode_dist(br) {
+    return _huff_decode(br, &_huff_dist_fast, &_huff_dist_lens,
+                        &_huff_dist_codes, _huff_dist_count);
+}
+
+# Convenience: decode from code-length alphabet table
+fn huff_decode_cl(br) {
+    return _huff_decode(br, &_huff_cl_fast, &_huff_cl_lens,
+                        &_huff_cl_codes, _huff_cl_count);
+}
+
+# Build the literal/length Huffman table from code lengths.
+fn huff_build_litlen(lengths, count) {
+    _huff_litlen_count = count;
+    var i = 0;
+    while (i < count) {
+        store64(&_huff_litlen_lens + i * 8, load64(lengths + i * 8));
+        i = i + 1;
+    }
+    return _huff_build(&_huff_litlen_lens, count, &_huff_litlen_codes, &_huff_litlen_fast);
+}
+
+# Build the distance Huffman table from code lengths.
+fn huff_build_dist(lengths, count) {
+    _huff_dist_count = count;
+    var i = 0;
+    while (i < count) {
+        store64(&_huff_dist_lens + i * 8, load64(lengths + i * 8));
+        i = i + 1;
+    }
+    return _huff_build(&_huff_dist_lens, count, &_huff_dist_codes, &_huff_dist_fast);
+}
+
+# Build the code-length alphabet table.
+fn huff_build_cl(lengths, count) {
+    _huff_cl_count = count;
+    var i = 0;
+    while (i < count) {
+        store64(&_huff_cl_lens + i * 8, load64(lengths + i * 8));
+        i = i + 1;
+    }
+    return _huff_build(&_huff_cl_lens, count, &_huff_cl_codes, &_huff_cl_fast);
+}
+
+# ================================================================
+# Fixed Huffman tables (RFC 1951, Section 3.2.6)
+# ================================================================
+#
+# Literal/length codes 0-287:
+#   0-143:   8 bits  (codes 00110000 through 10111111)
+#   144-255: 9 bits  (codes 110010000 through 111111111)
+#   256-279: 7 bits  (codes 0000000 through 0010111)
+#   280-287: 8 bits  (codes 11000000 through 11000111)
+#
+# Distance codes 0-31: all 5 bits
+
+var _huff_fixed_built = 0;
+var _huff_fixed_litlen_lens[2304];  # 288 * 8
+
+fn huff_build_fixed() {
+    if (_huff_fixed_built == 1) { return 0; }
+
+    # Literal/length code lengths
+    var i = 0;
+    while (i <= 143) {
+        store64(&_huff_fixed_litlen_lens + i * 8, 8);
+        i = i + 1;
+    }
+    while (i <= 255) {
+        store64(&_huff_fixed_litlen_lens + i * 8, 9);
+        i = i + 1;
+    }
+    while (i <= 279) {
+        store64(&_huff_fixed_litlen_lens + i * 8, 7);
+        i = i + 1;
+    }
+    while (i <= 287) {
+        store64(&_huff_fixed_litlen_lens + i * 8, 8);
+        i = i + 1;
+    }
+    huff_build_litlen(&_huff_fixed_litlen_lens, 288);
+
+    # Distance code lengths: all 5 bits, 32 symbols
+    var dist_lens[256];  # 32 * 8
+    i = 0;
+    while (i < 32) {
+        store64(&dist_lens + i * 8, 5);
+        i = i + 1;
+    }
+    huff_build_dist(&dist_lens, 32);
+
+    _huff_fixed_built = 1;
+    return 0;
+}

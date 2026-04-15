@@ -27,7 +27,9 @@ fn decompress(format, src, src_len, dst, dst_cap) {
     if (format == FORMAT_LZ4) {
         return lz4_decompress(src, src_len, dst, dst_cap);
     }
-    # Phase 2: FORMAT_DEFLATE
+    if (format == FORMAT_DEFLATE) {
+        return deflate_decompress(src, src_len, dst, dst_cap);
+    }
     # Phase 4: FORMAT_ZLIB, FORMAT_GZIP
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
