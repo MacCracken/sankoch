@@ -2,8 +2,15 @@
 # Covers: checksums, LZ4, DEFLATE, zlib, gzip, format detection,
 # compression levels, dynamic Huffman, streaming, error paths.
 
-include "dist/sankoch.cyr"
+include "lib/string.cyr"
+include "lib/fmt.cyr"
+include "lib/alloc.cyr"
+include "lib/syscalls.cyr"
+include "lib/fnptr.cyr"
+include "lib/vec.cyr"
+include "lib/thread.cyr"
 include "lib/assert.cyr"
+include "dist/sankoch.cyr"
 
 # ================================================================
 # Checksum tests
@@ -713,8 +720,8 @@ fn main() {
     # test_err_zlib_bad_header();
     # test_err_gzip_bad_magic();
 
-    println("sankoch: passing tests complete");
-    return 0;
+    var r = assert_summary();
+    return r;
 }
 
 var exit_code = main();
