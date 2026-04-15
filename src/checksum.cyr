@@ -1,9 +1,9 @@
-// sankoch — checksum algorithms
-// Adler-32 (RFC 1950) and CRC-32 (RFC 1952).
-// Inline implementations — too small to warrant a sigil dependency.
+# sankoch — checksum algorithms
+# Adler-32 (RFC 1950) and CRC-32 (RFC 1952).
+# Inline implementations — too small to warrant a sigil dependency.
 
-// Adler-32: two running sums mod 65521 (largest prime < 2^16).
-// Source: RFC 1950, Section 2.2
+# Adler-32: two running sums mod 65521 (largest prime < 2^16).
+# Source: RFC 1950, Section 2.2
 fn adler32(data, len) {
     var s1 = 1;
     var s2 = 0;
@@ -13,12 +13,12 @@ fn adler32(data, len) {
         s2 = (s2 + s1) % 65521;
         i = i + 1;
     }
-    return (s2 * 65536) + s1;  // (s2 << 16) | s1
+    return (s2 * 65536) + s1;  # (s2 << 16) | s1
 }
 
-// CRC-32: table-driven, polynomial 0xEDB88320 (reflected).
-// Source: RFC 1952, Section 8
-// Table must be initialized once via crc32_init_table().
+# CRC-32: table-driven, polynomial 0xEDB88320 (reflected).
+# Source: RFC 1952, Section 8
+# Table must be initialized once via crc32_init_table().
 var crc32_table[256];
 
 fn crc32_init_table() {
@@ -28,7 +28,7 @@ fn crc32_init_table() {
         var j = 0;
         while (j < 8) {
             if (c & 1) {
-                // 0xEDB88320 = 3988292384
+                # 0xEDB88320 = 3988292384
                 c = (c >> 1) ^ 3988292384;
             } else {
                 c = c >> 1;
@@ -42,8 +42,8 @@ fn crc32_init_table() {
 }
 
 fn crc32(data, len) {
-    // CRC starts inverted
-    var crc = 4294967295;  // 0xFFFFFFFF
+    # CRC starts inverted
+    var crc = 4294967295;  # 0xFFFFFFFF
     var i = 0;
     while (i < len) {
         var byte = load8(data + i);
@@ -51,6 +51,6 @@ fn crc32(data, len) {
         crc = (crc >> 8) ^ crc32_table[index];
         i = i + 1;
     }
-    // Final inversion
+    # Final inversion
     return crc ^ 4294967295;
 }

@@ -1,35 +1,35 @@
-// sankoch — types and constants
-// Shared types, error codes, format identifiers.
+# sankoch — types and constants
+# Shared types, error codes, format identifiers.
 
-// Compression formats
+# Compression formats
 enum Format {
-    FORMAT_LZ4 = 1,
-    FORMAT_DEFLATE = 2,
-    FORMAT_ZLIB = 3,
-    FORMAT_GZIP = 4
+    FORMAT_LZ4 = 1;
+    FORMAT_DEFLATE = 2;
+    FORMAT_ZLIB = 3;
+    FORMAT_GZIP = 4;
 }
 
-// Error codes
+# Error codes
 enum Error {
-    OK = 0,
-    ERR_INVALID_INPUT = 1,
-    ERR_BUFFER_TOO_SMALL = 2,
-    ERR_CORRUPT_DATA = 3,
-    ERR_UNSUPPORTED_FORMAT = 4,
-    ERR_CHECKSUM_MISMATCH = 5,
-    ERR_OUTPUT_LIMIT = 6,
-    ERR_INVALID_BLOCK_TYPE = 7,
-    ERR_INVALID_HUFFMAN = 8,
-    ERR_MATCH_OUT_OF_RANGE = 9
+    OK = 0;
+    ERR_INVALID_INPUT = 1;
+    ERR_BUFFER_TOO_SMALL = 2;
+    ERR_CORRUPT_DATA = 3;
+    ERR_UNSUPPORTED_FORMAT = 4;
+    ERR_CHECKSUM_MISMATCH = 5;
+    ERR_OUTPUT_LIMIT = 6;
+    ERR_INVALID_BLOCK_TYPE = 7;
+    ERR_INVALID_HUFFMAN = 8;
+    ERR_MATCH_OUT_OF_RANGE = 9;
 }
 
-// Maximum sizes
+# Limits and magic bytes
 enum Limits {
-    LZ4_MAX_BLOCK_SIZE = 4194304,       // 4MB
-    DEFLATE_WINDOW_SIZE = 32768,        // 32KB sliding window
-    DEFLATE_MAX_MATCH = 258,
-    DEFLATE_MIN_MATCH = 3,
-    GZIP_MAGIC_0 = 31,                 // 0x1f
-    GZIP_MAGIC_1 = 139,               // 0x8b
+    LZ4_MAX_BLOCK_SIZE = 4194304;       # 4MB
+    DEFLATE_WINDOW_SIZE = 32768;        # 32KB sliding window
+    DEFLATE_MAX_MATCH = 258;
+    DEFLATE_MIN_MATCH = 3;
+    GZIP_MAGIC_0 = 31;                 # 0x1f
+    GZIP_MAGIC_1 = 139;                # 0x8b
     ZLIB_MAX_WBITS = 15
 }
