@@ -24,6 +24,7 @@ fn br_init(data, len) {
 # Bits are consumed from the least significant bit of each byte upward.
 fn br_read(br, n) {
     if (n == 0) { return 0; }
+    if (n > 32) { return 0 - ERR_INVALID_INPUT; }
     var data = load64(br);
     var bpos = load64(br + 8);
     var bbit = load64(br + 16);

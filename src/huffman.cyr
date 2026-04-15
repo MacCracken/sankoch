@@ -72,6 +72,17 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
         i = i + 1;
     }
 
+    # Validate: check that tree is not oversubscribed
+    # Sum of (count[i] * 2^(MAX_BITS - i)) must not exceed 2^MAX_BITS
+    var check_sum = 0;
+    var b = 1;
+    while (b <= HUFF_MAX_BITS) {
+        check_sum = check_sum + (load64(&bl_count + b * 8) << (HUFF_MAX_BITS - b));
+        b = b + 1;
+    }
+    # check_sum must be <= 2^MAX_BITS (32768) — oversubscribed means codes collide
+    if (check_sum > (1 << HUFF_MAX_BITS)) { return 0 - ERR_INVALID_HUFFMAN; }
+
     # Step 2: Find the numerical value of the smallest code for each length
     var next_code[128];
     store64(&next_code, 0);

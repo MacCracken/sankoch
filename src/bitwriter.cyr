@@ -28,6 +28,7 @@ fn bw_init(buf, cap) {
 # Returns 0 on success, negative error on overflow.
 fn bw_write(bw, value, n) {
     if (n == 0) { return 0; }
+    if (n > 32) { return 0 - ERR_INVALID_INPUT; }
     var buf = load64(bw);
     var cap = load64(bw + 8);
     var blen = load64(bw + 16);

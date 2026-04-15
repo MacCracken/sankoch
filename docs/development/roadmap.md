@@ -89,8 +89,16 @@ Items across all phases that are not yet done:
 | Compression levels | 3 | Medium | Match-finder effort tuning (fast/default/best) |
 | Streaming API | 4 | Large | Incremental compress/decompress for large files |
 | Dynamic Huffman encoding | 3 | Medium | Currently uses fixed only; dynamic gives better ratio |
-| Security audit | All | Large | Bounds checks, integer overflow, malformed input |
-| Git object format integration test | 2-4 | Low | Verify zlib round-trip with actual git object bytes |
+| Security audit | All | Large | **Done 2026-04-15** — see docs/audit/2026-04-15.md |
+| Git object format integration test | 2-4 | Low | **Done** — tests/git_object.tcyr |
+
+### Deferred from Security Audit (2026-04-15)
+
+| ID | Severity | Item | Notes |
+|----|----------|------|-------|
+| CRIT-02-FOLLOWUP | Critical | Verify DEFLATE stream consumed exact byte count before zlib/gzip trailer | Requires exposing bitreader position after decompress |
+| MED-01 | Medium | Thread-safe state — replace globals with caller-provided context | Blocked until Cyrius has threading; document as known limitation |
+| LOW-03 | Low | Replace linear scan in `_deflate_len_code`/`_deflate_dist_code` | Performance-only; binary search or lookup table |
 
 ## Future (post-1.0)
 

@@ -146,6 +146,7 @@ fn _deflate_decode_block(br, dst, dp, dst_cap) {
         if (sym < 256) {
             # Literal byte
             if (dp >= dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+            if (dp >= DECOMPRESS_MAX_OUTPUT) { return 0 - ERR_OUTPUT_LIMIT; }
             store8(dst + dp, sym);
             dp = dp + 1;
         } elif (sym == 256) {
@@ -180,6 +181,7 @@ fn _deflate_decode_block(br, dst, dp, dst_cap) {
             # Copy from output window
             if (distance > dp) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
             if (dp + length > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+            if (dp + length > DECOMPRESS_MAX_OUTPUT) { return 0 - ERR_OUTPUT_LIMIT; }
 
             var src_pos = dp - distance;
             var i = 0;

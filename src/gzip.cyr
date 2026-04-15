@@ -34,22 +34,27 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
         if (offset + 2 > src_len) { return 0 - ERR_CORRUPT_DATA; }
         var xlen = load8(src + offset) | (load8(src + offset + 1) << 8);
         offset = offset + 2 + xlen;
+        if (offset > src_len) { return 0 - ERR_CORRUPT_DATA; }
     }
 
     # Skip optional FNAME (null-terminated)
     if ((flg & 8) != 0) {
+        var found = 0;
         while (offset < src_len) {
-            if (load8(src + offset) == 0) { offset = offset + 1; break; }
+            if (load8(src + offset) == 0) { offset = offset + 1; found = 1; break; }
             offset = offset + 1;
         }
+        if (found == 0) { return 0 - ERR_CORRUPT_DATA; }
     }
 
     # Skip optional FCOMMENT (null-terminated)
     if ((flg & 16) != 0) {
+        var found = 0;
         while (offset < src_len) {
-            if (load8(src + offset) == 0) { offset = offset + 1; break; }
+            if (load8(src + offset) == 0) { offset = offset + 1; found = 1; break; }
             offset = offset + 1;
         }
+        if (found == 0) { return 0 - ERR_CORRUPT_DATA; }
     }
 
     # Skip optional FHCRC (2 bytes)

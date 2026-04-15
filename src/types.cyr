@@ -31,5 +31,6 @@ enum Limits {
     DEFLATE_MIN_MATCH = 3;
     GZIP_MAGIC_0 = 31;                 # 0x1f
     GZIP_MAGIC_1 = 139;                # 0x8b
-    ZLIB_MAX_WBITS = 15
+    ZLIB_MAX_WBITS = 15;
+    DECOMPRESS_MAX_OUTPUT = 16777216  # 16MB hard ceiling for decompression
 }

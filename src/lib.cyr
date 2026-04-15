@@ -15,6 +15,7 @@
 # detect_format(src, src_len) -> Format enum value or ERR_UNSUPPORTED_FORMAT
 
 fn compress(format, src, src_len, dst, dst_cap) {
+    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     if (format == FORMAT_LZ4) {
         return lz4_compress(src, src_len, dst, dst_cap);
     }
@@ -31,6 +32,7 @@ fn compress(format, src, src_len, dst, dst_cap) {
 }
 
 fn decompress(format, src, src_len, dst, dst_cap) {
+    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     if (format == FORMAT_LZ4) {
         return lz4_decompress(src, src_len, dst, dst_cap);
     }

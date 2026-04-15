@@ -51,6 +51,6 @@ fn crc32(data, len) {
         crc = (crc >> 8) ^ load64(&crc32_table + index * 8);
         i = i + 1;
     }
-    # Final inversion
-    return crc ^ 4294967295;
+    # Final inversion, masked to 32 bits
+    return (crc ^ 4294967295) & 4294967295;
 }
