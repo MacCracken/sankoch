@@ -212,16 +212,24 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
     var sp = 0;        # current source position
     var dp = 0;        # current dest position
     var anchor = 0;    # start of pending literals
+    var skip = 0;      # acceleration: skip counter for incompressible regions
 
-    while (sp + LZ4_MIN_MATCH <= src_len) {
+    # LZ4 spec: last 5 bytes must be literals (match search limit).
+    # Also: last match must start >= 12 bytes before end (MFLIMIT).
+    var match_limit = src_len - 5;
+    if (match_limit < 0) { match_limit = 0; }
+    var mf_limit = src_len - 12;
+    if (mf_limit < 0) { mf_limit = 0; }
+
+    while (sp + LZ4_MIN_MATCH <= match_limit) {
         var h = _lz4_hash4(src, sp);
         var ref = load64(_lz4_htab + h * 8);
 
         # Update hash table with current position
         store64(_lz4_htab + h * 8, sp);
 
-        # Check for a valid match
-        if (ref >= 0) {
+        # Check for a valid match (enforce MFLIMIT: match start < src_len - 12)
+        if (ref >= 0 && sp <= mf_limit) {
             var off = sp - ref;
             if (off > 0 && off <= LZ4_MAX_OFFSET) {
                 # Verify the 4-byte match
@@ -230,7 +238,9 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
                         if (load8(src + ref + 2) == load8(src + sp + 2)) {
                             if (load8(src + ref + 3) == load8(src + sp + 3)) {
                                 # Match confirmed — extend it
-                                var max_ext = src_len - sp;
+                                # Clamp match so last 5 bytes remain as literals
+                                var max_ext = match_limit - sp;
+                                if (max_ext > src_len - sp) { max_ext = src_len - sp; }
                                 var mlen = _lz4_match_len(src, ref, sp, max_ext);
 
                                 # Emit literals [anchor..sp) + match
@@ -242,11 +252,12 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
                                 sp = sp + mlen;
                                 anchor = sp;
 
-                                # Hash the positions we skipped (improves future matches)
-                                if (sp + LZ4_MIN_MATCH <= src_len) {
+                                # Hash the position after match
+                                if (sp + LZ4_MIN_MATCH <= match_limit) {
                                     var hh = _lz4_hash4(src, sp);
                                     store64(_lz4_htab + hh * 8, sp);
                                 }
+                                skip = 0;  # reset acceleration
                                 continue;
                             }
                         }
@@ -255,7 +266,9 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
             }
         }
 
-        sp = sp + 1;
+        # Acceleration: skip ahead on misses (incompressible data traversal)
+        skip = skip + 1;
+        sp = sp + 1 + (skip >> 6);
     }
 
     # Emit remaining literals as the last sequence (no match)

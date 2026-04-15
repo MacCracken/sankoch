@@ -92,6 +92,10 @@ The framing layer. Thin wrappers over DEFLATE with checksums.
 - **Zstandard** — tANS + LZ77. Shravan's Opus range encoder (`opus.cyr:175-284`) is the entropy coding primitive tANS generalizes from. ~30K lines in reference impl. May warrant a separate crate or a major sankoch version. Research Duda's ANS paper (arXiv:1311.2540) first.
 - **LZMA** — LZ77 + range coding + LPC prediction. Shravan's FLAC LPC decoder (`flac.cyr:517-580`) is the prediction stage. The range coder from Opus covers the entropy stage. The combination is LZMA's architecture.
 - **Brotli** — if web serving needs arise
+- **Concatenated gzip streams** — RFC 1952 allows multiple members back-to-back. Currently we stop after the first. Add a loop to decompress all members when a consumer needs it.
+- **LZ4 frame format (LZ4F)** — Block format only today. Frame format adds magic bytes, content size, block/content checksums. Needed if LZ4 data leaves the AGNOS ecosystem.
+- **zlib FDICT preset dictionary** — Currently rejected. Could support for consumers that need pre-seeded dictionaries (e.g., HTTP/2 HPACK-style).
+- **SIMD CRC-32** — `PCLMULQDQ`-based CRC-32 for gzip. 4-10x speedup on x86_64. Adler-32 already SIMD-accelerated.
 - **GPU texture compression** (BC1-BC7, ASTC) — mabda has generic compute dispatch (`compute.cyr`). Texture format enums are defined but codecs not yet implemented. When this lands, sankoch or a sibling crate provides the codec, mabda provides the GPU dispatch.
 
 ## Extraction Sources
