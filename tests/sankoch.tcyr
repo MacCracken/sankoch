@@ -195,6 +195,50 @@ fn test_lz4_buffer_too_small() {
 }
 
 # ================================================================
+# LZ4 frame format tests
+# ================================================================
+
+fn test_lz4f_roundtrip() {
+    var src = alloc(120);
+    var j = 0;
+    while (j < 120) { store8(src + j, 65 + (j % 3)); j = j + 1; }
+    var c = alloc(512);
+    var d = alloc(256);
+    var clen = lz4f_compress(src, 120, c, 512);
+    assert(clen > 0, "lz4f compress");
+    assert(load8(c) == 4 && load8(c+1) == 34 && load8(c+2) == 77 && load8(c+3) == 24, "lz4f magic");
+    var dlen = lz4f_decompress(c, clen, d, 256);
+    assert(dlen == 120, "lz4f rt size");
+    j = 0;
+    while (j < 120) { assert(load8(d + j) == load8(src + j), "lz4f rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_empty() {
+    var src = alloc(1);
+    var c = alloc(64);
+    var d = alloc(64);
+    var clen = lz4f_compress(src, 0, c, 64);
+    assert(clen > 0, "lz4f compress empty");
+    assert(lz4f_decompress(c, clen, d, 64) == 0, "lz4f decompress empty");
+    return 0;
+}
+
+fn test_lz4f_checksum() {
+    var src = alloc(5);
+    store8(src+0,72); store8(src+1,101); store8(src+2,108);
+    store8(src+3,108); store8(src+4,111);
+    var c = alloc(64);
+    var clen = lz4f_compress(src, 5, c, 64);
+    assert(clen > 0, "lz4f compress for checksum");
+    # Corrupt the content checksum (last 4 bytes)
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+    var d = alloc(64);
+    assert(lz4f_decompress(c, clen, d, 64) < 0, "lz4f corrupt checksum should fail");
+    return 0;
+}
+
+# ================================================================
 # Format detection tests
 # ================================================================
 
@@ -406,6 +450,46 @@ fn test_zlib_corrupt_checksum() {
     return 0;
 }
 
+fn test_zlib_fdict() {
+    # zlib stream with FDICT=1, dictionary="The quick brown fox "
+    # data="fox jumps over the lazy dog" (compressed without dict refs)
+    var stream = alloc(39);
+    store8(stream+0,120); store8(stream+1,187);
+    store8(stream+2,76); store8(stream+3,98); store8(stream+4,7); store8(stream+5,52);
+    store8(stream+6,75); store8(stream+7,203); store8(stream+8,175); store8(stream+9,80);
+    store8(stream+10,200); store8(stream+11,42); store8(stream+12,205); store8(stream+13,45);
+    store8(stream+14,40); store8(stream+15,86); store8(stream+16,200); store8(stream+17,47);
+    store8(stream+18,75); store8(stream+19,45); store8(stream+20,82); store8(stream+21,40);
+    store8(stream+22,201); store8(stream+23,72); store8(stream+24,85); store8(stream+25,200);
+    store8(stream+26,73); store8(stream+27,172); store8(stream+28,170); store8(stream+29,84);
+    store8(stream+30,72); store8(stream+31,201); store8(stream+32,79); store8(stream+33,7);
+    store8(stream+34,0); store8(stream+35,142); store8(stream+36,154); store8(stream+37,10);
+    store8(stream+38,20);
+
+    # Dictionary: "The quick brown fox " (20 bytes)
+    var dict = alloc(20);
+    store8(dict+0,84); store8(dict+1,104); store8(dict+2,101); store8(dict+3,32);
+    store8(dict+4,113); store8(dict+5,117); store8(dict+6,105); store8(dict+7,99);
+    store8(dict+8,107); store8(dict+9,32); store8(dict+10,98); store8(dict+11,114);
+    store8(dict+12,111); store8(dict+13,119); store8(dict+14,110); store8(dict+15,32);
+    store8(dict+16,102); store8(dict+17,111); store8(dict+18,120); store8(dict+19,32);
+
+    var d = alloc(64);
+    # Without dict should fail (FDICT requires dictionary)
+    assert(zlib_decompress(stream, 39, d, 64) < 0, "zlib fdict without dict rejects");
+
+    # With correct dict should succeed
+    var dlen = zlib_decompress_dict(stream, 39, d, 64, dict, 20);
+    assert(dlen == 27, "zlib fdict decompress size");
+    # "fox" = 102 111 120
+    assert(load8(d) == 102 && load8(d+1) == 111 && load8(d+2) == 120, "zlib fdict content");
+
+    # With wrong dict should fail (Adler-32 mismatch)
+    store8(dict, 0);
+    assert(zlib_decompress_dict(stream, 39, d, 64, dict, 20) < 0, "zlib fdict wrong dict rejects");
+    return 0;
+}
+
 # ================================================================
 # gzip wrapper tests
 # ================================================================
@@ -456,6 +540,33 @@ fn test_gzip_truncated() {
     var clen = gzip_compress(src, 5, c, 128);
     var d = alloc(64);
     assert(gzip_decompress(c, 10, d, 64) < 0, "gzip truncated should fail");
+    return 0;
+}
+
+fn test_gzip_concat() {
+    # Compress two separate payloads, concatenate, decompress as one stream
+    var s1 = alloc(5);
+    store8(s1+0,72); store8(s1+1,101); store8(s1+2,108);
+    store8(s1+3,108); store8(s1+4,111);
+    var s2 = alloc(5);
+    store8(s2+0,87); store8(s2+1,111); store8(s2+2,114);
+    store8(s2+3,108); store8(s2+4,100);
+    var c1 = alloc(128);
+    var c2 = alloc(128);
+    var clen1 = gzip_compress(s1, 5, c1, 128);
+    var clen2 = gzip_compress(s2, 5, c2, 128);
+    assert(clen1 > 0 && clen2 > 0, "gzip concat compress");
+    # Concatenate into one buffer
+    var cat = alloc(256);
+    var i = 0;
+    while (i < clen1) { store8(cat + i, load8(c1 + i)); i = i + 1; }
+    i = 0;
+    while (i < clen2) { store8(cat + clen1 + i, load8(c2 + i)); i = i + 1; }
+    var d = alloc(64);
+    var dlen = gzip_decompress(cat, clen1 + clen2, d, 64);
+    assert(dlen == 10, "gzip concat total size");
+    assert(load8(d) == 72 && load8(d + 4) == 111, "gzip concat part 1");
+    assert(load8(d + 5) == 87 && load8(d + 9) == 100, "gzip concat part 2");
     return 0;
 }
 
@@ -702,6 +813,9 @@ fn main() {
     test_lz4_roundtrip_random();
     test_lz4_roundtrip_1kb();
     test_lz4_buffer_too_small();
+    test_lz4f_roundtrip();
+    test_lz4f_empty();
+    test_lz4f_checksum();
     test_detect_gzip();
     test_detect_zlib();
     test_detect_short_input();
@@ -721,10 +835,12 @@ fn main() {
     test_zlib_rt_hello();
     test_zlib_rt_via_api();
     test_zlib_corrupt_checksum();
+    test_zlib_fdict();
     test_gzip_rt_hello();
     test_gzip_rt_via_api();
     test_gzip_corrupt_crc();
     test_gzip_truncated();
+    test_gzip_concat();
     test_format_detect_roundtrip();
     test_levels_deflate();
     test_levels_zlib();

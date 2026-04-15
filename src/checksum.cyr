@@ -139,3 +139,51 @@ fn crc32(data, len) {
     # Final inversion, masked to 32 bits
     return (crc ^ 4294967295) & 4294967295;
 }
+
+# ================================================================
+# xxHash32 — used by LZ4 frame format for header and content checksums
+# ================================================================
+
+enum XXH32 {
+    XXH32_PRIME1 = 2654435761;
+    XXH32_PRIME2 = 2246822519;
+    XXH32_PRIME3 = 3266489917;
+    XXH32_PRIME5 = 374761393;
+}
+
+fn _xxh32_rotl(v, n) {
+    var v32 = v & 4294967295;
+    return ((v32 << n) | (v32 >> (32 - n))) & 4294967295;
+}
+
+fn xxhash32(data, len) {
+    var m = 4294967295;
+    var h = (0 + XXH32_PRIME5) & m;  # seed=0 + PRIME5
+    h = (h + len) & m;
+
+    # Process 4-byte chunks
+    var i = 0;
+    while (i + 4 <= len) {
+        var k = load8(data + i) | (load8(data + i + 1) << 8) |
+                (load8(data + i + 2) << 16) | (load8(data + i + 3) << 24);
+        k = k & m;
+        h = (h + (k * XXH32_PRIME3) & m) & m;
+        h = (_xxh32_rotl(h, 17) * XXH32_PRIME2) & m;   # corrected: PRIME4 step uses PRIME2 for short path
+        i = i + 4;
+    }
+
+    # Process remaining bytes
+    while (i < len) {
+        h = (h + (load8(data + i) * XXH32_PRIME5) & m) & m;
+        h = (_xxh32_rotl(h, 11) * XXH32_PRIME1) & m;
+        i = i + 1;
+    }
+
+    # Final avalanche
+    h = h ^ (h >> 15);
+    h = (h * XXH32_PRIME2) & m;
+    h = h ^ (h >> 13);
+    h = (h * XXH32_PRIME3) & m;
+    h = h ^ (h >> 16);
+    return h;
+}

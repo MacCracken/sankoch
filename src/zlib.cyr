@@ -6,15 +6,23 @@
 #   CMF byte: bits 0-3 = CM (compression method, must be 8 = deflate)
 #             bits 4-7 = CINFO (window size = 2^(CINFO+8), max 15 = 32K)
 #   FLG byte: bits 0-4 = FCHECK (makes CMF*256+FLG divisible by 31)
-#             bit 5    = FDICT (preset dictionary, we don't support this)
+#             bit 5    = FDICT (preset dictionary)
 #             bits 6-7 = FLEVEL (compression level hint, informational only)
 #
 # Trailer: 4-byte big-endian Adler-32 of uncompressed data.
 #
 # This is what git objects use.
 
-# Decompress a zlib stream.
+# Decompress a zlib stream (no preset dictionary).
 fn zlib_decompress(src, src_len, dst, dst_cap) {
+    return zlib_decompress_dict(src, src_len, dst, dst_cap, 0, 0);
+}
+
+# Decompress a zlib stream with an optional preset dictionary.
+# If the stream has FDICT=1, dict/dict_len must provide the dictionary
+# whose Adler-32 matches the stream's DICTID. Pass dict=0, dict_len=0
+# for streams without FDICT.
+fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len) {
     if (src_len < 6) { return 0 - ERR_INVALID_INPUT; }
 
     # Parse header
@@ -27,18 +35,35 @@ fn zlib_decompress(src, src_len, dst, dst_cap) {
     # CM must be 8 (deflate)
     if ((cmf & 15) != 8) { return 0 - ERR_UNSUPPORTED_FORMAT; }
 
-    # FDICT not supported
-    if ((flg & 32) != 0) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+    var hdr_len = 2;
 
-    # Decompress DEFLATE payload (skip 2-byte header)
-    var deflate_len = src_len - 2;
-    var dlen = deflate_decompress(src + 2, deflate_len, dst, dst_cap);
+    # Handle FDICT (preset dictionary)
+    if ((flg & 32) != 0) {
+        if (hdr_len + 4 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+        if (dict == 0 || dict_len == 0) { return 0 - ERR_INVALID_INPUT; }
+        # Verify dictionary ID (Adler-32 of the dictionary, big-endian)
+        var stored_dict_id = (load8(src + 2) << 24) | (load8(src + 3) << 16) |
+                             (load8(src + 4) << 8) | load8(src + 5);
+        var computed_dict_id = adler32(dict, dict_len);
+        if (stored_dict_id != computed_dict_id) { return 0 - ERR_CHECKSUM_MISMATCH; }
+        hdr_len = 6;
+    }
+
+    # Decompress DEFLATE payload
+    var deflate_src = src + hdr_len;
+    var deflate_len = src_len - hdr_len;
+    var dlen = 0;
+    if (dict_len > 0) {
+        dlen = deflate_decompress_dict(deflate_src, deflate_len, dst, dst_cap, dict, dict_len);
+    } else {
+        dlen = deflate_decompress(deflate_src, deflate_len, dst, dst_cap);
+    }
     if (dlen < 0) { return dlen; }
 
-    # Trailer starts right after the DEFLATE stream consumed bytes
+    # Trailer: 4-byte big-endian Adler-32
     var consumed = deflate_bytes_consumed();
-    var trailer = src + 2 + consumed;
-    if (2 + consumed + 4 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+    var trailer = deflate_src + consumed;
+    if (hdr_len + consumed + 4 > src_len) { return 0 - ERR_CORRUPT_DATA; }
     var stored_adler = (load8(trailer) << 24) | (load8(trailer + 1) << 16) |
                        (load8(trailer + 2) << 8) | load8(trailer + 3);
     var computed_adler = adler32(dst, dlen);

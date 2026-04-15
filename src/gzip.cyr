@@ -14,8 +14,12 @@
 #   CRC-32 of uncompressed data (4 bytes, little-endian)
 #   ISIZE = uncompressed size mod 2^32 (4 bytes, little-endian)
 
-# Decompress a gzip stream.
-fn gzip_decompress(src, src_len, dst, dst_cap) {
+# Decompress one gzip member starting at src.
+# Returns decompressed length, or negative error.
+# Sets _gzip_member_end to the byte offset past this member's trailer.
+var _gzip_member_end = 0;
+
+fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
     if (src_len < 18) { return 0 - ERR_INVALID_INPUT; }
 
     # Verify magic bytes
@@ -86,7 +90,29 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
                       (load8(trailer + 6) << 16) | (load8(trailer + 7) << 24);
     if (stored_size != (dlen & 4294967295)) { return 0 - ERR_CHECKSUM_MISMATCH; }
 
+    _gzip_member_end = offset + consumed + 8;
     return dlen;
+}
+
+# Decompress a gzip stream (supports concatenated members per RFC 1952).
+fn gzip_decompress(src, src_len, dst, dst_cap) {
+    var total = 0;
+    var pos = 0;
+
+    while (pos < src_len) {
+        # Check for another gzip member (magic bytes)
+        if (pos + 2 > src_len) { break; }
+        if (load8(src + pos) != 31 || load8(src + pos + 1) != 139) { break; }
+
+        var dlen = _gzip_decompress_member(src + pos, src_len - pos,
+                                            dst + total, dst_cap - total);
+        if (dlen < 0) { return dlen; }
+        total = total + dlen;
+        pos = pos + _gzip_member_end;
+    }
+
+    if (total == 0 && pos == 0) { return 0 - ERR_INVALID_INPUT; }
+    return total;
 }
 
 # Compress data into a gzip stream.

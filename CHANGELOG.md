@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] — 2026-04-15
+
+**Feature release: LZ4 frame format, concatenated gzip, zlib dictionary support, multi-block DEFLATE.**
+
+### Added
+- **LZ4 frame format** (`lz4f_compress`, `lz4f_decompress`) — full LZ4F
+  frame wrapper with magic bytes, frame descriptor, header checksum,
+  content checksum (xxHash32), and uncompressed block fallback.
+  Byte-identical output to `lz4` CLI v1.10.0 on tested inputs.
+- **xxHash32** (`xxhash32()`) — fast 32-bit hash in `checksum.cyr`,
+  used by LZ4 frame format for header and content checksums.
+- **Concatenated gzip decompression** — `gzip_decompress` now loops
+  over multiple back-to-back gzip members per RFC 1952 Section 2.2.
+- **zlib preset dictionary** (`zlib_decompress_dict`) — handles FDICT
+  flag in zlib streams. Verifies dictionary Adler-32, pre-fills the
+  DEFLATE sliding window, and decompresses with back-references into
+  the dictionary. Also adds `deflate_decompress_dict` for raw DEFLATE
+  with a preset dictionary.
+- **Multi-block DEFLATE infrastructure** — `deflate_compress_level`
+  now uses block-based functions (`_deflate_compress_fixed_block`,
+  `_deflate_compress_dynamic_block`) that accept a shared bitwriter
+  and BFINAL flag. Currently uses 1MB block size (single block for
+  most inputs). Enables future adaptive block splitting.
+- 9 new tests: `test_lz4f_roundtrip`, `test_lz4f_empty`,
+  `test_lz4f_checksum`, `test_gzip_concat`, `test_zlib_fdict`.
+  Total: 5897 assertions, 0 failures.
+
 ## [1.1.0] — 2026-04-15
 
 **Huffman table bug fix. All 15 disabled tests now passing.**

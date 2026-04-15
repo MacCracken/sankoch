@@ -1,6 +1,6 @@
 [package]
 name = "sankoch"
-version = "1.1.0"
+version = "1.2.0"
 description = "Lossless compression library — LZ4, DEFLATE, zlib, gzip"
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/sankoch"
