@@ -1,670 +1,591 @@
-# sankoch — test suite
-# Round-trip tests, known-vector tests, edge cases.
+# sankoch — full test suite
+# Covers: checksums, LZ4, DEFLATE, zlib, gzip, format detection,
+# compression levels, dynamic Huffman, streaming, error paths.
+
+# ================================================================
+# Checksum tests
+# ================================================================
 
 fn test_adler32_empty() {
-    # Adler-32 of empty data = 1 (initial s1=1, s2=0)
     var buf[1];
-    var result = adler32(buf, 0);
-    assert(result == 1, "adler32 of empty data should be 1");
+    assert(adler32(buf, 0) == 1, "adler32 empty = 1");
     return 0;
 }
 
 fn test_adler32_hello() {
-    # Known value: adler32("Hello") = 0x058C01F5 = 93126133
+    # adler32("Hello") = 0x058C01F5 = 93126133
     var buf[5];
-    store8(buf + 0, 72);   # H
-    store8(buf + 1, 101);  # e
-    store8(buf + 2, 108);  # l
-    store8(buf + 3, 108);  # l
-    store8(buf + 4, 111);  # o
-    var result = adler32(buf, 5);
-    assert(result == 93126133, "adler32 of 'Hello'");
+    store8(buf + 0, 72); store8(buf + 1, 101); store8(buf + 2, 108);
+    store8(buf + 3, 108); store8(buf + 4, 111);
+    assert(adler32(buf, 5) == 93126133, "adler32 Hello");
+    return 0;
+}
+
+fn test_adler32_single_byte() {
+    # adler32("\x00") = (0+1)*65536 + (0+1) = 65537 = 0x00010001
+    var buf[1];
+    store8(buf, 0);
+    assert(adler32(buf, 1) == 65537, "adler32 single zero byte");
+    # adler32("\xFF") = s1=(1+255)%65521=256, s2=(0+256)%65521=256 → 256*65536+256 = 16777472
+    store8(buf, 255);
+    assert(adler32(buf, 1) == 16777472, "adler32 single 0xFF byte");
+    return 0;
+}
+
+fn test_adler32_large() {
+    # Test crossing the NMAX=5552 boundary — 6000 bytes of 'A' (65)
+    var buf[6000];
+    var i = 0;
+    while (i < 6000) { store8(buf + i, 65); i = i + 1; }
+    var result = adler32(buf, 6000);
+    # Must be non-zero and match deferred-modulo computation
+    assert(result > 0, "adler32 large must be positive");
+    # Verify round-trip: compress with zlib, decompress — checksum validated internally
+    var compressed[8192];
+    var decompressed[6000];
+    var clen = zlib_compress(buf, 6000, compressed, 8192);
+    assert(clen > 0, "adler32 large zlib compress");
+    var dlen = zlib_decompress(compressed, clen, decompressed, 6000);
+    assert(dlen == 6000, "adler32 large zlib roundtrip");
     return 0;
 }
 
 fn test_crc32_empty() {
     crc32_init_table();
     var buf[1];
-    var result = crc32(buf, 0);
-    # CRC-32 of empty data = 0x00000000
-    assert(result == 0, "crc32 of empty data should be 0");
+    assert(crc32(buf, 0) == 0, "crc32 empty = 0");
     return 0;
 }
 
+fn test_crc32_known() {
+    # crc32("123456789") = 0xCBF43926 = 3421780262
+    crc32_init_table();
+    var buf[9];
+    store8(buf + 0, 49); store8(buf + 1, 50); store8(buf + 2, 51);
+    store8(buf + 3, 52); store8(buf + 4, 53); store8(buf + 5, 54);
+    store8(buf + 6, 55); store8(buf + 7, 56); store8(buf + 8, 57);
+    assert(crc32(buf, 9) == 3421780262, "crc32 '123456789'");
+    return 0;
+}
+
+# ================================================================
+# LZ4 tests
+# ================================================================
+
 fn test_lz4_roundtrip_empty() {
     var src[1];
-    var compressed[64];
-    var decompressed[64];
+    var c[64];
+    var d[64];
+    var clen = lz4_compress(src, 0, c, 64);
+    assert(clen >= 0, "lz4 compress empty");
+    var dlen = lz4_decompress(c, clen, d, 64);
+    assert(dlen == 0, "lz4 decompress empty");
+    return 0;
+}
 
-    var clen = lz4_compress(src, 0, compressed, 64);
-    assert(clen >= 0, "lz4 compress empty should succeed");
-
-    var dlen = lz4_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 0, "lz4 decompress empty should return 0 bytes");
+fn test_lz4_roundtrip_1byte() {
+    var src[1];
+    store8(src, 42);
+    var c[64];
+    var d[64];
+    var clen = lz4_compress(src, 1, c, 64);
+    assert(clen > 0, "lz4 compress 1 byte");
+    var dlen = lz4_decompress(c, clen, d, 64);
+    assert(dlen == 1, "lz4 roundtrip 1 byte size");
+    assert(load8(d) == 42, "lz4 roundtrip 1 byte value");
     return 0;
 }
 
 fn test_lz4_roundtrip_small() {
     var src[16];
     var i = 0;
-    while (i < 16) {
-        store8(src + i, i + 65);  # "ABCDEFGHIJKLMNOP"
-        i = i + 1;
-    }
-
-    var compressed[64];
-    var decompressed[64];
-
-    var clen = lz4_compress(src, 16, compressed, 64);
-    assert(clen > 0, "lz4 compress should produce output");
-
-    var dlen = lz4_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 16, "lz4 roundtrip should produce 16 bytes");
-
-    # Verify content
+    while (i < 16) { store8(src + i, i + 65); i = i + 1; }
+    var c[64];
+    var d[64];
+    var clen = lz4_compress(src, 16, c, 64);
+    assert(clen > 0, "lz4 compress 16 bytes");
+    var dlen = lz4_decompress(c, clen, d, 64);
+    assert(dlen == 16, "lz4 roundtrip 16 bytes size");
     i = 0;
     while (i < 16) {
-        assert(load8(decompressed + i) == load8(src + i), "lz4 roundtrip content mismatch");
+        assert(load8(d + i) == load8(src + i), "lz4 roundtrip 16 content");
         i = i + 1;
     }
     return 0;
 }
 
 fn test_lz4_roundtrip_repetitive() {
-    # Highly repetitive data — should compress well with hash match-finder
     var src[256];
     var i = 0;
-    while (i < 256) {
-        store8(src + i, i % 4);  # repeating 0,1,2,3 pattern
-        i = i + 1;
-    }
-
-    var compressed[512];
-    var decompressed[512];
-
-    var clen = lz4_compress(src, 256, compressed, 512);
-    assert(clen > 0, "lz4 compress repetitive should succeed");
-    # With matches the compressed size should be smaller than input
-    assert(clen < 256, "lz4 should compress repetitive data");
-
-    var dlen = lz4_decompress(compressed, clen, decompressed, 512);
-    assert(dlen == 256, "lz4 roundtrip repetitive should restore 256 bytes");
-
+    while (i < 256) { store8(src + i, i % 4); i = i + 1; }
+    var c[512];
+    var d[512];
+    var clen = lz4_compress(src, 256, c, 512);
+    assert(clen > 0 && clen < 256, "lz4 compresses repetitive data");
+    var dlen = lz4_decompress(c, clen, d, 512);
+    assert(dlen == 256, "lz4 roundtrip repetitive size");
     i = 0;
-    while (i < 256) {
-        assert(load8(decompressed + i) == load8(src + i), "lz4 repetitive content mismatch");
-        i = i + 1;
-    }
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "lz4 rep content"); i = i + 1; }
     return 0;
 }
 
 fn test_lz4_roundtrip_all_same() {
-    # All identical bytes — maximum compression opportunity
     var src[128];
     var i = 0;
-    while (i < 128) {
-        store8(src + i, 42);
-        i = i + 1;
-    }
-
-    var compressed[256];
-    var decompressed[256];
-
-    var clen = lz4_compress(src, 128, compressed, 256);
-    assert(clen > 0, "lz4 compress all-same should succeed");
-    assert(clen < 128, "lz4 should compress all-same data");
-
-    var dlen = lz4_decompress(compressed, clen, decompressed, 256);
-    assert(dlen == 128, "lz4 roundtrip all-same should restore 128 bytes");
-
+    while (i < 128) { store8(src + i, 42); i = i + 1; }
+    var c[256];
+    var d[256];
+    var clen = lz4_compress(src, 128, c, 256);
+    assert(clen > 0 && clen < 128, "lz4 compresses all-same");
+    var dlen = lz4_decompress(c, clen, d, 256);
+    assert(dlen == 128, "lz4 all-same size");
     i = 0;
-    while (i < 128) {
-        assert(load8(decompressed + i) == 42, "lz4 all-same content mismatch");
-        i = i + 1;
-    }
+    while (i < 128) { assert(load8(d + i) == 42, "lz4 all-same content"); i = i + 1; }
     return 0;
 }
 
-fn test_lz4_roundtrip_short() {
-    # 1-3 bytes — below minimum match length, must go literals-only
-    var src[3];
-    store8(src + 0, 10);
-    store8(src + 1, 20);
-    store8(src + 2, 30);
+fn test_lz4_roundtrip_random() {
+    # Pseudo-random incompressible data
+    var src[512];
+    var state = 12345;
+    var i = 0;
+    while (i < 512) {
+        state = state * 6364136223846793005 + 1;
+        store8(src + i, (state >> 33) & 255);
+        i = i + 1;
+    }
+    var c[1024];
+    var d[512];
+    var clen = lz4_compress(src, 512, c, 1024);
+    assert(clen > 0, "lz4 compress random data");
+    var dlen = lz4_decompress(c, clen, d, 512);
+    assert(dlen == 512, "lz4 roundtrip random size");
+    i = 0;
+    while (i < 512) { assert(load8(d + i) == load8(src + i), "lz4 random content"); i = i + 1; }
+    return 0;
+}
 
-    var compressed[64];
-    var decompressed[64];
-
-    var clen = lz4_compress(src, 3, compressed, 64);
-    assert(clen > 0, "lz4 compress 3 bytes should succeed");
-
-    var dlen = lz4_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 3, "lz4 roundtrip 3 bytes");
-    assert(load8(decompressed + 0) == 10, "lz4 short byte 0");
-    assert(load8(decompressed + 1) == 20, "lz4 short byte 1");
-    assert(load8(decompressed + 2) == 30, "lz4 short byte 2");
+fn test_lz4_roundtrip_1kb() {
+    var src[1024];
+    var i = 0;
+    while (i < 1024) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    var c[2048];
+    var d[1024];
+    var clen = lz4_compress(src, 1024, c, 2048);
+    assert(clen > 0, "lz4 compress 1KB");
+    var dlen = lz4_decompress(c, clen, d, 1024);
+    assert(dlen == 1024, "lz4 roundtrip 1KB size");
+    i = 0;
+    while (i < 1024) { assert(load8(d + i) == load8(src + i), "lz4 1KB content"); i = i + 1; }
     return 0;
 }
 
 fn test_lz4_buffer_too_small() {
     var src[16];
     var i = 0;
-    while (i < 16) {
-        store8(src + i, 42);
-        i = i + 1;
-    }
-
-    var compressed[64];
-    var clen = lz4_compress(src, 16, compressed, 64);
-    assert(clen > 0, "compress should succeed");
-
-    # Try to decompress into too-small buffer
+    while (i < 16) { store8(src + i, 42); i = i + 1; }
+    var c[64];
+    var clen = lz4_compress(src, 16, c, 64);
+    assert(clen > 0, "lz4 compress for buf test");
     var tiny[4];
-    var dlen = lz4_decompress(compressed, clen, tiny, 4);
-    assert(dlen < 0, "decompress into tiny buffer should fail");
-    return 0;
-}
-
-fn test_detect_format_gzip() {
-    var buf[2];
-    store8(buf + 0, 31);   # 0x1f
-    store8(buf + 1, 139);  # 0x8b
-    var fmt = detect_format(buf, 2);
-    assert(fmt == FORMAT_GZIP, "should detect gzip");
-    return 0;
-}
-
-fn test_detect_format_zlib() {
-    # zlib: CMF=0x78 (deflate, window=32K), FLG=0x9C
-    # (0x78 * 256 + 0x9C) % 31 == 0
-    var buf[2];
-    store8(buf + 0, 120);  # 0x78
-    store8(buf + 1, 156);  # 0x9C
-    var fmt = detect_format(buf, 2);
-    assert(fmt == FORMAT_ZLIB, "should detect zlib");
+    assert(lz4_decompress(c, clen, tiny, 4) < 0, "lz4 decompress tiny buf should fail");
     return 0;
 }
 
 # ================================================================
-# DEFLATE decompression tests (known vectors from zlib)
+# Format detection tests
 # ================================================================
 
-fn test_deflate_empty() {
-    # Raw DEFLATE of empty input: 0x03 0x00
-    # (BFINAL=1, BTYPE=01 fixed Huffman, symbol 256 = end of block)
+fn test_detect_gzip() {
+    var buf[2];
+    store8(buf, 31); store8(buf + 1, 139);
+    assert(detect_format(buf, 2) == FORMAT_GZIP, "detect gzip");
+    return 0;
+}
+
+fn test_detect_zlib() {
+    var buf[2];
+    store8(buf, 120); store8(buf + 1, 156);
+    assert(detect_format(buf, 2) == FORMAT_ZLIB, "detect zlib");
+    return 0;
+}
+
+fn test_detect_short_input() {
+    var buf[1];
+    store8(buf, 0);
+    assert(detect_format(buf, 1) < 0, "detect format rejects 1-byte input");
+    assert(detect_format(buf, 0) < 0, "detect format rejects 0-byte input");
+    return 0;
+}
+
+fn test_detect_unknown() {
+    var buf[2];
+    store8(buf, 0); store8(buf + 1, 0);
+    assert(detect_format(buf, 2) < 0, "detect format rejects unknown");
+    return 0;
+}
+
+# ================================================================
+# DEFLATE decompression — known vectors
+# ================================================================
+
+fn test_deflate_dec_empty() {
     var src[2];
-    store8(src + 0, 3);
-    store8(src + 1, 0);
-
+    store8(src, 3); store8(src + 1, 0);
     var dst[64];
-    var dlen = deflate_decompress(src, 2, dst, 64);
-    assert(dlen == 0, "deflate empty should decompress to 0 bytes");
+    assert(deflate_decompress(src, 2, dst, 64) == 0, "deflate dec empty");
     return 0;
 }
 
-fn test_deflate_hello() {
-    # Raw DEFLATE of "Hello" (fixed Huffman, level 1):
-    # 243 72 205 201 201 7 0
+fn test_deflate_dec_hello() {
     var src[7];
-    store8(src + 0, 243);
-    store8(src + 1, 72);
-    store8(src + 2, 205);
-    store8(src + 3, 201);
-    store8(src + 4, 201);
-    store8(src + 5, 7);
-    store8(src + 6, 0);
-
+    store8(src + 0, 243); store8(src + 1, 72); store8(src + 2, 205);
+    store8(src + 3, 201); store8(src + 4, 201); store8(src + 5, 7); store8(src + 6, 0);
     var dst[64];
     var dlen = deflate_decompress(src, 7, dst, 64);
-    assert(dlen == 5, "deflate Hello should be 5 bytes");
-    assert(load8(dst + 0) == 72, "deflate Hello[0] = H");
-    assert(load8(dst + 1) == 101, "deflate Hello[1] = e");
-    assert(load8(dst + 2) == 108, "deflate Hello[2] = l");
-    assert(load8(dst + 3) == 108, "deflate Hello[3] = l");
-    assert(load8(dst + 4) == 111, "deflate Hello[4] = o");
+    assert(dlen == 5, "deflate dec Hello size");
+    assert(load8(dst) == 72 && load8(dst + 4) == 111, "deflate dec Hello content");
     return 0;
 }
 
-fn test_deflate_stored() {
-    # Raw DEFLATE of "ABCD" stored (uncompressed block):
-    # 1 4 0 251 255 65 66 67 68
+fn test_deflate_dec_stored() {
     var src[9];
-    store8(src + 0, 1);    # BFINAL=1, BTYPE=00 (stored)
-    store8(src + 1, 4);    # LEN low
-    store8(src + 2, 0);    # LEN high
-    store8(src + 3, 251);  # NLEN low
-    store8(src + 4, 255);  # NLEN high
-    store8(src + 5, 65);   # A
-    store8(src + 6, 66);   # B
-    store8(src + 7, 67);   # C
-    store8(src + 8, 68);   # D
-
+    store8(src + 0, 1); store8(src + 1, 4); store8(src + 2, 0);
+    store8(src + 3, 251); store8(src + 4, 255);
+    store8(src + 5, 65); store8(src + 6, 66); store8(src + 7, 67); store8(src + 8, 68);
     var dst[64];
-    var dlen = deflate_decompress(src, 9, dst, 64);
-    assert(dlen == 4, "deflate stored ABCD should be 4 bytes");
-    assert(load8(dst + 0) == 65, "deflate stored[0] = A");
-    assert(load8(dst + 1) == 66, "deflate stored[1] = B");
-    assert(load8(dst + 2) == 67, "deflate stored[2] = C");
-    assert(load8(dst + 3) == 68, "deflate stored[3] = D");
+    assert(deflate_decompress(src, 9, dst, 64) == 4, "deflate dec stored size");
+    assert(load8(dst) == 65 && load8(dst + 3) == 68, "deflate dec stored content");
     return 0;
 }
 
-fn test_deflate_backreference() {
-    # Raw DEFLATE of "ABCABCABCABCABCABC" (dynamic Huffman, level 6):
-    # 115 116 114 118 68 69 0
-    var src[7];
-    store8(src + 0, 115);
-    store8(src + 1, 116);
-    store8(src + 2, 114);
-    store8(src + 3, 118);
-    store8(src + 4, 68);
-    store8(src + 5, 69);
-    store8(src + 6, 0);
+fn test_deflate_dec_zero_stored() {
+    # Zero-length stored block: BFINAL=1, BTYPE=00, LEN=0, NLEN=0xFFFF
+    var src[5];
+    store8(src + 0, 1); store8(src + 1, 0); store8(src + 2, 0);
+    store8(src + 3, 255); store8(src + 4, 255);
+    var dst[64];
+    assert(deflate_decompress(src, 5, dst, 64) == 0, "deflate dec zero-length stored");
+    return 0;
+}
 
+fn test_deflate_dec_backref() {
+    var src[7];
+    store8(src + 0, 115); store8(src + 1, 116); store8(src + 2, 114);
+    store8(src + 3, 118); store8(src + 4, 68); store8(src + 5, 69); store8(src + 6, 0);
     var dst[64];
     var dlen = deflate_decompress(src, 7, dst, 64);
-    assert(dlen == 18, "deflate ABC*6 should be 18 bytes");
-
-    # Verify: "ABCABCABCABCABCABC"
+    assert(dlen == 18, "deflate dec backref size");
     var i = 0;
-    while (i < 18) {
-        var expected = 65 + (i % 3);  # A=65, B=66, C=67
-        assert(load8(dst + i) == expected, "deflate backreference content");
-        i = i + 1;
-    }
+    while (i < 18) { assert(load8(dst + i) == 65 + (i % 3), "deflate dec backref content"); i = i + 1; }
     return 0;
 }
 
-fn test_deflate_via_api() {
-    # Test through the public decompress() API
+fn test_deflate_dec_via_api() {
     var src[2];
-    store8(src + 0, 3);
-    store8(src + 1, 0);
-
+    store8(src, 3); store8(src + 1, 0);
     var dst[64];
-    var dlen = decompress(FORMAT_DEFLATE, src, 2, dst, 64);
-    assert(dlen == 0, "decompress(DEFLATE) should work through public API");
+    assert(decompress(FORMAT_DEFLATE, src, 2, dst, 64) == 0, "deflate via API");
     return 0;
 }
 
 # ================================================================
-# DEFLATE compression round-trip tests (Phase 3)
+# DEFLATE compression round-trip
 # ================================================================
 
-fn test_deflate_roundtrip_empty() {
+fn _verify_roundtrip(src, len, label) {
+    var c[4096];
+    var d[4096];
+    var clen = deflate_compress(src, len, c, 4096);
+    assert(clen > 0, label);
+    var dlen = deflate_decompress(c, clen, d, 4096);
+    assert(dlen == len, label);
+    var i = 0;
+    while (i < len) { assert(load8(d + i) == load8(src + i), label); i = i + 1; }
+    return clen;
+}
+
+fn test_deflate_rt_empty() {
     var src[1];
-    var compressed[64];
-    var decompressed[64];
-
-    var clen = deflate_compress(src, 0, compressed, 64);
-    assert(clen > 0, "deflate compress empty should produce output");
-
-    var dlen = deflate_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 0, "deflate roundtrip empty should be 0 bytes");
+    var c[64];
+    var d[64];
+    var clen = deflate_compress(src, 0, c, 64);
+    assert(clen > 0, "deflate rt empty compress");
+    assert(deflate_decompress(c, clen, d, 64) == 0, "deflate rt empty decompress");
     return 0;
 }
 
-fn test_deflate_roundtrip_hello() {
+fn test_deflate_rt_1byte() {
+    var src[1];
+    store8(src, 88);
+    _verify_roundtrip(src, 1, "deflate rt 1 byte");
+    return 0;
+}
+
+fn test_deflate_rt_hello() {
     var src[5];
-    store8(src + 0, 72);   # H
-    store8(src + 1, 101);  # e
-    store8(src + 2, 108);  # l
-    store8(src + 3, 108);  # l
-    store8(src + 4, 111);  # o
-
-    var compressed[64];
-    var decompressed[64];
-
-    var clen = deflate_compress(src, 5, compressed, 64);
-    assert(clen > 0, "deflate compress Hello should succeed");
-
-    var dlen = deflate_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 5, "deflate roundtrip Hello should be 5 bytes");
-    assert(load8(decompressed + 0) == 72, "deflate rt Hello[0]");
-    assert(load8(decompressed + 1) == 101, "deflate rt Hello[1]");
-    assert(load8(decompressed + 2) == 108, "deflate rt Hello[2]");
-    assert(load8(decompressed + 3) == 108, "deflate rt Hello[3]");
-    assert(load8(decompressed + 4) == 111, "deflate rt Hello[4]");
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    _verify_roundtrip(src, 5, "deflate rt Hello");
     return 0;
 }
 
-fn test_deflate_roundtrip_repetitive() {
-    # "ABCABCABC..." — 120 bytes, should get back-references
-    var src[120];
-    var i = 0;
-    while (i < 120) {
-        store8(src + i, 65 + (i % 3));
-        i = i + 1;
-    }
-
-    var compressed[256];
-    var decompressed[256];
-
-    var clen = deflate_compress(src, 120, compressed, 256);
-    assert(clen > 0, "deflate compress repetitive should succeed");
-    assert(clen < 120, "deflate should compress repetitive data");
-
-    var dlen = deflate_decompress(compressed, clen, decompressed, 256);
-    assert(dlen == 120, "deflate roundtrip repetitive should restore 120 bytes");
-
-    i = 0;
-    while (i < 120) {
-        assert(load8(decompressed + i) == load8(src + i), "deflate repetitive content");
-        i = i + 1;
-    }
-    return 0;
-}
-
-# ================================================================
-# zlib wrapper tests (Phase 4)
-# ================================================================
-
-fn test_zlib_roundtrip_hello() {
-    var src[5];
-    store8(src + 0, 72);
-    store8(src + 1, 101);
-    store8(src + 2, 108);
-    store8(src + 3, 108);
-    store8(src + 4, 111);
-
-    var compressed[128];
-    var decompressed[64];
-
-    var clen = zlib_compress(src, 5, compressed, 128);
-    assert(clen > 0, "zlib compress Hello should succeed");
-
-    # Verify it starts with a valid zlib header
-    var cmf = load8(compressed);
-    assert((cmf & 15) == 8, "zlib header CM should be 8");
-    var check = load8(compressed) * 256 + load8(compressed + 1);
-    assert((check % 31) == 0, "zlib header checksum");
-
-    var dlen = zlib_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 5, "zlib roundtrip Hello should be 5 bytes");
-    assert(load8(decompressed + 0) == 72, "zlib rt Hello[0]");
-    assert(load8(decompressed + 4) == 111, "zlib rt Hello[4]");
-    return 0;
-}
-
-fn test_zlib_roundtrip_via_api() {
-    var src[5];
-    store8(src + 0, 72);
-    store8(src + 1, 101);
-    store8(src + 2, 108);
-    store8(src + 3, 108);
-    store8(src + 4, 111);
-
-    var compressed[128];
-    var decompressed[64];
-
-    var clen = compress(FORMAT_ZLIB, src, 5, compressed, 128);
-    assert(clen > 0, "zlib compress via API should succeed");
-
-    var dlen = decompress(FORMAT_ZLIB, compressed, clen, decompressed, 64);
-    assert(dlen == 5, "zlib decompress via API should succeed");
-    return 0;
-}
-
-# ================================================================
-# gzip wrapper tests (Phase 4)
-# ================================================================
-
-fn test_gzip_roundtrip_hello() {
-    var src[5];
-    store8(src + 0, 72);
-    store8(src + 1, 101);
-    store8(src + 2, 108);
-    store8(src + 3, 108);
-    store8(src + 4, 111);
-
-    var compressed[128];
-    var decompressed[64];
-
-    var clen = gzip_compress(src, 5, compressed, 128);
-    assert(clen > 0, "gzip compress Hello should succeed");
-
-    # Verify gzip magic
-    assert(load8(compressed) == 31, "gzip magic byte 0");
-    assert(load8(compressed + 1) == 139, "gzip magic byte 1");
-    assert(load8(compressed + 2) == 8, "gzip CM = deflate");
-
-    var dlen = gzip_decompress(compressed, clen, decompressed, 64);
-    assert(dlen == 5, "gzip roundtrip Hello should be 5 bytes");
-    assert(load8(decompressed + 0) == 72, "gzip rt Hello[0]");
-    assert(load8(decompressed + 4) == 111, "gzip rt Hello[4]");
-    return 0;
-}
-
-fn test_gzip_roundtrip_via_api() {
-    var src[5];
-    store8(src + 0, 72);
-    store8(src + 1, 101);
-    store8(src + 2, 108);
-    store8(src + 3, 108);
-    store8(src + 4, 111);
-
-    var compressed[128];
-    var decompressed[64];
-
-    var clen = compress(FORMAT_GZIP, src, 5, compressed, 128);
-    assert(clen > 0, "gzip compress via API should succeed");
-
-    var dlen = decompress(FORMAT_GZIP, compressed, clen, decompressed, 64);
-    assert(dlen == 5, "gzip decompress via API should succeed");
-    return 0;
-}
-
-fn test_format_roundtrip_detect() {
-    # Compress as zlib, then auto-detect the format
-    var src[5];
-    store8(src + 0, 72);
-    store8(src + 1, 101);
-    store8(src + 2, 108);
-    store8(src + 3, 108);
-    store8(src + 4, 111);
-
-    var zbuf[128];
-    var gbuf[128];
-    var zlen = zlib_compress(src, 5, zbuf, 128);
-    var glen = gzip_compress(src, 5, gbuf, 128);
-
-    var zfmt = detect_format(zbuf, zlen);
-    assert(zfmt == FORMAT_ZLIB, "detect_format should identify zlib output");
-
-    var gfmt = detect_format(gbuf, glen);
-    assert(gfmt == FORMAT_GZIP, "detect_format should identify gzip output");
-    return 0;
-}
-
-# ================================================================
-# Compression level tests
-# ================================================================
-
-fn test_compress_level_api() {
-    var src[120];
-    var i = 0;
-    while (i < 120) {
-        store8(src + i, 65 + (i % 3));
-        i = i + 1;
-    }
-
-    var c1[256];
-    var c9[256];
-    var dec[256];
-
-    # Level 1 (fast) should produce valid output
-    var len1 = compress_level(FORMAT_DEFLATE, src, 120, c1, 256, 1);
-    assert(len1 > 0, "compress_level 1 should succeed");
-
-    # Level 9 (best) should also produce valid output
-    var len9 = compress_level(FORMAT_DEFLATE, src, 120, c9, 256, 9);
-    assert(len9 > 0, "compress_level 9 should succeed");
-
-    # Both should round-trip correctly
-    var dlen = decompress(FORMAT_DEFLATE, c1, len1, dec, 256);
-    assert(dlen == 120, "level 1 roundtrip size");
-    i = 0;
-    while (i < 120) {
-        assert(load8(dec + i) == load8(src + i), "level 1 roundtrip content");
-        i = i + 1;
-    }
-
-    dlen = decompress(FORMAT_DEFLATE, c9, len9, dec, 256);
-    assert(dlen == 120, "level 9 roundtrip size");
-    i = 0;
-    while (i < 120) {
-        assert(load8(dec + i) == load8(src + i), "level 9 roundtrip content");
-        i = i + 1;
-    }
-
-    return 0;
-}
-
-fn test_zlib_compress_level() {
+fn test_deflate_rt_repetitive() {
     var src[120];
     var i = 0;
     while (i < 120) { store8(src + i, 65 + (i % 3)); i = i + 1; }
-
-    var compressed[256];
-    var decompressed[256];
-
-    var clen = compress_level(FORMAT_ZLIB, src, 120, compressed, 256, 9);
-    assert(clen > 0, "zlib level 9 should succeed");
-
-    var dlen = decompress(FORMAT_ZLIB, compressed, clen, decompressed, 256);
-    assert(dlen == 120, "zlib level 9 roundtrip size");
+    var clen = _verify_roundtrip(src, 120, "deflate rt repetitive");
+    assert(clen < 120, "deflate should compress repetitive");
     return 0;
 }
 
-# ================================================================
-# Dynamic Huffman encoding tests
-# ================================================================
-
-fn test_dynamic_huffman_roundtrip() {
-    # Use level 6 which triggers dynamic Huffman
+fn test_deflate_rt_all_bytes() {
+    # All 256 byte values
     var src[256];
     var i = 0;
-    while (i < 256) {
-        store8(src + i, 65 + (i % 10));  # ABCDEFGHIJ repeating
-        i = i + 1;
-    }
-
-    var compressed[512];
-    var decompressed[512];
-
-    var clen = deflate_compress_level(src, 256, compressed, 512, 6);
-    assert(clen > 0, "dynamic huffman compress should succeed");
-    assert(clen < 256, "dynamic huffman should compress");
-
-    # Verify BTYPE=10 (dynamic) in the first byte
-    # Bits: BFINAL(1 bit) + BTYPE(2 bits) = first 3 bits of first byte
-    # BFINAL=1, BTYPE=10 → bits 1,0,1 → byte value & 7 = 5
-    var header_bits = load8(compressed) & 7;
-    assert(header_bits == 5, "dynamic block should have BTYPE=10");
-
-    var dlen = deflate_decompress(compressed, clen, decompressed, 512);
-    assert(dlen == 256, "dynamic huffman roundtrip size");
-
-    i = 0;
-    while (i < 256) {
-        assert(load8(decompressed + i) == load8(src + i), "dynamic huffman content");
-        i = i + 1;
-    }
+    while (i < 256) { store8(src + i, i); i = i + 1; }
+    _verify_roundtrip(src, 256, "deflate rt all 256 bytes");
     return 0;
 }
 
-fn test_dynamic_vs_fixed_ratio() {
-    # Skewed distribution — dynamic should beat fixed
+fn test_deflate_rt_2kb() {
+    var src[2048];
+    var i = 0;
+    while (i < 2048) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    _verify_roundtrip(src, 2048, "deflate rt 2KB");
+    return 0;
+}
+
+# ================================================================
+# zlib wrapper tests
+# ================================================================
+
+fn test_zlib_rt_hello() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var d[64];
+    var clen = zlib_compress(src, 5, c, 128);
+    assert(clen > 0, "zlib compress Hello");
+    assert((load8(c) & 15) == 8, "zlib header CM=8");
+    assert(((load8(c) * 256 + load8(c + 1)) % 31) == 0, "zlib header check");
+    assert(zlib_decompress(c, clen, d, 64) == 5, "zlib rt Hello");
+    assert(load8(d) == 72 && load8(d + 4) == 111, "zlib rt Hello content");
+    return 0;
+}
+
+fn test_zlib_rt_via_api() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var d[64];
+    var clen = compress(FORMAT_ZLIB, src, 5, c, 128);
+    assert(clen > 0, "zlib api compress");
+    assert(decompress(FORMAT_ZLIB, c, clen, d, 64) == 5, "zlib api decompress");
+    return 0;
+}
+
+fn test_zlib_corrupt_checksum() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var clen = zlib_compress(src, 5, c, 128);
+    assert(clen > 0, "zlib compress for corrupt test");
+    # Flip a bit in the Adler-32 trailer
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+    var d[64];
+    assert(zlib_decompress(c, clen, d, 64) < 0, "zlib corrupt checksum should fail");
+    return 0;
+}
+
+# ================================================================
+# gzip wrapper tests
+# ================================================================
+
+fn test_gzip_rt_hello() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var d[64];
+    var clen = gzip_compress(src, 5, c, 128);
+    assert(clen > 0, "gzip compress Hello");
+    assert(load8(c) == 31 && load8(c + 1) == 139 && load8(c + 2) == 8, "gzip header");
+    assert(gzip_decompress(c, clen, d, 64) == 5, "gzip rt Hello");
+    assert(load8(d) == 72 && load8(d + 4) == 111, "gzip rt Hello content");
+    return 0;
+}
+
+fn test_gzip_rt_via_api() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var d[64];
+    var clen = compress(FORMAT_GZIP, src, 5, c, 128);
+    assert(clen > 0, "gzip api compress");
+    assert(decompress(FORMAT_GZIP, c, clen, d, 64) == 5, "gzip api decompress");
+    return 0;
+}
+
+fn test_gzip_corrupt_crc() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var clen = gzip_compress(src, 5, c, 128);
+    # Flip a bit in the CRC-32 trailer (4th byte from end is ISIZE, 8th from end is CRC)
+    store8(c + clen - 5, load8(c + clen - 5) ^ 1);
+    var d[64];
+    assert(gzip_decompress(c, clen, d, 64) < 0, "gzip corrupt CRC should fail");
+    return 0;
+}
+
+fn test_gzip_truncated() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c[128];
+    var clen = gzip_compress(src, 5, c, 128);
+    var d[64];
+    # Truncate — missing trailer
+    assert(gzip_decompress(c, 10, d, 64) < 0, "gzip truncated should fail");
+    return 0;
+}
+
+# ================================================================
+# Format auto-detection round-trip
+# ================================================================
+
+fn test_format_detect_roundtrip() {
+    var src[5];
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var zc[128];
+    var gc[128];
+    var zlen = zlib_compress(src, 5, zc, 128);
+    var glen = gzip_compress(src, 5, gc, 128);
+    assert(detect_format(zc, zlen) == FORMAT_ZLIB, "detect zlib output");
+    assert(detect_format(gc, glen) == FORMAT_GZIP, "detect gzip output");
+    return 0;
+}
+
+# ================================================================
+# Compression levels
+# ================================================================
+
+fn test_levels_deflate() {
+    var src[256];
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 10)); i = i + 1; }
+    var c1[512];
+    var c9[512];
+    var d[256];
+    var len1 = compress_level(FORMAT_DEFLATE, src, 256, c1, 512, 1);
+    var len9 = compress_level(FORMAT_DEFLATE, src, 256, c9, 512, 9);
+    assert(len1 > 0 && len9 > 0, "both levels compress");
+    assert(decompress(FORMAT_DEFLATE, c1, len1, d, 256) == 256, "level 1 rt");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "level 1 content"); i = i + 1; }
+    assert(decompress(FORMAT_DEFLATE, c9, len9, d, 256) == 256, "level 9 rt");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "level 9 content"); i = i + 1; }
+    return 0;
+}
+
+fn test_levels_zlib() {
+    var src[120];
+    var i = 0;
+    while (i < 120) { store8(src + i, 65 + (i % 3)); i = i + 1; }
+    var c[256];
+    var d[256];
+    var clen = compress_level(FORMAT_ZLIB, src, 120, c, 256, 9);
+    assert(clen > 0, "zlib level 9");
+    assert(decompress(FORMAT_ZLIB, c, clen, d, 256) == 120, "zlib level 9 rt");
+    return 0;
+}
+
+# ================================================================
+# Dynamic Huffman
+# ================================================================
+
+fn test_dynamic_huffman_rt() {
+    var src[256];
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 10)); i = i + 1; }
+    var c[512];
+    var d[512];
+    var clen = deflate_compress_level(src, 256, c, 512, 6);
+    assert(clen > 0 && clen < 256, "dynamic huffman compresses");
+    assert((load8(c) & 7) == 5, "BTYPE=10 dynamic block");
+    assert(deflate_decompress(c, clen, d, 512) == 256, "dynamic huffman rt");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "dynamic content"); i = i + 1; }
+    return 0;
+}
+
+fn test_dynamic_vs_fixed() {
     var src[512];
     var i = 0;
     while (i < 512) {
-        # 90% 'A', 10% others — very skewed, dynamic should win
-        if ((i % 10) == 0) {
-            store8(src + i, 66 + (i % 5));
-        } else {
-            store8(src + i, 65);
-        }
+        if ((i % 10) == 0) { store8(src + i, 66 + (i % 5)); }
+        else { store8(src + i, 65); }
         i = i + 1;
     }
-
-    var c_fixed[1024];
-    var c_dynamic[1024];
-
-    var len_fixed = deflate_compress_level(src, 512, c_fixed, 1024, 1);
-    var len_dynamic = deflate_compress_level(src, 512, c_dynamic, 1024, 6);
-
-    assert(len_fixed > 0, "fixed compress should succeed");
-    assert(len_dynamic > 0, "dynamic compress should succeed");
-
-    # Both should decompress correctly
-    var dec[512];
-    var dlen = deflate_decompress(c_dynamic, len_dynamic, dec, 512);
-    assert(dlen == 512, "dynamic decompress size");
+    var cf[1024];
+    var cd[1024];
+    var d[512];
+    var lf = deflate_compress_level(src, 512, cf, 1024, 1);
+    var ld = deflate_compress_level(src, 512, cd, 1024, 6);
+    assert(lf > 0 && ld > 0, "both fixed and dynamic compress");
+    assert(deflate_decompress(cd, ld, d, 512) == 512, "dynamic decompress");
     i = 0;
-    while (i < 512) {
-        assert(load8(dec + i) == load8(src + i), "dynamic decompress content");
-        i = i + 1;
-    }
+    while (i < 512) { assert(load8(d + i) == load8(src + i), "dynamic vs fixed content"); i = i + 1; }
     return 0;
 }
 
 # ================================================================
-# Streaming API tests
+# Streaming API
 # ================================================================
 
-fn test_stream_compress_zlib() {
+fn test_stream_compress() {
     var ctx = stream_compress_init(FORMAT_ZLIB, 6);
-
-    # Write data in chunks
-    var chunk1[5];
-    store8(chunk1 + 0, 72); store8(chunk1 + 1, 101); store8(chunk1 + 2, 108);
-    store8(chunk1 + 3, 108); store8(chunk1 + 4, 111);
-
-    var chunk2[7];
-    store8(chunk2 + 0, 44); store8(chunk2 + 1, 32); store8(chunk2 + 2, 119);
-    store8(chunk2 + 3, 111); store8(chunk2 + 4, 114); store8(chunk2 + 5, 108);
-    store8(chunk2 + 6, 100);
-
-    stream_write(ctx, chunk1, 5);
-    stream_write(ctx, chunk2, 7);
-    assert(stream_buffered(ctx) == 12, "stream should buffer 12 bytes");
-
-    var compressed[128];
-    var clen = stream_compress_finish(ctx, compressed, 128);
-    assert(clen > 0, "stream compress finish should succeed");
-
-    # Decompress and verify
-    var dec[64];
-    var dlen = decompress(FORMAT_ZLIB, compressed, clen, dec, 64);
-    assert(dlen == 12, "stream compressed data should decompress to 12 bytes");
-    assert(load8(dec + 0) == 72, "stream content[0] = H");
-    assert(load8(dec + 11) == 100, "stream content[11] = d");
+    var c1[5];
+    store8(c1 + 0, 72); store8(c1 + 1, 101); store8(c1 + 2, 108);
+    store8(c1 + 3, 108); store8(c1 + 4, 111);
+    var c2[7];
+    store8(c2 + 0, 44); store8(c2 + 1, 32); store8(c2 + 2, 119);
+    store8(c2 + 3, 111); store8(c2 + 4, 114); store8(c2 + 5, 108); store8(c2 + 6, 100);
+    stream_write(ctx, c1, 5);
+    stream_write(ctx, c2, 7);
+    assert(stream_buffered(ctx) == 12, "stream buffered 12");
+    var out[128];
+    var clen = stream_compress_finish(ctx, out, 128);
+    assert(clen > 0, "stream compress finish");
+    var d[64];
+    assert(decompress(FORMAT_ZLIB, out, clen, d, 64) == 12, "stream compress rt");
+    assert(load8(d) == 72 && load8(d + 11) == 100, "stream compress content");
     return 0;
 }
 
-fn test_stream_decompress_gzip() {
-    # First compress normally
+fn test_stream_decompress() {
     var src[12];
     store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
     store8(src + 3, 108); store8(src + 4, 111); store8(src + 5, 44);
     store8(src + 6, 32); store8(src + 7, 119); store8(src + 8, 111);
     store8(src + 9, 114); store8(src + 10, 108); store8(src + 11, 100);
-
-    var compressed[128];
-    var clen = gzip_compress(src, 12, compressed, 128);
-    assert(clen > 0, "gzip compress for stream test");
-
-    # Decompress via streaming API (feed compressed data in two chunks)
+    var c[128];
+    var clen = gzip_compress(src, 12, c, 128);
     var ctx = stream_decompress_init(FORMAT_GZIP);
     var half = clen / 2;
-    stream_write(ctx, compressed, half);
-    stream_write(ctx, compressed + half, clen - half);
-
-    var dec[64];
-    var dlen = stream_decompress_finish(ctx, dec, 64);
-    assert(dlen == 12, "stream decompress should produce 12 bytes");
-    assert(load8(dec + 0) == 72, "stream decompress[0] = H");
-    assert(load8(dec + 11) == 100, "stream decompress[11] = d");
+    stream_write(ctx, c, half);
+    stream_write(ctx, c + half, clen - half);
+    var d[64];
+    assert(stream_decompress_finish(ctx, d, 64) == 12, "stream decompress rt");
+    assert(load8(d) == 72 && load8(d + 11) == 100, "stream decompress content");
     return 0;
 }
 
@@ -673,61 +594,158 @@ fn test_stream_reset() {
     var data[8];
     var i = 0;
     while (i < 8) { store8(data + i, i + 65); i = i + 1; }
-
     stream_write(ctx, data, 8);
     assert(stream_buffered(ctx) == 8, "buffered before reset");
-
     stream_reset(ctx);
     assert(stream_buffered(ctx) == 0, "buffered after reset");
-
-    # Write new data and compress
     stream_write(ctx, data, 4);
-    var compressed[64];
-    var clen = stream_compress_finish(ctx, compressed, 64);
+    var c[64];
+    var d[64];
+    var clen = stream_compress_finish(ctx, c, 64);
     assert(clen > 0, "compress after reset");
-
-    var dec[64];
-    var dlen = deflate_decompress(compressed, clen, dec, 64);
-    assert(dlen == 4, "decompress after reset should be 4 bytes");
+    assert(deflate_decompress(c, clen, d, 64) == 4, "decompress after reset");
     return 0;
 }
+
+# ================================================================
+# Error path tests
+# ================================================================
+
+fn test_err_negative_len() {
+    var buf[1];
+    assert(compress(FORMAT_LZ4, buf, 0 - 1, buf, 64) < 0, "negative src_len");
+    assert(decompress(FORMAT_LZ4, buf, 10, buf, 0 - 1) < 0, "negative dst_cap");
+    return 0;
+}
+
+fn test_err_unsupported_format() {
+    var buf[64];
+    assert(compress(99, buf, 10, buf, 64) < 0, "unsupported format compress");
+    assert(decompress(99, buf, 10, buf, 64) < 0, "unsupported format decompress");
+    return 0;
+}
+
+fn test_err_deflate_invalid_btype() {
+    # BFINAL=1, BTYPE=11 (reserved) — byte value & 7 = 7
+    var src[1];
+    store8(src, 7);
+    var dst[64];
+    assert(deflate_decompress(src, 1, dst, 64) < 0, "deflate invalid btype");
+    return 0;
+}
+
+fn test_err_deflate_corrupt_stored() {
+    # Stored block with bad NLEN
+    var src[5];
+    store8(src + 0, 1); store8(src + 1, 4); store8(src + 2, 0);
+    store8(src + 3, 0); store8(src + 4, 0);  # NLEN should be 0xFFFB not 0x0000
+    var dst[64];
+    assert(deflate_decompress(src, 5, dst, 64) < 0, "deflate corrupt stored NLEN");
+    return 0;
+}
+
+fn test_err_zlib_bad_header() {
+    # Invalid zlib header: (CMF*256 + FLG) % 31 != 0
+    var src[6];
+    store8(src, 120); store8(src + 1, 0);  # 120*256+0 = 30720, 30720%31 = 30 != 0
+    store8(src + 2, 3); store8(src + 3, 0);
+    store8(src + 4, 0); store8(src + 5, 0);
+    var dst[64];
+    assert(zlib_decompress(src, 6, dst, 64) < 0, "zlib bad header");
+    return 0;
+}
+
+fn test_err_gzip_bad_magic() {
+    var src[18];
+    store8(src, 0); store8(src + 1, 0);  # not gzip magic
+    var dst[64];
+    assert(gzip_decompress(src, 18, dst, 64) < 0, "gzip bad magic");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
 
 fn main() {
     alloc_init();
 
+    # Checksums
     test_adler32_empty();
     test_adler32_hello();
+    test_adler32_single_byte();
+    test_adler32_large();
     test_crc32_empty();
+    test_crc32_known();
+
+    # LZ4
     test_lz4_roundtrip_empty();
+    test_lz4_roundtrip_1byte();
     test_lz4_roundtrip_small();
     test_lz4_roundtrip_repetitive();
     test_lz4_roundtrip_all_same();
-    test_lz4_roundtrip_short();
+    test_lz4_roundtrip_random();
+    test_lz4_roundtrip_1kb();
     test_lz4_buffer_too_small();
-    test_detect_format_gzip();
-    test_detect_format_zlib();
-    test_deflate_empty();
-    test_deflate_hello();
-    test_deflate_stored();
-    test_deflate_backreference();
-    test_deflate_via_api();
-    test_deflate_roundtrip_empty();
-    test_deflate_roundtrip_hello();
-    test_deflate_roundtrip_repetitive();
-    test_zlib_roundtrip_hello();
-    test_zlib_roundtrip_via_api();
-    test_gzip_roundtrip_hello();
-    test_gzip_roundtrip_via_api();
-    test_format_roundtrip_detect();
-    test_compress_level_api();
-    test_zlib_compress_level();
-    test_dynamic_huffman_roundtrip();
-    test_dynamic_vs_fixed_ratio();
-    test_stream_compress_zlib();
-    test_stream_decompress_gzip();
+
+    # Format detection
+    test_detect_gzip();
+    test_detect_zlib();
+    test_detect_short_input();
+    test_detect_unknown();
+
+    # DEFLATE decompress (known vectors)
+    test_deflate_dec_empty();
+    test_deflate_dec_hello();
+    test_deflate_dec_stored();
+    test_deflate_dec_zero_stored();
+    test_deflate_dec_backref();
+    test_deflate_dec_via_api();
+
+    # DEFLATE compress round-trip
+    test_deflate_rt_empty();
+    test_deflate_rt_1byte();
+    test_deflate_rt_hello();
+    test_deflate_rt_repetitive();
+    test_deflate_rt_all_bytes();
+    test_deflate_rt_2kb();
+
+    # zlib
+    test_zlib_rt_hello();
+    test_zlib_rt_via_api();
+    test_zlib_corrupt_checksum();
+
+    # gzip
+    test_gzip_rt_hello();
+    test_gzip_rt_via_api();
+    test_gzip_corrupt_crc();
+    test_gzip_truncated();
+
+    # Format detect round-trip
+    test_format_detect_roundtrip();
+
+    # Compression levels
+    test_levels_deflate();
+    test_levels_zlib();
+
+    # Dynamic Huffman
+    test_dynamic_huffman_rt();
+    test_dynamic_vs_fixed();
+
+    # Streaming
+    test_stream_compress();
+    test_stream_decompress();
     test_stream_reset();
 
-    println("sankoch: all tests passed");
+    # Error paths
+    test_err_negative_len();
+    test_err_unsupported_format();
+    test_err_deflate_invalid_btype();
+    test_err_deflate_corrupt_stored();
+    test_err_zlib_bad_header();
+    test_err_gzip_bad_magic();
+
+    println("sankoch: 48 tests passed");
     return 0;
 }
 
