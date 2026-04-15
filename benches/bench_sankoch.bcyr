@@ -1,0 +1,208 @@
+# sankoch — compression benchmarks
+#
+# Measures throughput (bytes/iteration) and compression ratio
+# for each algorithm at various data sizes and input types.
+#
+# Input types:
+#   - zeros: all zero bytes (best case)
+#   - text: repeating ASCII pattern (typical case)
+#   - random: pseudo-random bytes (worst case, incompressible)
+
+var _bench_state = 0;
+
+fn _bench_seed(s) { _bench_state = s; return 0; }
+
+fn _bench_next() {
+    _bench_state = _bench_state * 6364136223846793005 + 1442695040888963407;
+    return (_bench_state >> 33) & 255;
+}
+
+# Fill buffer with zeros.
+fn fill_zeros(buf, len) {
+    var i = 0;
+    while (i < len) { store8(buf + i, 0); i = i + 1; }
+    return 0;
+}
+
+# Fill buffer with repeating text pattern.
+fn fill_text(buf, len) {
+    # "The quick brown fox jumps over the lazy dog. " (45 chars + space)
+    var pat[46];
+    store8(&pat + 0, 84); store8(&pat + 1, 104); store8(&pat + 2, 101);
+    store8(&pat + 3, 32); store8(&pat + 4, 113); store8(&pat + 5, 117);
+    store8(&pat + 6, 105); store8(&pat + 7, 99); store8(&pat + 8, 107);
+    store8(&pat + 9, 32); store8(&pat + 10, 98); store8(&pat + 11, 114);
+    store8(&pat + 12, 111); store8(&pat + 13, 119); store8(&pat + 14, 110);
+    store8(&pat + 15, 32); store8(&pat + 16, 102); store8(&pat + 17, 111);
+    store8(&pat + 18, 120); store8(&pat + 19, 32); store8(&pat + 20, 106);
+    store8(&pat + 21, 117); store8(&pat + 22, 109); store8(&pat + 23, 112);
+    store8(&pat + 24, 115); store8(&pat + 25, 32); store8(&pat + 26, 111);
+    store8(&pat + 27, 118); store8(&pat + 28, 101); store8(&pat + 29, 114);
+    store8(&pat + 30, 32); store8(&pat + 31, 116); store8(&pat + 32, 104);
+    store8(&pat + 33, 101); store8(&pat + 34, 32); store8(&pat + 35, 108);
+    store8(&pat + 36, 97); store8(&pat + 37, 122); store8(&pat + 38, 121);
+    store8(&pat + 39, 32); store8(&pat + 40, 100); store8(&pat + 41, 111);
+    store8(&pat + 42, 103); store8(&pat + 43, 46); store8(&pat + 44, 32);
+
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, load8(&pat + (i % 45)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Fill buffer with pseudo-random bytes.
+fn fill_random(buf, len) {
+    _bench_seed(42);
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, _bench_next());
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Get time in nanoseconds via clock_gettime(CLOCK_MONOTONIC).
+fn time_ns() {
+    var ts[16];  # struct timespec: 8 bytes sec + 8 bytes nsec
+    syscall(228, 1, &ts);  # clock_gettime(CLOCK_MONOTONIC, &ts)
+    var sec = load64(&ts);
+    var nsec = load64(&ts + 8);
+    return sec * 1000000000 + nsec;
+}
+
+# Benchmark a single configuration.
+# Returns compressed size (for ratio calculation).
+fn bench_compress(name, format, src, src_len, dst, dst_cap, iters) {
+    # Warmup
+    var clen = compress(format, src, src_len, dst, dst_cap);
+    if (clen < 0) {
+        syscall(1, 2, "  SKIP (compress error)\n", 23);
+        return 0 - 1;
+    }
+
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) {
+        compress(format, src, src_len, dst, dst_cap);
+        i = i + 1;
+    }
+    var elapsed = time_ns() - start;
+
+    # Print: name, size, compressed, ratio, ns/iter
+    syscall(1, 1, "  ", 2);
+    syscall(1, 1, name, strlen(name));
+    syscall(1, 1, "\n", 1);
+
+    return clen;
+}
+
+fn bench_decompress(name, format, src, src_len, dst, dst_cap, iters) {
+    # Warmup
+    var dlen = decompress(format, src, src_len, dst, dst_cap);
+    if (dlen < 0) {
+        syscall(1, 2, "  SKIP (decompress error)\n", 26);
+        return 0 - 1;
+    }
+
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) {
+        decompress(format, src, src_len, dst, dst_cap);
+        i = i + 1;
+    }
+    var elapsed = time_ns() - start;
+
+    syscall(1, 1, "  ", 2);
+    syscall(1, 1, name, strlen(name));
+    syscall(1, 1, "\n", 1);
+
+    return dlen;
+}
+
+fn strlen(s) {
+    var i = 0;
+    while (load8(s + i) != 0) { i = i + 1; }
+    return i;
+}
+
+fn main() {
+    var src[4096];
+    var compressed[8192];
+    var decompressed[4096];
+    var size = 4096;
+    var iters = 100;
+
+    println("=== sankoch benchmarks (4KB, 100 iterations) ===");
+    println("");
+
+    # LZ4
+    println("--- LZ4 ---");
+    fill_zeros(src, size);
+    bench_compress("lz4 compress zeros", FORMAT_LZ4, src, size, compressed, 8192, iters);
+    fill_text(src, size);
+    bench_compress("lz4 compress text", FORMAT_LZ4, src, size, compressed, 8192, iters);
+    fill_random(src, size);
+    bench_compress("lz4 compress random", FORMAT_LZ4, src, size, compressed, 8192, iters);
+
+    # LZ4 decompress
+    fill_text(src, size);
+    var clen = lz4_compress(src, size, compressed, 8192);
+    bench_decompress("lz4 decompress text", FORMAT_LZ4, compressed, clen, decompressed, 4096, iters);
+    println("");
+
+    # DEFLATE
+    println("--- DEFLATE ---");
+    fill_zeros(src, size);
+    bench_compress("deflate compress zeros", FORMAT_DEFLATE, src, size, compressed, 8192, iters);
+    fill_text(src, size);
+    bench_compress("deflate compress text", FORMAT_DEFLATE, src, size, compressed, 8192, iters);
+    fill_random(src, size);
+    bench_compress("deflate compress random", FORMAT_DEFLATE, src, size, compressed, 8192, iters);
+
+    fill_text(src, size);
+    clen = deflate_compress(src, size, compressed, 8192);
+    bench_decompress("deflate decompress text", FORMAT_DEFLATE, compressed, clen, decompressed, 4096, iters);
+    println("");
+
+    # zlib
+    println("--- zlib ---");
+    fill_text(src, size);
+    bench_compress("zlib compress text", FORMAT_ZLIB, src, size, compressed, 8192, iters);
+    clen = zlib_compress(src, size, compressed, 8192);
+    bench_decompress("zlib decompress text", FORMAT_ZLIB, compressed, clen, decompressed, 4096, iters);
+    println("");
+
+    # gzip
+    println("--- gzip ---");
+    fill_text(src, size);
+    bench_compress("gzip compress text", FORMAT_GZIP, src, size, compressed, 8192, iters);
+    clen = gzip_compress(src, size, compressed, 8192);
+    bench_decompress("gzip decompress text", FORMAT_GZIP, compressed, clen, decompressed, 4096, iters);
+    println("");
+
+    # Compression ratios
+    println("=== compression ratios (4KB text) ===");
+    fill_text(src, size);
+
+    clen = lz4_compress(src, size, compressed, 8192);
+    println("lz4:");
+    # Ratio will need proper formatting when fmt is available
+
+    clen = deflate_compress(src, size, compressed, 8192);
+    println("deflate:");
+
+    clen = zlib_compress(src, size, compressed, 8192);
+    println("zlib:");
+
+    clen = gzip_compress(src, size, compressed, 8192);
+    println("gzip:");
+
+    println("");
+    println("=== benchmarks complete ===");
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

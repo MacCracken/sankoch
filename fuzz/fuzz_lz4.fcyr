@@ -1,0 +1,110 @@
+# sankoch — LZ4 fuzz harness
+#
+# Round-trip fuzzing: compress random data, decompress, verify identical.
+# Also feeds random bytes to decompress to check error handling.
+
+# Simple linear congruential generator for deterministic pseudo-random bytes.
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    # LCG: state = state * 6364136223846793005 + 1442695040888963407
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_fill(buf, len) {
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, _fuzz_next());
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Test: compress then decompress random data, verify identical.
+fn fuzz_lz4_roundtrip(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[4096];
+    var capped = data_len;
+    if (capped > 4096) { capped = 4096; }
+    _fuzz_fill(src, capped);
+
+    var compressed[8192];
+    var decompressed[4096];
+
+    var clen = lz4_compress(src, capped, compressed, 8192);
+    if (clen < 0) {
+        # Compression should never fail on valid input with sufficient buffer
+        assert(0 == 1, "lz4 compress failed on random data");
+    }
+
+    var dlen = lz4_decompress(compressed, clen, decompressed, 4096);
+    assert(dlen == capped, "lz4 fuzz roundtrip size mismatch");
+
+    var i = 0;
+    while (i < capped) {
+        assert(load8(decompressed + i) == load8(src + i), "lz4 fuzz roundtrip content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Test: feed random bytes to decompressor — must not crash, just return errors.
+fn fuzz_lz4_malformed(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[512];
+    var capped = data_len;
+    if (capped > 512) { capped = 512; }
+    _fuzz_fill(src, capped);
+
+    var dst[4096];
+    # Should return an error or a valid length — must not crash
+    var dlen = lz4_decompress(src, capped, dst, 4096);
+    # We don't assert on the result — just that we survived
+    return 0;
+}
+
+fn main() {
+    # Round-trip fuzzing at various sizes
+    var sizes[10];
+    store64(&sizes + 0 * 8, 0);
+    store64(&sizes + 1 * 8, 1);
+    store64(&sizes + 2 * 8, 3);
+    store64(&sizes + 3 * 8, 16);
+    store64(&sizes + 4 * 8, 64);
+    store64(&sizes + 5 * 8, 255);
+    store64(&sizes + 6 * 8, 512);
+    store64(&sizes + 7 * 8, 1024);
+    store64(&sizes + 8 * 8, 2048);
+    store64(&sizes + 9 * 8, 4096);
+
+    var seed = 1;
+    while (seed <= 50) {
+        var si = 0;
+        while (si < 10) {
+            var sz = load64(&sizes + si * 8);
+            fuzz_lz4_roundtrip(seed * 1000 + si, sz);
+            si = si + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_lz4: 500 round-trip tests passed");
+
+    # Malformed input fuzzing
+    seed = 1;
+    while (seed <= 200) {
+        fuzz_lz4_malformed(seed * 7919, (seed * 13) % 512);
+        seed = seed + 1;
+    }
+    println("fuzz_lz4: 200 malformed input tests passed");
+
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

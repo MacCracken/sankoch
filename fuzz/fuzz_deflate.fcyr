@@ -1,0 +1,177 @@
+# sankoch — DEFLATE fuzz harness
+#
+# Round-trip: compress random data with sankoch DEFLATE, decompress, verify.
+# Malformed: feed random bytes to decompressor, verify no crash.
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_fill(buf, len) {
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, _fuzz_next());
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fuzz_deflate_roundtrip(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[2048];
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+    _fuzz_fill(src, capped);
+
+    var compressed[4096];
+    var decompressed[2048];
+
+    var clen = deflate_compress(src, capped, compressed, 4096);
+    if (clen < 0) {
+        assert(0 == 1, "deflate compress failed on random data");
+    }
+
+    var dlen = deflate_decompress(compressed, clen, decompressed, 2048);
+    assert(dlen == capped, "deflate fuzz roundtrip size mismatch");
+
+    var i = 0;
+    while (i < capped) {
+        assert(load8(decompressed + i) == load8(src + i), "deflate fuzz content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fuzz_deflate_malformed(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[256];
+    var capped = data_len;
+    if (capped > 256) { capped = 256; }
+    _fuzz_fill(src, capped);
+
+    var dst[2048];
+    var dlen = deflate_decompress(src, capped, dst, 2048);
+    # Just survive — error returns are fine
+    return 0;
+}
+
+fn fuzz_zlib_roundtrip(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[2048];
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+    _fuzz_fill(src, capped);
+
+    var compressed[4096];
+    var decompressed[2048];
+
+    var clen = zlib_compress(src, capped, compressed, 4096);
+    if (clen < 0) {
+        assert(0 == 1, "zlib compress failed on random data");
+    }
+
+    var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
+    assert(dlen == capped, "zlib fuzz roundtrip size mismatch");
+
+    var i = 0;
+    while (i < capped) {
+        assert(load8(decompressed + i) == load8(src + i), "zlib fuzz content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fuzz_gzip_roundtrip(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[2048];
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+    _fuzz_fill(src, capped);
+
+    var compressed[4096];
+    var decompressed[2048];
+
+    var clen = gzip_compress(src, capped, compressed, 4096);
+    if (clen < 0) {
+        assert(0 == 1, "gzip compress failed on random data");
+    }
+
+    var dlen = gzip_decompress(compressed, clen, decompressed, 2048);
+    assert(dlen == capped, "gzip fuzz roundtrip size mismatch");
+
+    var i = 0;
+    while (i < capped) {
+        assert(load8(decompressed + i) == load8(src + i), "gzip fuzz content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    var sizes[8];
+    store64(&sizes + 0 * 8, 0);
+    store64(&sizes + 1 * 8, 1);
+    store64(&sizes + 2 * 8, 10);
+    store64(&sizes + 3 * 8, 64);
+    store64(&sizes + 4 * 8, 256);
+    store64(&sizes + 5 * 8, 512);
+    store64(&sizes + 6 * 8, 1024);
+    store64(&sizes + 7 * 8, 2048);
+
+    # DEFLATE round-trip
+    var seed = 1;
+    while (seed <= 30) {
+        var si = 0;
+        while (si < 8) {
+            fuzz_deflate_roundtrip(seed * 1000 + si, load64(&sizes + si * 8));
+            si = si + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 240 round-trip tests passed");
+
+    # DEFLATE malformed
+    seed = 1;
+    while (seed <= 100) {
+        fuzz_deflate_malformed(seed * 7919, (seed * 17) % 256);
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 100 malformed input tests passed");
+
+    # zlib round-trip
+    seed = 1;
+    while (seed <= 20) {
+        var si = 0;
+        while (si < 8) {
+            fuzz_zlib_roundtrip(seed * 2000 + si, load64(&sizes + si * 8));
+            si = si + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_zlib: 160 round-trip tests passed");
+
+    # gzip round-trip
+    seed = 1;
+    while (seed <= 20) {
+        var si = 0;
+        while (si < 8) {
+            fuzz_gzip_roundtrip(seed * 3000 + si, load64(&sizes + si * 8));
+            si = si + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_gzip: 160 round-trip tests passed");
+
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
