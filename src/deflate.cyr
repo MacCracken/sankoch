@@ -661,8 +661,9 @@ fn _dyn_extra_val(packed) { return (packed >> 20) & 4294967295; }
 var _dh_ws = 0;
 
 fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
-    # Heap workspace: all_lens(2560) + cl_syms(2560) + cl_extra(2560) + cl_ebits(2560) = 10240
-    if (_dh_ws == 0) { _dh_ws = alloc(10240); }
+    # Heap workspace: all_lens(2560) + cl_syms(2560) + cl_extra(2560) + cl_ebits(2560)
+    #   + cl_freqs(152) + cl_lens_opt(152) + cl_codes_opt(152) + cl_order(152) = 10848
+    if (_dh_ws == 0) { _dh_ws = alloc(10848); }
     var all_lens = _dh_ws;
     var total = hlit + hdist;
     var i = 0;
@@ -755,42 +756,44 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
     }
 
     # Count frequencies of code-length symbols (0-18)
-    var cl_freqs[152];  # 19 * 8
+    # Use heap workspace at offset 10240 for cl_freqs/cl_lens_opt/cl_codes_opt/cl_order
+    var cl_freqs = _dh_ws + 10240;
+    var cl_lens_opt = _dh_ws + 10240 + 152;
+    var cl_codes_opt = _dh_ws + 10240 + 304;
+    var cl_order = _dh_ws + 10240 + 456;
     i = 0;
-    while (i < 19) { store64(&cl_freqs + i * 8, 0); i = i + 1; }
+    while (i < 19) { store64(cl_freqs + i * 8, 0); i = i + 1; }
     i = 0;
     while (i < cl_count) {
         var s = load64(cl_syms + i * 8);
-        store64(&cl_freqs + s * 8, load64(&cl_freqs + s * 8) + 1);
+        store64(cl_freqs + s * 8, load64(cl_freqs + s * 8) + 1);
         i = i + 1;
     }
 
     # Build code-length Huffman tree
-    var cl_lens_opt[152];  # 19 * 8
-    huff_compute_lengths(&cl_freqs, 19, &cl_lens_opt, 2);
+    huff_compute_lengths(cl_freqs, 19, cl_lens_opt, 2);
 
     # Build canonical codes for the code-length alphabet
-    var cl_codes_opt[152];  # 19 * 8
-    _huff_build(&cl_lens_opt, 19, &cl_codes_opt, &_huff_cl_fast);
+    _huff_alloc_tables();
+    _huff_build(cl_lens_opt, 19, cl_codes_opt, _huff_cl_fast);
 
     # Determine HCLEN: how many code-length codes to transmit
     # Order: 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
-    var cl_order[152];
-    store64(&cl_order + 0 * 8, 16); store64(&cl_order + 1 * 8, 17);
-    store64(&cl_order + 2 * 8, 18); store64(&cl_order + 3 * 8, 0);
-    store64(&cl_order + 4 * 8, 8);  store64(&cl_order + 5 * 8, 7);
-    store64(&cl_order + 6 * 8, 9);  store64(&cl_order + 7 * 8, 6);
-    store64(&cl_order + 8 * 8, 10); store64(&cl_order + 9 * 8, 5);
-    store64(&cl_order + 10 * 8, 11); store64(&cl_order + 11 * 8, 4);
-    store64(&cl_order + 12 * 8, 12); store64(&cl_order + 13 * 8, 3);
-    store64(&cl_order + 14 * 8, 13); store64(&cl_order + 15 * 8, 2);
-    store64(&cl_order + 16 * 8, 14); store64(&cl_order + 17 * 8, 1);
-    store64(&cl_order + 18 * 8, 15);
+    store64(cl_order + 0 * 8, 16); store64(cl_order + 1 * 8, 17);
+    store64(cl_order + 2 * 8, 18); store64(cl_order + 3 * 8, 0);
+    store64(cl_order + 4 * 8, 8);  store64(cl_order + 5 * 8, 7);
+    store64(cl_order + 6 * 8, 9);  store64(cl_order + 7 * 8, 6);
+    store64(cl_order + 8 * 8, 10); store64(cl_order + 9 * 8, 5);
+    store64(cl_order + 10 * 8, 11); store64(cl_order + 11 * 8, 4);
+    store64(cl_order + 12 * 8, 12); store64(cl_order + 13 * 8, 3);
+    store64(cl_order + 14 * 8, 13); store64(cl_order + 15 * 8, 2);
+    store64(cl_order + 16 * 8, 14); store64(cl_order + 17 * 8, 1);
+    store64(cl_order + 18 * 8, 15);
 
     var hclen = 19;
     while (hclen > 4) {
-        var idx = load64(&cl_order + (hclen - 1) * 8);
-        if (load64(&cl_lens_opt + idx * 8) != 0) { break; }
+        var idx = load64(cl_order + (hclen - 1) * 8);
+        if (load64(cl_lens_opt + idx * 8) != 0) { break; }
         hclen = hclen - 1;
     }
 
@@ -805,8 +808,8 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
     # Write code-length code lengths (3 bits each, in spec order)
     i = 0;
     while (i < hclen) {
-        var idx = load64(&cl_order + i * 8);
-        rc = bw_write(bw, load64(&cl_lens_opt + idx * 8), 3);
+        var idx = load64(cl_order + i * 8);
+        rc = bw_write(bw, load64(cl_lens_opt + idx * 8), 3);
         if (rc < 0) { return rc; }
         i = i + 1;
     }
@@ -815,8 +818,8 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
     i = 0;
     while (i < cl_count) {
         var s = load64(cl_syms + i * 8);
-        var clen = load64(&cl_lens_opt + s * 8);
-        var code = load64(&cl_codes_opt + s * 8);
+        var clen = load64(cl_lens_opt + s * 8);
+        var code = load64(cl_codes_opt + s * 8);
         # Reverse bits for LSB-first
         var rev = 0;
         var v = code;
