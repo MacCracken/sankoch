@@ -81,13 +81,13 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
 
     crc32_init_table();
     var stored_crc = load8(trailer) | (load8(trailer + 1) << 8) |
-                     (load8(trailer + 2) << 16) | (load8(trailer + 3) << 24);
+    (load8(trailer + 2) << 16) | (load8(trailer + 3) << 24);
     var computed_crc = crc32(dst, dlen);
     if (stored_crc != computed_crc) { return 0 - ERR_CHECKSUM_MISMATCH; }
 
     # Verify ISIZE (original size mod 2^32)
     var stored_size = load8(trailer + 4) | (load8(trailer + 5) << 8) |
-                      (load8(trailer + 6) << 16) | (load8(trailer + 7) << 24);
+    (load8(trailer + 6) << 16) | (load8(trailer + 7) << 24);
     if (stored_size != (dlen & 4294967295)) { return 0 - ERR_CHECKSUM_MISMATCH; }
 
     _gzip_member_end = offset + consumed + 8;
@@ -105,7 +105,7 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
         if (load8(src + pos) != 31 || load8(src + pos + 1) != 139) { break; }
 
         var dlen = _gzip_decompress_member(src + pos, src_len - pos,
-                                            dst + total, dst_cap - total);
+        dst + total, dst_cap - total);
         if (dlen < 0) { return dlen; }
         total = total + dlen;
         pos = pos + _gzip_member_end;

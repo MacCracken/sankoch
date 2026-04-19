@@ -3,6 +3,9 @@
 # Round-trip: compress random data with sankoch DEFLATE, decompress, verify.
 # Malformed: feed random bytes to decompressor, verify no crash.
 
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
 var _fuzz_state = 0;
 
 fn _fuzz_seed(s) {

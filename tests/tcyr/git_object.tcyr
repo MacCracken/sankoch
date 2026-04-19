@@ -1,14 +1,7 @@
 # sankoch — git object format integration test
 
-include "lib/string.cyr"
-include "lib/fmt.cyr"
-include "lib/alloc.cyr"
-include "lib/syscalls.cyr"
-include "lib/fnptr.cyr"
-include "lib/vec.cyr"
-include "lib/thread.cyr"
+include "src/lib.cyr"
 include "lib/assert.cyr"
-include "dist/sankoch.cyr"
 
 fn test_git_blob_roundtrip() {
     # "blob 13\0Hello, world!" = 21 bytes

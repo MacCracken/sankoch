@@ -394,7 +394,7 @@ fn lz4f_decompress(src, src_len, dst, dst_cap) {
 
     # Verify magic
     var magic = load8(src) | (load8(src + 1) << 8) |
-                (load8(src + 2) << 16) | (load8(src + 3) << 24);
+    (load8(src + 2) << 16) | (load8(src + 3) << 24);
     if (magic != LZ4F_MAGIC) { return 0 - ERR_CORRUPT_DATA; }
     sp = 4;
 
@@ -418,7 +418,7 @@ fn lz4f_decompress(src, src_len, dst, dst_cap) {
     var total = 0;
     while (sp + 4 <= src_len) {
         var block_size = load8(src + sp) | (load8(src + sp + 1) << 8) |
-                         (load8(src + sp + 2) << 16) | (load8(src + sp + 3) << 24);
+        (load8(src + sp + 2) << 16) | (load8(src + sp + 3) << 24);
         sp = sp + 4;
 
         if (block_size == 0) { break; }
@@ -448,7 +448,7 @@ fn lz4f_decompress(src, src_len, dst, dst_cap) {
     # Verify content checksum if present
     if (has_content_checksum == 1 && sp + 4 <= src_len) {
         var stored_cc = load8(src + sp) | (load8(src + sp + 1) << 8) |
-                        (load8(src + sp + 2) << 16) | (load8(src + sp + 3) << 24);
+        (load8(src + sp + 2) << 16) | (load8(src + sp + 3) << 24);
         var computed_cc = xxhash32(dst, total);
         if (stored_cc != computed_cc) { return 0 - ERR_CHECKSUM_MISMATCH; }
     }

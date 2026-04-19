@@ -1,22 +1,45 @@
-# sankoch — lossless compression library
-# Sanskrit: संकोच — contraction, compression
+# sankoch — lossless compression library (Cyrius-native)
+# Sanskrit: संकोच — contraction, compression.
 #
-# Phase 1: LZ4 block compression
-# Phase 2-3: DEFLATE decompression + compression (RFC 1951)
-# Phase 4: zlib (RFC 1950) + gzip (RFC 1952) wrappers
+# Phases: LZ4 block+frame, DEFLATE (RFC 1951) de/compress, zlib (RFC 1950),
+# gzip (RFC 1952). Zero external dependencies, zero C FFI.
 #
-# Thread-safe via mutex on global compression/decompression state.
+# Public API (see end of file):
+#   compress(format, src, src_len, dst, dst_cap)         -> len or -err
+#   compress_level(format, src, src_len, dst, dst_cap, l)-> len or -err
+#   decompress(format, src, src_len, dst, dst_cap)       -> len or -err
+#   detect_format(src, src_len)                          -> Format or -err
+#   plus stream_*, lz4f_*, zlib_*_dict, deflate_*_dict
 
-# Public API
-#
-# compress(format, src, src_len, dst, dst_cap) -> compressed_len or negative error
-# compress_level(format, src, src_len, dst, dst_cap, level) -> same, with level 1-9
-# decompress(format, src, src_len, dst, dst_cap) -> decompressed_len or negative error
-# detect_format(src, src_len) -> Format enum value or ERR_UNSUPPORTED_FORMAT
+# --- Standard library dependencies (order matters) ---
+include "lib/syscalls.cyr"
+include "lib/string.cyr"
+include "lib/alloc.cyr"
+include "lib/fmt.cyr"
+include "lib/vec.cyr"
+include "lib/fnptr.cyr"
+include "lib/thread.cyr"
 
-# Global mutex protecting all mutable compression/decompression state
-# (bitreader, bitwriter, hash tables, Huffman tables, symbol buffers).
-# Initialized lazily on first use.
+# --- Sankoch domain modules (dependency order) ---
+include "src/types.cyr"
+include "src/checksum.cyr"
+include "src/bitreader.cyr"
+include "src/bitwriter.cyr"
+include "src/huffman.cyr"
+include "src/lz77.cyr"
+include "src/lz4.cyr"
+include "src/deflate.cyr"
+include "src/zlib.cyr"
+include "src/gzip.cyr"
+include "src/stream.cyr"
+
+# ============================================================================
+# Public API — thread-safe wrappers over the format-specific routines.
+# All mutable compression/decompression state (bitreader, bitwriter, hash
+# tables, Huffman tables, symbol buffers) lives behind a single mutex so
+# concurrent callers serialize on API entry. Lazy init on first use.
+# ============================================================================
+
 var _sankoch_mtx = 0;
 
 fn _sankoch_lock() {
@@ -38,8 +61,7 @@ fn compress(format, src, src_len, dst, dst_cap) {
 }
 
 # Compress with explicit level (1=fast, 6=default, 9=best).
-# Level only affects DEFLATE-based formats (DEFLATE, zlib, gzip).
-# LZ4 ignores the level parameter.
+# Level only affects DEFLATE-based formats. LZ4 ignores the level.
 fn compress_level(format, src, src_len, dst, dst_cap, level) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
@@ -89,7 +111,8 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap) {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
-# Detect compression format from magic bytes. Returns FORMAT_* or negative error.
+# Detect compression format from magic bytes.
+# Returns FORMAT_* or negative error. LZ4 + raw DEFLATE have no magic.
 fn detect_format(src, src_len) {
     if (src_len < 2) {
         return 0 - ERR_INVALID_INPUT;
@@ -104,8 +127,7 @@ fn detect_format(src, src_len) {
         }
     }
 
-    # zlib: first byte CMF where CM=8 (deflate), second byte flags
-    # CMF & 0x0F == 8 and (CMF*256 + FLG) % 31 == 0
+    # zlib: CMF byte, CM=8 (deflate), (CMF*256 + FLG) % 31 == 0
     if ((b0 & 15) == 8) {
         var check = b0 * 256 + b1;
         if ((check % 31) == 0) {
@@ -113,6 +135,5 @@ fn detect_format(src, src_len) {
         }
     }
 
-    # LZ4 and raw DEFLATE have no magic bytes — caller must know the format
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }

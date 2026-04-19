@@ -43,7 +43,7 @@ fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len) {
         if (dict == 0 || dict_len == 0) { return 0 - ERR_INVALID_INPUT; }
         # Verify dictionary ID (Adler-32 of the dictionary, big-endian)
         var stored_dict_id = (load8(src + 2) << 24) | (load8(src + 3) << 16) |
-                             (load8(src + 4) << 8) | load8(src + 5);
+        (load8(src + 4) << 8) | load8(src + 5);
         var computed_dict_id = adler32(dict, dict_len);
         if (stored_dict_id != computed_dict_id) { return 0 - ERR_CHECKSUM_MISMATCH; }
         hdr_len = 6;
@@ -65,7 +65,7 @@ fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len) {
     var trailer = deflate_src + consumed;
     if (hdr_len + consumed + 4 > src_len) { return 0 - ERR_CORRUPT_DATA; }
     var stored_adler = (load8(trailer) << 24) | (load8(trailer + 1) << 16) |
-                       (load8(trailer + 2) << 8) | load8(trailer + 3);
+    (load8(trailer + 2) << 8) | load8(trailer + 3);
     var computed_adler = adler32(dst, dlen);
     if (stored_adler != computed_adler) { return 0 - ERR_CHECKSUM_MISMATCH; }
 

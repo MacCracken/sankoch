@@ -2,170 +2,233 @@
 
 ## Project Identity
 
-**Sankoch** (Sanskrit: संकोच — contraction, compression) — Lossless compression library for AGNOS
+**Sankoch** (Sanskrit: संकोच — contraction, compression) — Lossless
+compression library for AGNOS.
 
-- **Type**: Shared library crate (Cyrius-native, no Rust port)
+- **Type**: Flat library (include-based) + distlib bundle
 - **License**: GPL-3.0-only
-- **Version**: SemVer `0.D.M` pre-1.0
-- **Version file**: `VERSION` at repo root (single source of truth)
+- **Language**: Cyrius (sovereign systems language, compiled by cc5)
+- **Version**: SemVer, version file at `VERSION`
+- **Status**: 1.3.0 — shipping as `lib/sankoch.cyr` in Cyrius stdlib
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
-- **Recipes**: [zugot](https://github.com/MacCracken/zugot) — takumi build recipes
 
-## What This Crate Does
+## Goal
 
-Sankoch provides lossless compression and decompression for the AGNOS ecosystem. Zero external dependencies. Zero C FFI. All algorithms implemented in Cyrius from the specs.
+Own lossless compression. One library provides LZ4, DEFLATE, zlib, and
+gzip de/compression for everything downstream — ark packages, AGNOS
+initrd, git object reads, shravan/tarang container formats. Zero
+external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
-**Algorithms (phased):**
+## Current State
 
-| Algorithm | Format | Spec | Phase | Use Case |
-|-----------|--------|------|-------|----------|
-| LZ4 | Block | LZ4 block format spec | 1 | Fast internal compression (initrd, pack cache, snapshots) |
-| DEFLATE | Bit-stream | RFC 1951 | 2-3 | Git compatibility (clone, fetch, push) |
-| zlib | DEFLATE + Adler-32 | RFC 1950 | 4 | Git object format wrapper |
-| gzip | DEFLATE + CRC-32 | RFC 1952 | 4 | Archive interchange |
-
-**Not in scope (future crate or future phase):**
-- Zstandard (tANS + LZ77 — 30K+ lines reference impl, deserves its own effort)
-- Lossy compression (audio/video codecs live in shravan/tarang)
-- Encryption (sigil owns all crypto)
+- **Source**: 3295 lines across 12 domain modules (`src/*.cyr`)
+- **Tests**: 5897 + 134 = 6031 assertions across 2 tcyr suites,
+  2 fuzz harnesses (out-of-CI pending follow-up), 40+ benchmarks
+- **Dist bundle**: `dist/sankoch.cyr` at 3316 lines, zero deps
+- **Stable**: 1.3.0 — full phase 1-4 coverage (LZ4 block+frame,
+  DEFLATE, zlib incl. FDICT, gzip incl. concatenated members),
+  9 compression levels, streaming API
+- **Toolchain**: Cyrius 5.4.7 (`cyrius.cyml: cyrius = "5.4.7"`)
+- **Integration**: will be consumed by future git impl, ark, AGNOS
+  kernel (initrd), shravan, tarang
 
 ## Consumers
 
-| Consumer | Uses | Why |
-|----------|------|-----|
-| Future git implementation | DEFLATE, zlib | Git objects are zlib-compressed |
-| ark | LZ4 or DEFLATE | Package compression |
-| AGNOS kernel | LZ4 | initrd, kernel snapshots |
-| shravan | DEFLATE/gzip | Container formats embedding compressed streams |
-| tarang | DEFLATE/gzip | Same |
-| Any crate needing compression | All | Replaces zlib FFI / shelling to gzip |
+| Consumer             | Uses             | Why                                     |
+|----------------------|------------------|-----------------------------------------|
+| Future git impl      | DEFLATE, zlib    | Git objects are zlib-compressed         |
+| ark                  | LZ4 or DEFLATE   | Package compression                     |
+| AGNOS kernel         | LZ4              | initrd, snapshots                       |
+| shravan / tarang     | DEFLATE, gzip    | Embedded compressed streams             |
+| Any crate            | All              | Replaces zlib FFI / shelling to gzip    |
+
+## Dependencies
+
+- **Cyrius stdlib** — `syscalls`, `string`, `alloc`, `fmt`, `vec`,
+  `fnptr`, `thread`, `assert` (ships with Cyrius >= 5.4.7)
+
+No external deps. No FFI. No libc. Checksums (Adler-32, CRC-32,
+xxHash32) are inline — no sigil dependency for 30-line primitives that
+live inside the compression format specs anyway.
+
+## Quick Start
+
+See [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md)
+for the full command reference.
+
+At a glance:
+
+```bash
+cyrius deps                              # resolve stdlib into lib/
+cyrius build src/lib.cyr build/sankoch   # compile-check (library — binary is trivial)
+cyrius test tests/tcyr/sankoch.tcyr      # 5897 assertions
+cyrius test tests/tcyr/git_object.tcyr   # 134 assertions
+cyrius bench tests/bcyr/sankoch.bcyr     # throughput + compressed-size table
+cyrius distlib                           # → dist/sankoch.cyr
+```
 
 ## Architecture
 
 ```
 src/
-  lib.cyr          — Public API: compress(), decompress(), format detection
-  lz4.cyr          — LZ4 block compress/decompress (Phase 1)
-  deflate.cyr      — DEFLATE decompress (Phase 2), compress (Phase 3)
-  huffman.cyr      — Huffman tree build, canonical Huffman, fixed trees
-  bitreader.cyr    — Bit-stream reader (DEFLATE is not byte-aligned)
-  bitwriter.cyr    — Bit-stream writer (for DEFLATE compression)
-  lz77.cyr         — LZ77 match-finder (sliding window, hash table)
-  zlib.cyr         — zlib wrapper: DEFLATE + Adler-32 (Phase 4)
-  gzip.cyr         — gzip wrapper: DEFLATE + CRC-32 (Phase 4)
-  checksum.cyr     — Adler-32 and CRC-32 (inline, not from sigil)
-  types.cyr        — Shared types, error codes, format constants
+  lib.cyr          — Include chain (stdlib + domain modules) + public API
+  types.cyr        — Enums: formats, errors, limits, magic bytes
+  checksum.cyr     — Adler-32, CRC-32, xxHash32 (inline)
+  bitreader.cyr    — LSB-first bit-stream reader (DEFLATE)
+  bitwriter.cyr    — LSB-first bit-stream writer (DEFLATE)
+  huffman.cyr      — Huffman build/decode, fixed trees, optimal trees
+  lz77.cyr         — Sliding window match-finder (3-byte hash)
+  lz4.cyr          — LZ4 block + frame compress/decompress
+  deflate.cyr      — DEFLATE (RFC 1951) de/compress, multi-block, dict
+  zlib.cyr         — zlib (RFC 1950) wrapper + FDICT
+  gzip.cyr         — gzip (RFC 1952) wrapper + concatenated members
+  stream.cyr       — Streaming de/compress (buffered)
+tests/tcyr/        — test suites (sankoch.tcyr, git_object.tcyr)
+tests/bcyr/        — benchmarks (sankoch.bcyr)
+fuzz/              — fuzz harnesses (lz4, deflate) — out-of-CI
+dist/
+  sankoch.cyr      — distlib bundle (`cyrius distlib`)
+cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] modules)
+cyrius.lock        — SHA256 lockfile for every resolved dep
 ```
 
-### Key Design Decisions
+**Include order matters.** `src/lib.cyr` declares the full chain:
+stdlib first, then domain modules in dependency order. Stdlib includes
+live **only** in `lib.cyr` — never in individual domain modules.
+Domain modules are flat: zero transitive includes, which is what makes
+`cyrius distlib` (strip-include concatenation) produce a compile-clean
+bundle.
 
-- **This is an extraction, not greenfield.** Most primitives already exist in shravan (audio codecs). The work is factoring them out, generalizing, and adding the LZ77 sliding window + zlib wrapper that shravan doesn't need.
-- **Checksums are inline, not from sigil.** Adler-32 and CRC-32 are tiny (~30 lines each), part of the compression format specs, and used in the inner loop. Pulling sigil as a dependency for two 30-line functions adds coupling for no benefit.
-- **LZ4 first.** Byte-aligned, simple format, proves the compress/decompress infrastructure. ~500 lines. No extraction needed — LZ4 is new.
-- **Bit-reader is the critical abstraction.** DEFLATE codes straddle byte boundaries. Shravan already has a generic bitreader (`main.cyr:1244-1283`) and FLAC bitwriter (`flac.cyr:1007-1147`). Lift and generalize.
-- **Fixed Huffman trees before dynamic.** DEFLATE has two modes — fixed trees are hardcoded in the spec, dynamic trees are transmitted in the stream header. Implement fixed first, test it, then add dynamic.
+## Key Constraints
 
-### Extraction Map (from shravan)
-
-| Primitive | Source | File:Lines | Generalize? |
-|-----------|--------|-----------|-------------|
-| Bit-reader (generic) | shravan | main.cyr:1244-1283 | Lift as-is, add DEFLATE LSB-first mode |
-| Bit-writer | shravan/FLAC | flac.cyr:1007-1147 | Lift, strip FLAC-specific (unary, UTF-8) |
-| Canonical Huffman decode | shravan/AAC | aac.cyr:843-873 | Lift structure, replace AAC codebooks with DEFLATE tables |
-| Rice/Golomb coding | shravan/FLAC | flac.cyr:367-437 | Reference only — not needed for DEFLATE/LZ4, useful for future codecs |
-| Range encoder | shravan/Opus | opus.cyr:175-284 | Reference only — needed for future Zstandard (tANS) |
-| FFT/MDCT | shravan | fft.cyr:29-356 | Not needed for lossless compression, but relevant for transform codecs |
-
-**What's genuinely new (not in shravan):**
-- LZ4 block format (byte-aligned, no bit I/O)
-- LZ77 sliding window match-finder (hash table on 3-byte sequences)
-- DEFLATE block framing (3 block types, length/distance code tables)
-- zlib/gzip wrappers (headers + checksums)
-
-### GPU Compute (future)
-
-mabda has generic GPU compute dispatch (`compute.cyr`, 142 lines) — pipeline creation, bind groups, dispatch. Currently no texture compression codecs (BC1-BC7, ASTC are backlogged). When GPU-accelerated compression lands, it uses mabda's dispatch infrastructure.
+- **Zero external deps.** Every bit is in this tree. Adler-32 /
+  CRC-32 are inline — pulling sigil for 30-line functions used in the
+  inner loop is wrong.
+- **All mutable state behind one mutex.** The compression globals
+  (bitreader, bitwriter, hash tables, Huffman tables, symbol buffers)
+  serialize on `_sankoch_lock()` / `_sankoch_unlock()`. No per-call
+  allocation on the hot path.
+- **Integer math only, i64 or fixed-size strings.**
+- **No floating point** — anywhere.
+- **Stack arrays: `var buf[N]` is N bytes, not N×8.** Use `&buf` for
+  `load*`/`store*` addresses. (See
+  [memory/reference_stack_array_addr.md](../../.claude/projects/-home-macro-Repos-sankoch/memory/reference_stack_array_addr.md).)
+- **Bundle gate.** CI regenerates `dist/sankoch.cyr` via
+  `cyrius distlib` and fails if it drifts from the committed file.
+  Don't hand-edit the bundle.
 
 ## Development Process
 
+### P(-1): Scaffold Hardening (before any new features)
+
+0. Read CHANGELOG + roadmap — know what was intended
+1. Cleanliness: `cyrius build` (0 warnings for library path),
+   `cyrius lint` (0 warnings), `cyrius fmt --check` diff-clean,
+   `cyrius vet src/lib.cyr` clean
+2. Test sweep: 6031+ assertions pass; fuzz harness wire-up compiles
+3. Benchmark baseline: `cyrius bench tests/bcyr/sankoch.bcyr`
+4. Internal deep review — gaps, optimizations, correctness
+5. External research — RFC errata / zlib / lz4 reference changes
+6. Security audit — `docs/audit/YYYY-MM-DD.md`
+7. Additional tests / benchmarks from findings
+8. Post-review benchmarks — prove the wins
+9. Documentation audit — CLAUDE.md, roadmap, CHANGELOG
+10. Repeat if heavy
+
 ### Work Loop (continuous)
 
-1. Work phase — implement algorithm, add tests, add benchmarks
+1. Work phase — implement algorithm, add tests/benchmarks
 2. Build: `cyrius build src/lib.cyr build/sankoch`
-3. Test: `cyrius test`
-4. Benchmark: throughput (MB/s) and ratio for each algorithm
+3. Test: `cyrius test tests/tcyr/sankoch.tcyr` — 0 failures
+4. Benchmark: throughput (MB/s) and ratio for changes in the hot path
 5. Audit: verify against spec (RFC 1951, LZ4 block format)
-6. Documentation — update CHANGELOG, roadmap, docs
-7. Version check — VERSION and docs all in sync
+6. Documentation — CHANGELOG, roadmap
+7. Version check — `VERSION` and CHANGELOG header in sync
 8. Return to step 1
+
+### Closeout Pass (before every minor/major bump)
+
+1. Full test suite — 6031+ pass, 0 failures
+2. Benchmark run — `cyrius bench`, save CSV
+3. Dead code audit — review `dead:` list from `cyrius build`;
+   unreferenced public functions should be removed or justified
+4. Stale comment sweep — old version refs, outdated TODOs
+5. Security re-scan — `grep sys_system`, unchecked writes, buffer
+   size mismatches
+6. Downstream check — Cyrius stdlib `lib/sankoch.cyr` still matches
+   `dist/sankoch.cyr`
+7. CHANGELOG / roadmap sync — docs reflect current state; `VERSION`,
+   CHANGELOG header, intended git tag all consistent
+8. `cyrius distlib` regenerates `dist/sankoch.cyr` clean
+9. Clean rebuild — `rm -rf build lib && cyrius deps && cyrius build`
 
 ### Task Sizing
 
-- **Low/Medium effort**: Batch freely — multiple items per work loop cycle
-- **Large effort**: Small bites only — break into sub-tasks, verify each before moving to the next
-- **If unsure**: Treat it as large
+- **Low/Medium effort**: batch freely — multiple items per cycle
+- **Large effort**: small bites only — break into sub-tasks, verify
+  each before moving on
+- **If unsure**: treat it as large
+
+## Key Principles
+
+- **Correctness is the optimum sovereignty** — wrong compression
+  silently corrupts data. Every DEFLATE round-trip must match a
+  known-good zlib output byte-for-byte
+- **Numbers don't lie** — never claim a performance improvement
+  without before/after benchmark numbers
+- **Own the stack** — zero external dependencies; every byte in this
+  tree
+- **Test after EVERY change**, not after the feature is done
+- **ONE change at a time** — never bundle unrelated changes
+- **Study the RFCs** — RFC 1951 is the DEFLATE bible; read before
+  writing code
+- `cyrius build` / `cyrius test` handle everything — NEVER use raw
+  `cat file | cc5`
+
+## CI / Release
+
+- **Toolchain pin**: `cyrius = "5.4.7"` in `cyrius.cyml`. CI and
+  release both read from the manifest
+- **Tag filter**: release workflow triggers on bare semver tags
+  (`1.3.0`, not `v1.3.0`)
+- **Version-verify gate**: release asserts `VERSION == git tag` before
+  building
+- **Lint gate**: CI runs `cyrius lint` per source; treat warnings as
+  errors
+- **Format gate**: CI runs `cyrius fmt --check`; drift fails the build
+- **Lock gate**: CI runs `cyrius deps --verify` against committed
+  `cyrius.lock`
+- **Dist gate**: CI regenerates `dist/sankoch.cyr` via
+  `cyrius distlib` and fails on drift
+- **Concurrency**: CI uses `cancel-in-progress: true` keyed on
+  workflow + ref
+
+## Key References
+
+- [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md)
+  — toolchain commands, distlib, lint/fmt gates
+- [`docs/development/roadmap.md`](docs/development/roadmap.md)
+  — milestones through v2.0
+- [`docs/sources/compression.md`](docs/sources/compression.md)
+  — RFC citations, algorithm references
+- [`docs/benchmarks/`](docs/benchmarks) — throughput + size history
+- `CHANGELOG.md` — source of truth for all changes
 
 ## DO NOT
 
 - **Do not commit or push** — the user handles all git operations
-- **NEVER use `gh` CLI** — use `curl` to GitHub API only
-- Do not add unnecessary dependencies (target: ZERO deps for v0.1)
+- **NEVER use `gh` CLI** — use `curl` to the GitHub API if needed
+- Do not add external dependencies — zero-dep is load-bearing
+- Do not depend on sigil for Adler-32 / CRC-32 — they're inline
 - Do not implement Zstandard in this crate — it deserves its own
-- Do not depend on sigil for checksums — Adler-32/CRC-32 are inline
-- Do not skip spec verification — every DEFLATE test must round-trip against known-good zlib output
-- **Study the RFCs** before writing code — RFC 1951 is the DEFLATE bible
-
-## Key Implementation Notes
-
-### LZ4 (Phase 1)
-- Byte-aligned format — no bit-reader needed
-- Block format only (not frame format)
-- Hash table match-finder keyed on 4-byte sequences
-- Minimum match length: 4 bytes
-- Decompress is ~200 lines, compress is ~300 lines
-
-### DEFLATE (Phase 2-3)
-- **Bit-stream, not byte-stream.** Huffman codes straddle byte boundaries.
-- Bit-reader reads LSB-first (least significant bit first)
-- Three block types: uncompressed (00), fixed Huffman (01), dynamic Huffman (10)
-- Fixed Huffman trees are defined in RFC 1951 Section 3.2.6
-- Dynamic trees: HLIT, HDIST, HCLEN header → code length alphabet → literal/length and distance trees
-- Sliding window: 32KB (32768 bytes)
-- Match-finder: hash table on 3-byte sequences, chain for collision resolution
-- Length codes: 257-285 map to lengths 3-258 (with extra bits)
-- Distance codes: 0-29 map to distances 1-32768 (with extra bits)
-
-### Checksums (Phase 4)
-- **Adler-32**: Two running sums (s1, s2) mod 65521. ~15 lines.
-- **CRC-32**: Table-driven, 256-entry lookup table. ~30 lines + table.
-
-## Testing Strategy
-
-- **Round-trip tests**: compress then decompress, verify identical
-- **Known-vector tests**: decompress known-good compressed data (from zlib/gzip tools on the host)
-- **Fuzz**: random data of varying sizes, verify round-trip
-- **Spec compliance**: DEFLATE output must be decompressible by standard zlib
-- **Edge cases**: empty input, single byte, all-same bytes, incompressible random data, maximum match lengths
-- **Benchmarks**: MB/s throughput at various data sizes (1KB, 64KB, 1MB, 16MB), compression ratio vs input type (text, binary, random)
-
-## Documentation Structure
-
-```
-Root files (required):
-  README.md, CHANGELOG.md, CLAUDE.md, CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, LICENSE
-
-docs/ (required):
-  development/roadmap.md — phased milestones through v1.0
-  sources/compression.md — RFC citations, algorithm references, key papers
-
-docs/ (when earned):
-  adr/ — architectural decision records
-  audit/ — security audit reports
-  guides/ — integration patterns
-  benchmarks-rust-v-cyrius.md — N/A (Cyrius-native, no Rust port)
-```
-
-## CHANGELOG Format
-
-Follow [Keep a Changelog](https://keepachangelog.com/). Performance claims MUST include benchmark numbers (MB/s throughput, compression ratio). Breaking changes get a **Breaking** section with migration guide.
+- Do not skip spec verification — every DEFLATE test must round-trip
+  against known-good zlib output
+- Do not hand-edit `dist/sankoch.cyr` — regenerate with
+  `cyrius distlib`
+- Do not add Cyrius stdlib includes in individual `src/*.cyr` —
+  `src/lib.cyr` owns the whole include chain
+- Do not hardcode toolchain versions in CI YAML — read
+  `cyrius.cyml`
+- Do not add `v` prefix to version tags — use bare semver
+- Do not re-vendor stdlib into `src/` — `cyrius deps` manages `lib/`

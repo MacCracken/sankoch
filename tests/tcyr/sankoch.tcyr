@@ -2,15 +2,8 @@
 # Covers: checksums, LZ4, DEFLATE, zlib, gzip, format detection,
 # compression levels, dynamic Huffman, streaming, error paths.
 
-include "lib/string.cyr"
-include "lib/fmt.cyr"
-include "lib/alloc.cyr"
-include "lib/syscalls.cyr"
-include "lib/fnptr.cyr"
-include "lib/vec.cyr"
-include "lib/thread.cyr"
+include "src/lib.cyr"
 include "lib/assert.cyr"
-include "dist/sankoch.cyr"
 
 # ================================================================
 # Checksum tests
@@ -379,7 +372,6 @@ fn test_deflate_rt_hello() {
     _verify_roundtrip(src, 5, "deflate rt Hello");
     return 0;
 }
-
 
 fn test_deflate_rt_repetitive() {
     var src = alloc(120);

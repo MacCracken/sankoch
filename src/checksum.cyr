@@ -168,7 +168,7 @@ fn xxhash32(data, len) {
     var i = 0;
     while (i + 4 <= len) {
         var k = load8(data + i) | (load8(data + i + 1) << 8) |
-                (load8(data + i + 2) << 16) | (load8(data + i + 3) << 24);
+        (load8(data + i + 2) << 16) | (load8(data + i + 3) << 24);
         k = k & m;
         h = (h + (k * XXH32_PRIME3) & m) & m;
         h = (_xxh32_rotl(h, 17) * XXH32_PRIME2) & m;   # corrected: PRIME4 step uses PRIME2 for short path

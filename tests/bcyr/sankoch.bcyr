@@ -6,14 +6,7 @@
 # Output: one line per benchmark with name, input size, compressed size,
 # ratio, total ns, and ns/byte.
 
-include "lib/string.cyr"
-include "lib/fmt.cyr"
-include "lib/alloc.cyr"
-include "lib/syscalls.cyr"
-include "lib/fnptr.cyr"
-include "lib/vec.cyr"
-include "lib/thread.cyr"
-include "dist/sankoch.cyr"
+include "src/lib.cyr"
 
 var _bench_state = 0;
 fn _bseed(s) { _bench_state = s; return 0; }

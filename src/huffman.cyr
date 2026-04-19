@@ -71,7 +71,7 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
         var len = load64(lengths + i * 8);
         if (len > 0 && len <= HUFF_MAX_BITS) {
             store64(&bl_count + len * 8,
-                    load64(&bl_count + len * 8) + 1);
+            load64(&bl_count + len * 8) + 1);
         }
         i = i + 1;
     }
@@ -81,7 +81,7 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
     var b = 1;
     while (b <= HUFF_MAX_BITS) {
         check_sum = check_sum +
-            (load64(&bl_count + b * 8) << (HUFF_MAX_BITS - b));
+        (load64(&bl_count + b * 8) << (HUFF_MAX_BITS - b));
         b = b + 1;
     }
     if (check_sum > (1 << HUFF_MAX_BITS)) {
@@ -106,9 +106,9 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
         var len = load64(lengths + i * 8);
         if (len > 0) {
             store64(out_codes + i * 8,
-                    load64(&next_code + len * 8));
+            load64(&next_code + len * 8));
             store64(&next_code + len * 8,
-                    load64(&next_code + len * 8) + 1);
+            load64(&next_code + len * 8) + 1);
         } else {
             store64(out_codes + i * 8, 0);
         }
@@ -137,7 +137,7 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
             var idx = rev;
             while (idx < HUFF_TABLE_SIZE) {
                 store64(out_fast + idx * 8,
-                        (len << HUFF_FAST_SHIFT) | i);
+                (len << HUFF_FAST_SHIFT) | i);
                 idx = idx + step;
             }
         }
@@ -206,19 +206,19 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
 # Decode one literal/length symbol from the bitstream.
 fn huff_decode_litlen(br) {
     return _huff_decode(br, _huff_litlen_fast, _huff_litlen_lens,
-                        _huff_litlen_codes, _huff_litlen_count);
+    _huff_litlen_codes, _huff_litlen_count);
 }
 
 # Decode one distance symbol from the bitstream.
 fn huff_decode_dist(br) {
     return _huff_decode(br, _huff_dist_fast, _huff_dist_lens,
-                        _huff_dist_codes, _huff_dist_count);
+    _huff_dist_codes, _huff_dist_count);
 }
 
 # Decode one code-length symbol from the bitstream.
 fn huff_decode_cl(br) {
     return _huff_decode(br, _huff_cl_fast, _huff_cl_lens,
-                        _huff_cl_codes, _huff_cl_count);
+    _huff_cl_codes, _huff_cl_count);
 }
 
 # Build the literal/length Huffman table from code lengths.
@@ -230,11 +230,11 @@ fn huff_build_litlen(lengths, count) {
     var i = 0;
     while (i < count) {
         store64(_huff_litlen_lens + i * 8,
-                load64(lengths + i * 8));
+        load64(lengths + i * 8));
         i = i + 1;
     }
     return _huff_build(_huff_litlen_lens, count,
-                       _huff_litlen_codes, _huff_litlen_fast);
+    _huff_litlen_codes, _huff_litlen_fast);
 }
 
 # Build the distance Huffman table from code lengths.
@@ -244,11 +244,11 @@ fn huff_build_dist(lengths, count) {
     var i = 0;
     while (i < count) {
         store64(_huff_dist_lens + i * 8,
-                load64(lengths + i * 8));
+        load64(lengths + i * 8));
         i = i + 1;
     }
     return _huff_build(_huff_dist_lens, count,
-                       _huff_dist_codes, _huff_dist_fast);
+    _huff_dist_codes, _huff_dist_fast);
 }
 
 # Build the code-length Huffman table from code lengths.
@@ -258,11 +258,11 @@ fn huff_build_cl(lengths, count) {
     var i = 0;
     while (i < count) {
         store64(_huff_cl_lens + i * 8,
-                load64(lengths + i * 8));
+        load64(lengths + i * 8));
         i = i + 1;
     }
     return _huff_build(_huff_cl_lens, count,
-                       _huff_cl_codes, _huff_cl_fast);
+    _huff_cl_codes, _huff_cl_fast);
 }
 
 # ================================================================
@@ -384,9 +384,9 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
         var j = i - 1;
         while (j >= 0 && load64(sorted_freq + j * 8) > key_f) {
             store64(sorted_freq + (j + 1) * 8,
-                    load64(sorted_freq + j * 8));
+            load64(sorted_freq + j * 8));
             store64(sorted_sym + (j + 1) * 8,
-                    load64(sorted_sym + j * 8));
+            load64(sorted_sym + j * 8));
             j = j - 1;
         }
         store64(sorted_freq + (j + 1) * 8, key_f);
@@ -417,7 +417,7 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
             if (q2a == 0) { pq1 = 1; }
             else {
                 if (load64(sorted_freq + q1_head * 8) <=
-                    load64(q2_freq + q2_head * 8)) { pq1 = 1; }
+                load64(q2_freq + q2_head * 8)) { pq1 = 1; }
             }
         }
         if (pq1 == 1) {
@@ -440,7 +440,7 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
             if (q2a == 0) { pq1 = 1; }
             else {
                 if (load64(sorted_freq + q1_head * 8) <=
-                    load64(q2_freq + q2_head * 8)) { pq1 = 1; }
+                load64(q2_freq + q2_head * 8)) { pq1 = 1; }
             }
         }
         if (pq1 == 1) {
@@ -485,11 +485,11 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes) {
         } else {
             var idx = node - n;
             store64(stack_node + sp * 8,
-                    load64(q2_left + idx * 8));
+            load64(q2_left + idx * 8));
             store64(stack_depth + sp * 8, depth + 1);
             sp = sp + 1;
             store64(stack_node + sp * 8,
-                    load64(q2_right + idx * 8));
+            load64(q2_right + idx * 8));
             store64(stack_depth + sp * 8, depth + 1);
             sp = sp + 1;
         }

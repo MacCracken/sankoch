@@ -3,6 +3,9 @@
 # Round-trip fuzzing: compress random data, decompress, verify identical.
 # Also feeds random bytes to decompress to check error handling.
 
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
 # Simple linear congruential generator for deterministic pseudo-random bytes.
 var _fuzz_state = 0;
 
@@ -70,6 +73,8 @@ fn fuzz_lz4_malformed(seed, data_len) {
 }
 
 fn main() {
+    alloc_init();
+
     # Round-trip fuzzing at various sizes
     var sizes[10];
     store64(&sizes + 0 * 8, 0);

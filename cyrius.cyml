@@ -1,0 +1,49 @@
+[package]
+name = "sankoch"
+version = "${file:VERSION}"
+description = "Lossless compression library — LZ4, DEFLATE, zlib, gzip"
+license = "GPL-3.0-only"
+repository = "https://github.com/MacCracken/sankoch"
+language = "cyrius"
+cyrius = "5.4.7"
+
+[build]
+entry = "src/lib.cyr"
+output = "build/sankoch"
+
+# `[lib]` declares the module set `cyrius distlib` concatenates into
+# dist/sankoch.cyr — the single-file bundle downstream consumers
+# include as `lib/sankoch.cyr` in Cyrius stdlib.
+#
+# Do not move `modules` under `[build]`. `cyrius build` would prepend
+# them before src/lib.cyr, which already chains them via `include`,
+# and the binary would double-embed every symbol.
+#
+# Order matters — matches the include chain in src/lib.cyr.
+[lib]
+modules = [
+    "src/types.cyr",
+    "src/checksum.cyr",
+    "src/bitreader.cyr",
+    "src/bitwriter.cyr",
+    "src/huffman.cyr",
+    "src/lz77.cyr",
+    "src/lz4.cyr",
+    "src/deflate.cyr",
+    "src/zlib.cyr",
+    "src/gzip.cyr",
+    "src/stream.cyr",
+    "src/lib.cyr",
+]
+
+[deps]
+stdlib = [
+    "syscalls",
+    "string",
+    "alloc",
+    "fmt",
+    "vec",
+    "fnptr",
+    "thread",
+    "assert",
+]

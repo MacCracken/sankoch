@@ -1172,7 +1172,7 @@ fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal) {
                     var lextra = load64(&_deflate_len_extra + li * 8);
                     var lbase = load64(&_deflate_len_base + li * 8);
                     store64(_dyn_sym_buf + _dyn_sym_count * 8,
-                            _dyn_pack(lsym, lextra, mlen - lbase));
+                    _dyn_pack(lsym, lextra, mlen - lbase));
                     _dyn_sym_count = _dyn_sym_count + 1;
                     store64(lit_freq + lsym * 8, load64(lit_freq + lsym * 8) + 1);
 
@@ -1180,7 +1180,7 @@ fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal) {
                     var dextra = load64(&_deflate_dist_extra + di * 8);
                     var dbase = load64(&_deflate_dist_base + di * 8);
                     store64(_dyn_sym_buf + _dyn_sym_count * 8,
-                            _dyn_pack(di, dextra, mdist - dbase));
+                    _dyn_pack(di, dextra, mdist - dbase));
                     _dyn_sym_count = _dyn_sym_count + 1;
                     store64(dist_freq + di * 8, load64(dist_freq + di * 8) + 1);
 
@@ -1251,7 +1251,7 @@ fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal) {
     if (rc < 0) { return rc; }
 
     rc = _deflate_write_syms_dynamic(bw, opt_lit_lens, opt_lit_codes,
-                                      opt_dist_lens, opt_dist_codes);
+    opt_dist_lens, opt_dist_codes);
     if (rc < 0) { return rc; }
 
     return 0;

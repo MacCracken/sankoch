@@ -1,6 +1,25 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.2.0) | **Last Updated**: 2026-04-15
+> **Status**: Stable (v1.3.0) | **Last Updated**: 2026-04-19
+
+---
+
+## v1.4.0 — Scaffold follow-ups
+
+### Wire fuzz harnesses into CI
+
+`fuzz/fuzz_lz4.fcyr` and `fuzz/fuzz_deflate.fcyr` were migrated to the new
+build system in 1.3.0 (include chain + `alloc_init()`) but runtime crashes
+under the new toolchain pin need investigation before they can gate
+merges. Path: repro in isolation, determine root cause (suspect: heap
+sizing vs. LZ4 hash table allocation interaction), fix, add to
+`.github/workflows/ci.yml`.
+
+### `cyrius fmt` in-place mode
+
+Currently the fmt gate prints formatted source to stdout; applying fixes
+requires a shell one-liner. Track the upstream Cyrius command for a
+direct `--write` variant and adopt it once available.
 
 ---
 
@@ -76,7 +95,7 @@ Assertions: 5897 + 134 = 6031 total
 
 ## Dependencies
 
-**Zero.** Checksums (Adler-32, CRC-32) are inline. No sigil dependency. No stdlib beyond what cyrius.toml provides.
+**Zero.** Checksums (Adler-32, CRC-32) are inline. No sigil dependency. No stdlib beyond what `[deps.stdlib]` in `cyrius.cyml` provides.
 
 ## Key References
 
@@ -89,4 +108,4 @@ Assertions: 5897 + 134 = 6031 total
 
 ---
 
-*Last Updated: 2026-04-15*
+*Last Updated: 2026-04-19*

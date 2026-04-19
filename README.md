@@ -26,27 +26,37 @@ Formats: `FORMAT_LZ4`, `FORMAT_DEFLATE`, `FORMAT_ZLIB`, `FORMAT_GZIP`
 ## Build
 
 ```sh
-cyrius build src/lib.cyr build/sankoch
-cyrius test
+cyrius deps                              # resolve stdlib into lib/
+cyrius build src/lib.cyr build/sankoch   # compile-check
+cyrius test tests/tcyr/sankoch.tcyr      # 5897 assertions
+cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
+cyrius distlib                           # → dist/sankoch.cyr
 ```
+
+Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md).
 
 ## Architecture
 
 | File | Lines | Role |
 |------|-------|------|
-| types.cyr | 35 | Enums: formats, errors, limits |
-| checksum.cyr | 56 | Adler-32, CRC-32 |
-| lz4.cyr | 266 | LZ4 block compress + decompress |
-| bitreader.cyr | 89 | LSB-first bit-stream reader |
-| huffman.cyr | 309 | Huffman build/decode, fixed trees |
-| deflate.cyr | 617 | DEFLATE decompress + compress |
-| bitwriter.cyr | 141 | LSB-first bit-stream writer |
-| lz77.cyr | 98 | Sliding window match-finder |
-| zlib.cyr | 76 | RFC 1950 wrapper |
-| gzip.cyr | 120 | RFC 1952 wrapper |
-| lib.cyr | 74 | Public API |
+| types.cyr | 36 | Enums: formats, errors, limits, magic bytes |
+| checksum.cyr | 189 | Adler-32, CRC-32, xxHash32 (inline) |
+| bitreader.cyr | 99 | LSB-first bit-stream reader |
+| bitwriter.cyr | 142 | LSB-first bit-stream writer |
+| huffman.cyr | 491 | Huffman build/decode, fixed + optimal trees |
+| lz77.cyr | 124 | Sliding window match-finder |
+| lz4.cyr | 457 | LZ4 block + frame compress/decompress |
+| deflate.cyr | 1257 | DEFLATE de/compress, multi-block, dict |
+| zlib.cyr | 102 | RFC 1950 wrapper + FDICT |
+| gzip.cyr | 159 | RFC 1952 wrapper + concatenated members |
+| stream.cyr | 124 | Streaming API |
+| lib.cyr | 115 | Include chain + public API + thread safety |
 
-1881 lines of Cyrius. 24 tests.
+~3300 lines of Cyrius. 6031 assertions across 2 test suites.
+
+## Toolchain
+
+Cyrius 5.4.7 (pinned in `cyrius.cyml`).
 
 ## Why
 
