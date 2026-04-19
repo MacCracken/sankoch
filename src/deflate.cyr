@@ -1139,15 +1139,11 @@ fn _deflate_alloc_dynamic_ws() {
 
 # Emit one or more dynamic Huffman sub-blocks covering src[sp_start..sp_end).
 #
-# Adaptive block splitting (v1.5.0): collection stops when the shared
-# symbol buffer is nearly full, and a fresh sub-block begins — each
-# sub-block ships its own optimal Huffman tree tuned to its own symbol
-# frequencies. This replaces the v1.4.0- "fall back to fixed Huffman on
-# overflow" downgrade, which collapsed one dynamic block's tree quality
-# the moment the buffer filled. Net effect: inputs that generate more
-# than ~16K LZ77 symbols per 1MB chunk (random-ish / low-locality data)
-# now stay on the dynamic path with per-segment trees instead of
-# degrading to the universal fixed tree.
+# Adaptive block splitting: collection stops when the shared symbol buffer
+# is nearly full, and a fresh sub-block begins — each sub-block ships its
+# own optimal Huffman tree tuned to its own symbol frequencies. Keeps
+# low-locality inputs (>~16K LZ77 symbols per chunk) on the dynamic path
+# instead of falling back to the universal fixed tree.
 #
 # BFINAL only fires on the very last sub-block, and only if the caller
 # requested it.

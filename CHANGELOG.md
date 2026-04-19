@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-04-19
+
+**xxHash32 spec-compliance fix + P(-1) scaffold hardening.**
+
+During the P(-1) pass before v1.7.0, a deep audit of `src/checksum.cyr`
+turned up that our `xxhash32` was the short-length variant only and
+additionally used the wrong prime (`PRIME2` instead of `PRIME4`) in
+the 4-byte tail. Our LZ4F encoder and decoder were self-consistent —
+round-trip through sankoch worked — but the reference `lz4` CLI
+rejected every one of our frames with a checksum error. That
+contradicts the v1.6.0 "byte-identical to `lz4` CLI on inputs >64KB"
+claim.
+
+1.6.1 fixes the hash to match the [xxHash32 reference
+spec](https://github.com/Cyan4973/xxHash/blob/dev/doc/xxhash_spec.md):
+adds the 4-parallel-stripe accumulator path for `len ≥ 16`, corrects
+the 4-byte tail multiplier, and pins the behavior with 9 known-vector
+tests generated from `xxh32sum`.
+
+**Wire-format break**: LZ4 frames written by sankoch 1.4.0–1.6.0
+carry the divergent content checksum and will fail verification under
+1.6.1's decoder. No shipping downstream consumer existed against the
+LZ4F path — all consumers listed in CLAUDE.md are planned, not yet
+shipped — so the break was taken deliberately. If you have stored
+lz4f frames produced by sankoch ≤1.6.0, regenerate them with 1.6.1+.
+
+### Fixed
+- **`xxhash32` now matches reference xxHash32.** End-to-end validated:
+  compressed 150KB of text via `lz4f_compress` (724-byte frame, 3
+  blocks), decoded byte-identically via `lz4 -dc`, MD5 matches input.
+  Pre-1.6.1, the same round-trip failed at the reference decoder's
+  checksum step.
+
+### Added
+- `XXH32_PRIME4 = 0x27D4EB2F` constant + `_xxh32_round` helper.
+- Full stripe-accumulator path in `xxhash32` for `len ≥ 16`.
+- `test_xxhash32_known_vectors` with 9 reference vectors covering
+  both short and long paths (`""`, `"a"`, `"abc"`, `"abcd"`,
+  `"abcdefg"`, `"abcdef…mno"`, 16×0x00, `"Nobody inspects the spammish
+  repetition"`, 64×0x00).
+- `docs/audit/2026-04-19.md` — full P(-1) audit report covering HIGH
+  (xxhash32), MEDIUM (direct-entry mutex gap; tracked for v1.7.0),
+  LOW/cosmetics (all fixed), INFO (backlogged).
+
+### Changed
+- `src/checksum.cyr` header rewritten — removed the false "SIMD
+  (SSE2)" claim; the unrolled loops are scalar. Real SIMD deferred to
+  when Cyrius ships inline-asm.
+- `src/stream.cyr` usage doc — function is `stream_write`, not the
+  previously-shown `stream_compress_write` / `stream_decompress_write`.
+- `src/deflate.cyr` — condensed the adaptive-block-splitting comment
+  from 10 lines to 6; version-evolution history lives in this
+  CHANGELOG.
+- Cosmetic: `src/types.cyr:35` trailing `;`; `src/checksum.cyr` spacing
+  on CRC-32 table references.
+
+### Known limitations (tracked for v1.7.0)
+- **Direct-entry APIs bypass `_sankoch_mtx`** (MED-01 in audit):
+  `lz4f_compress/decompress`, `zlib_*`, `gzip_*`, `deflate_*`,
+  `stream_*` are all publicly exported but only the
+  `compress()`/`decompress()` wrappers take the mutex. Concurrent
+  direct calls race on shared state (LZ4 hash table, DEFLATE tables,
+  lazy-init flags). Fix deferred to v1.7.0 — a proper two-tier public/
+  internal API split aligns with the streaming refactor that release
+  needs anyway.
+
+### Metrics
+- **Test suite**: 286988 assertions (5897 + 281082 multi-block +
+  9 xxhash32 vectors), 0 failures.
+- **git_object suite**: 134 assertions, 0 failures.
+- **Fuzz**: 1360 iterations across both harnesses, 0 failures.
+- **Cleanliness**: `cyrius build` 0 warnings, `cyrius lint` 0
+  warnings, `cyrius fmt --check` diff-clean, `cyrius vet` 18/0/0.
+- **`dist/sankoch.cyr`** regenerated: 3410 lines (was 3370 in 1.6.0).
+- **Throughput tradeoff** (correctness tax): `lz4f c text 128K`
+  762199 → 819233 ns/op (+7.5%); `lz4f c rand 128K` 1180045 →
+  1279163 ns/op (+8.4%). The extra cost is the proper stripe-path
+  xxHash32 over the full input — the broken short-path version was
+  cheaper but wrong. Compressed-size benchmarks are unchanged (SIZE
+  lines byte-identical; the 4-byte checksum value differs but the
+  frame length does not).
+
+### Roadmap
+- v1.6.1 "xxHash32 compliance + P(-1) closeout" → **shipped**.
+- Next: **v1.7.0 — true incremental DEFLATE streaming** (third of
+  four v2.0.0-track features). Will also land the public/internal API
+  split that fixes MED-01.
+
 ## [1.6.0] — 2026-04-19
 
 **LZ4 multi-block frames. Second bite on the v2.0.0 track.**

@@ -4,17 +4,17 @@
 #
 # Usage:
 #   var ctx = stream_compress_init(FORMAT_ZLIB, level)
-#   stream_compress_write(ctx, chunk1, len1)
-#   stream_compress_write(ctx, chunk2, len2)
+#   stream_write(ctx, chunk1, len1)
+#   stream_write(ctx, chunk2, len2)
 #   var result_len = stream_compress_finish(ctx, out_buf, out_cap)
 #
 #   var ctx = stream_decompress_init(FORMAT_ZLIB)
-#   stream_decompress_write(ctx, compressed_data, compressed_len)
+#   stream_write(ctx, compressed_data, compressed_len)
 #   var result_len = stream_decompress_finish(ctx, out_buf, out_cap)
 #
 # Internally, the stream context accumulates input in a resizable buffer,
 # then compresses/decompresses in one shot on finish(). This is a buffered
-# streaming API — true incremental block-by-block is future work.
+# streaming API — true incremental block-by-block lands in v1.7.0.
 
 # Context layout (48 bytes):
 #   +0:  format

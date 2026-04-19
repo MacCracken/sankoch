@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 1.3.0 — shipping as `lib/sankoch.cyr` in Cyrius stdlib
+- **Status**: 1.6.1 — shipping as `lib/sankoch.cyr` in Cyrius stdlib
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -22,13 +22,16 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
-- **Source**: 3295 lines across 12 domain modules (`src/*.cyr`)
-- **Tests**: 5897 + 134 = 6031 assertions across 2 tcyr suites,
-  2 fuzz harnesses (out-of-CI pending follow-up), 40+ benchmarks
-- **Dist bundle**: `dist/sankoch.cyr` at 3316 lines, zero deps
-- **Stable**: 1.3.0 — full phase 1-4 coverage (LZ4 block+frame,
-  DEFLATE, zlib incl. FDICT, gzip incl. concatenated members),
-  9 compression levels, streaming API
+- **Source**: 3428 lines across 12 domain modules (`src/*.cyr`)
+- **Tests**: 286988 + 134 = 287122 assertions across 2 tcyr suites
+  (the bulk are per-byte round-trip checks in the LZ4F multi-block
+  tests); 1360 fuzz iterations across 2 harnesses; 40+ benchmarks
+- **Dist bundle**: `dist/sankoch.cyr` at 3410 lines, zero deps
+- **Stable**: 1.6.1 — full phase 1-4 coverage (LZ4 block + frame
+  incl. multi-block frames and reference-`lz4`-CLI-compatible xxHash32
+  content checksum, DEFLATE with adaptive dynamic-block splitting,
+  zlib incl. FDICT, gzip incl. concatenated members), 9 compression
+  levels, buffered streaming API
 - **Toolchain**: Cyrius 5.4.7 (`cyrius.cyml: cyrius = "5.4.7"`)
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
@@ -62,7 +65,7 @@ At a glance:
 ```bash
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check (library — binary is trivial)
-cyrius test tests/tcyr/sankoch.tcyr      # 5897 assertions
+cyrius test tests/tcyr/sankoch.tcyr      # 286988 assertions
 cyrius test tests/tcyr/git_object.tcyr   # 134 assertions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + compressed-size table
 cyrius distlib                           # → dist/sankoch.cyr
@@ -125,7 +128,7 @@ bundle.
 1. Cleanliness: `cyrius build` (0 warnings for library path),
    `cyrius lint` (0 warnings), `cyrius fmt --check` diff-clean,
    `cyrius vet src/lib.cyr` clean
-2. Test sweep: 6031+ assertions pass; fuzz harness wire-up compiles
+2. Test sweep: 287122+ assertions pass; fuzz harness wire-up compiles
 3. Benchmark baseline: `cyrius bench tests/bcyr/sankoch.bcyr`
 4. Internal deep review — gaps, optimizations, correctness
 5. External research — RFC errata / zlib / lz4 reference changes
@@ -148,7 +151,7 @@ bundle.
 
 ### Closeout Pass (before every minor/major bump)
 
-1. Full test suite — 6031+ pass, 0 failures
+1. Full test suite — 287122+ pass, 0 failures
 2. Benchmark run — `cyrius bench`, save CSV
 3. Dead code audit — review `dead:` list from `cyrius build`;
    unreferenced public functions should be removed or justified
@@ -190,7 +193,7 @@ bundle.
 - **Toolchain pin**: `cyrius = "5.4.7"` in `cyrius.cyml`. CI and
   release both read from the manifest
 - **Tag filter**: release workflow triggers on bare semver tags
-  (`1.3.0`, not `v1.3.0`)
+  (`1.6.1`, not `v1.6.1`)
 - **Version-verify gate**: release asserts `VERSION == git tag` before
   building
 - **Lint gate**: CI runs `cyrius lint` per source; treat warnings as

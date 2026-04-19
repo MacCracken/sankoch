@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.6.0) | **Last Updated**: 2026-04-19
+> **Status**: Stable (v1.6.1) | **Last Updated**: 2026-04-19
 
 ---
 
@@ -34,6 +34,21 @@ block-size loop already handled multi-block frames.
 (4 blocks), 128K random = 131095B (2 uncompressed blocks — validates
 the per-chunk fallback path). Reference `lz4` CLI now accepts our
 output.
+
+### ✅ v1.6.1 — xxHash32 spec compliance + P(-1) hardening (shipped 2026-04-19)
+
+P(-1) audit before v1.7.0 uncovered that our `xxhash32` was the
+short-length variant only and used PRIME2 instead of PRIME4 in the
+4-byte tail. Compressor and decompressor were self-consistent but
+reference `lz4` CLI rejected our output. Fixed the hash, added 9
+known-vector tests (from `xxh32sum`), validated end-to-end against
+`lz4 -dc`. Breaking wire-format change; no shipping downstream
+consumers yet. See `docs/audit/2026-04-19.md`.
+
+**Tracked for v1.7.0:** direct-entry APIs (`lz4f_compress`,
+`zlib_*_dict`, `deflate_*_dict`, `stream_*`) bypass the public mutex
+— fix lands alongside the streaming refactor that release needs
+anyway.
 
 ### 🚧 v1.7.0 — True incremental DEFLATE streaming
 

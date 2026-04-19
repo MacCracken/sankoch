@@ -188,6 +188,74 @@ fn test_lz4_buffer_too_small() {
 }
 
 # ================================================================
+# xxHash32 known-vector tests — verify against reference (xxh32sum)
+# Required for LZ4 Frame content-checksum compatibility.
+# ================================================================
+
+# Fill buf with the ASCII bytes of s (up to len); caller supplies bytes.
+fn _put_str(buf, s, len) {
+    var i = 0;
+    while (i < len) { store8(buf + i, load8(s + i)); i = i + 1; }
+    return 0;
+}
+
+fn test_xxhash32_known_vectors() {
+    var buf = alloc(64);
+
+    # Empty — 0x02CC5D05 (short path, no tail)
+    assert(xxhash32(buf, 0) == 46947589, "xxh32 empty");
+
+    # "a" (1 byte) — 0x550D7456 (short path, byte tail only)
+    store8(buf, 97);
+    assert(xxhash32(buf, 1) == 1426945110, "xxh32 'a'");
+
+    # "abc" (3 bytes) — 0x32D153FF (short path, byte tail only)
+    store8(buf, 97); store8(buf + 1, 98); store8(buf + 2, 99);
+    assert(xxhash32(buf, 3) == 852579327, "xxh32 'abc'");
+
+    # "abcd" (4 bytes) — 0xA3643705 (exercises 4-byte tail — catches PRIME2/PRIME4 bug)
+    store8(buf, 97); store8(buf + 1, 98); store8(buf + 2, 99); store8(buf + 3, 100);
+    assert(xxhash32(buf, 4) == 2741253893, "xxh32 'abcd'");
+
+    # "abcdefg" (7 bytes) — 0x9DD093B3 (4-byte tail once + byte tail)
+    var j = 0;
+    while (j < 7) { store8(buf + j, 97 + j); j = j + 1; }
+    assert(xxhash32(buf, 7) == 2647692211, "xxh32 'abcdefg'");
+
+    # "abcdefghijklmno" (15 bytes) — 0xB918A375 (short path, 4-byte tail x3 + byte tail x3)
+    j = 0;
+    while (j < 15) { store8(buf + j, 97 + j); j = j + 1; }
+    assert(xxhash32(buf, 15) == 3105399669, "xxh32 'abcdef…mno'");
+
+    # 16 zero bytes — 0x8E022B3A (first stripe-path case: exactly one 16-byte stripe)
+    j = 0;
+    while (j < 16) { store8(buf + j, 0); j = j + 1; }
+    assert(xxhash32(buf, 16) == 2382506810, "xxh32 16×0x00");
+
+    # "Nobody inspects the spammish repetition" (39 bytes) — 0xE2293B2F
+    # Exercises: 2 full stripes (32 bytes) + 4-byte tail (4 bytes) + byte tail (3 bytes)
+    var s[40];
+    store8(&s+0,78); store8(&s+1,111); store8(&s+2,98); store8(&s+3,111);
+    store8(&s+4,100); store8(&s+5,121); store8(&s+6,32); store8(&s+7,105);
+    store8(&s+8,110); store8(&s+9,115); store8(&s+10,112); store8(&s+11,101);
+    store8(&s+12,99); store8(&s+13,116); store8(&s+14,115); store8(&s+15,32);
+    store8(&s+16,116); store8(&s+17,104); store8(&s+18,101); store8(&s+19,32);
+    store8(&s+20,115); store8(&s+21,112); store8(&s+22,97); store8(&s+23,109);
+    store8(&s+24,109); store8(&s+25,105); store8(&s+26,115); store8(&s+27,104);
+    store8(&s+28,32); store8(&s+29,114); store8(&s+30,101); store8(&s+31,112);
+    store8(&s+32,101); store8(&s+33,116); store8(&s+34,105); store8(&s+35,116);
+    store8(&s+36,105); store8(&s+37,111); store8(&s+38,110);
+    assert(xxhash32(&s, 39) == 3794352943, "xxh32 'Nobody inspects…'");
+
+    # 64 zero bytes — 0x56328790 (4 full stripes, no tail)
+    j = 0;
+    while (j < 64) { store8(buf + j, 0); j = j + 1; }
+    assert(xxhash32(buf, 64) == 1446152080, "xxh32 64×0x00");
+
+    return 0;
+}
+
+# ================================================================
 # LZ4 frame format tests
 # ================================================================
 
@@ -864,6 +932,7 @@ fn main() {
     test_lz4_roundtrip_random();
     test_lz4_roundtrip_1kb();
     test_lz4_buffer_too_small();
+    test_xxhash32_known_vectors();
     test_lz4f_roundtrip();
     test_lz4f_empty();
     test_lz4f_checksum();
