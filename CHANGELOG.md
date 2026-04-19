@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-04-19
+
+**Fuzz harnesses fixed and wired into CI. Roadmap 1.4.0 scaffold
+follow-up, shipped.**
+
+### Fixed
+- **`fuzz/fuzz_lz4.fcyr` / `fuzz/fuzz_deflate.fcyr`** — every
+  stack-array call site was passing the bare name (`src`, `compressed`,
+  `decompressed`) to `lz4_compress` / `deflate_decompress` / etc.,
+  which loaded the first 8 bytes of the array instead of its address
+  (per `memory/reference_stack_array_addr.md`). Every non-pointer
+  call rewritten to `&buf`. Root cause for the silent segfault /
+  early-exit under every prior toolchain; the harnesses have almost
+  certainly been broken since 1.0.0.
+- **`fuzz/fuzz_deflate.fcyr`** — missing `alloc_init()` at main entry,
+  added.
+
+### Added
+- **Fuzz gate in CI + release workflows**. Each `.fcyr` harness is
+  built with DCE and run under a 60-second timeout; any non-zero exit
+  fails the pipeline. Current coverage: 500 LZ4 round-trips + 200
+  LZ4 malformed + 240 DEFLATE round-trips + 100 DEFLATE malformed +
+  160 zlib round-trips + 160 gzip round-trips = **1360 fuzz
+  iterations per run**, all green.
+- **Stack-array pointer note** at the top of each `.fcyr` file —
+  documents the `&buf` discipline for future editors.
+
+### Metrics
+- **Fuzz coverage**: 1360 iterations/run, 0 failures
+- **Test suite** (unchanged from 1.3.0): 5897 + 134 = 6031 assertions
+- **`dist/sankoch.cyr`**: 3316 lines (no source changes; bundle
+  regenerated to pick up the new VERSION header)
+
+### Roadmap
+- v1.4.0 "Wire fuzz harnesses into CI" → **shipped**.
+- `cyrius fmt --write` still not available in 5.4.7 — the `--check`
+  stdout-diff gate stays as-is. Deferred to the next Cyrius bump.
+
 ## [1.3.0] — 2026-04-19
 
 **Toolchain bump to Cyrius 5.4.7. Scaffold hardening — full migration to

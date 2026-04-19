@@ -1,25 +1,27 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.3.0) | **Last Updated**: 2026-04-19
+> **Status**: Stable (v1.4.0) | **Last Updated**: 2026-04-19
 
 ---
 
-## v1.4.0 — Scaffold follow-ups
-
-### Wire fuzz harnesses into CI
-
-`fuzz/fuzz_lz4.fcyr` and `fuzz/fuzz_deflate.fcyr` were migrated to the new
-build system in 1.3.0 (include chain + `alloc_init()`) but runtime crashes
-under the new toolchain pin need investigation before they can gate
-merges. Path: repro in isolation, determine root cause (suspect: heap
-sizing vs. LZ4 hash table allocation interaction), fix, add to
-`.github/workflows/ci.yml`.
+## v1.5.0 — Scaffold follow-ups (remaining)
 
 ### `cyrius fmt` in-place mode
 
 Currently the fmt gate prints formatted source to stdout; applying fixes
-requires a shell one-liner. Track the upstream Cyrius command for a
-direct `--write` variant and adopt it once available.
+requires a shell one-liner. `cyrius fmt --write` in 5.4.7 is still a
+no-op (prints to stdout like `--check`). Track the upstream command
+and adopt it once the flag actually writes back to the source file.
+
+### Multi-profile distlib (kernel-safe subset)
+
+Yukti 1.3.0 ships a `dist/yukti-core.cyr` profile for bare-metal
+AGNOS kernel use. Sankoch's analog: an LZ4-only (no alloc, no
+stdlib) subset for initrd decompression in the kernel itself. Would
+require refactoring the LZ4 match-finder hash table off the heap
+onto a caller-provided workspace, and stripping the mutex. Not
+obviously needed yet — the AGNOS initrd loader hasn't asked — but
+track as the logical next "hardening" step once a consumer wants it.
 
 ---
 

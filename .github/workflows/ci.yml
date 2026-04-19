@@ -93,6 +93,19 @@ jobs:
           cyrius test tests/tcyr/sankoch.tcyr
           cyrius test tests/tcyr/git_object.tcyr
 
+      - name: Fuzz
+        # Round-trip + malformed-input harnesses. Each one calls the
+        # compress/decompress path a few hundred times with varying
+        # seeds and sizes. A non-zero exit means either an assert fired
+        # or the binary crashed — either way, fail the build.
+        run: |
+          for f in fuzz/*.fcyr; do
+            name=$(basename "$f" .fcyr)
+            CYRIUS_DCE=1 cyrius build "$f" "build/$name"
+            timeout 60 "build/$name" || { echo "FUZZ CRASH: $name"; exit 1; }
+            echo "  $name: ok"
+          done
+
       - name: Bench
         run: cyrius bench tests/bcyr/sankoch.bcyr
 

@@ -29,29 +29,34 @@ fn _fuzz_fill(buf, len) {
     return 0;
 }
 
+# Stack-array pointer note (memory/reference_stack_array_addr.md):
+# `var buf[N]` reserves N bytes on the stack, but `buf` as an rvalue
+# yields the first 8 bytes, not the address. Every call that wants a
+# pointer must pass `&buf`.
+
 # Test: compress then decompress random data, verify identical.
 fn fuzz_lz4_roundtrip(seed, data_len) {
     _fuzz_seed(seed);
     var src[4096];
     var capped = data_len;
     if (capped > 4096) { capped = 4096; }
-    _fuzz_fill(src, capped);
+    _fuzz_fill(&src, capped);
 
     var compressed[8192];
     var decompressed[4096];
 
-    var clen = lz4_compress(src, capped, compressed, 8192);
+    var clen = lz4_compress(&src, capped, &compressed, 8192);
     if (clen < 0) {
         # Compression should never fail on valid input with sufficient buffer
         assert(0 == 1, "lz4 compress failed on random data");
     }
 
-    var dlen = lz4_decompress(compressed, clen, decompressed, 4096);
+    var dlen = lz4_decompress(&compressed, clen, &decompressed, 4096);
     assert(dlen == capped, "lz4 fuzz roundtrip size mismatch");
 
     var i = 0;
     while (i < capped) {
-        assert(load8(decompressed + i) == load8(src + i), "lz4 fuzz roundtrip content mismatch");
+        assert(load8(&decompressed + i) == load8(&src + i), "lz4 fuzz roundtrip content mismatch");
         i = i + 1;
     }
     return 0;
@@ -63,11 +68,11 @@ fn fuzz_lz4_malformed(seed, data_len) {
     var src[512];
     var capped = data_len;
     if (capped > 512) { capped = 512; }
-    _fuzz_fill(src, capped);
+    _fuzz_fill(&src, capped);
 
     var dst[4096];
     # Should return an error or a valid length — must not crash
-    var dlen = lz4_decompress(src, capped, dst, 4096);
+    var dlen = lz4_decompress(&src, capped, &dst, 4096);
     # We don't assert on the result — just that we survived
     return 0;
 }

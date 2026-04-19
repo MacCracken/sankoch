@@ -58,6 +58,15 @@ jobs:
           cyrius test tests/tcyr/sankoch.tcyr
           cyrius test tests/tcyr/git_object.tcyr
 
+      - name: Fuzz
+        run: |
+          for f in fuzz/*.fcyr; do
+            name=$(basename "$f" .fcyr)
+            CYRIUS_DCE=1 cyrius build "$f" "build/$name"
+            timeout 60 "build/$name" || { echo "FUZZ CRASH: $name"; exit 1; }
+            echo "  $name: ok"
+          done
+
       - name: Regenerate bundle
         run: cyrius distlib
 
