@@ -47,9 +47,6 @@ jobs:
       - name: Resolve deps
         run: cyrius deps
 
-      - name: Verify dep hashes
-        run: cyrius deps --verify
-
       - name: Build (DCE)
         run: |
           mkdir -p build
@@ -80,7 +77,6 @@ jobs:
           path: |
             sankoch-*.tar.gz
             sankoch-*.cyr
-            cyrius.lock
             SHA256SUMS
 
   release:
@@ -104,5 +100,4 @@ jobs:
           files: |
             sankoch-*.tar.gz
             sankoch-*.cyr
-            cyrius.lock
             SHA256SUMS

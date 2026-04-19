@@ -90,7 +90,6 @@ fuzz/              — fuzz harnesses (lz4, deflate) — out-of-CI
 dist/
   sankoch.cyr      — distlib bundle (`cyrius distlib`)
 cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] modules)
-cyrius.lock        — SHA256 lockfile for every resolved dep
 ```
 
 **Include order matters.** `src/lib.cyr` declares the full chain:
@@ -197,8 +196,9 @@ bundle.
 - **Lint gate**: CI runs `cyrius lint` per source; treat warnings as
   errors
 - **Format gate**: CI runs `cyrius fmt --check`; drift fails the build
-- **Lock gate**: CI runs `cyrius deps --verify` against committed
-  `cyrius.lock`
+- **No lock gate**: sankoch is stdlib-only (zero git deps), so there is
+  no `cyrius.lock` to verify against. The stdlib pin comes from the
+  toolchain version itself (`cyrius = "5.4.7"` in `cyrius.cyml`)
 - **Dist gate**: CI regenerates `dist/sankoch.cyr` via
   `cyrius distlib` and fails on drift
 - **Concurrency**: CI uses `cancel-in-progress: true` keyed on

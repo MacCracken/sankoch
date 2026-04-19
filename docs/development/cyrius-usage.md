@@ -69,8 +69,13 @@ CI regenerates the bundle and asserts it matches the committed file —
 cyrius lint src/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr
 cyrius fmt  src/*.cyr --check   # prints formatted output; compare to file
 cyrius vet  src/lib.cyr         # audit include dependencies
-cyrius deps --verify            # check lib/*.cyr against cyrius.lock
 ```
+
+Sankoch is stdlib-only, so there is no `cyrius.lock` and no
+`cyrius deps --verify` gate — the stdlib snapshot is implicitly pinned
+by the toolchain version (`cyrius = "5.4.7"` in `cyrius.cyml`). Add
+`cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
+ever added under `[deps.*]`.
 
 All four run in CI. `fmt --check` emits the formatted source; CI diffs
 against the committed file and fails on drift. To apply the fix:

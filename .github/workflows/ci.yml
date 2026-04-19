@@ -33,14 +33,15 @@ jobs:
           echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
 
       - name: Resolve dependencies
+        # Stdlib-only (zero git deps), so no cyrius.lock is committed
+        # and `cyrius deps --verify` has nothing to check against. The
+        # stdlib itself is pinned by the cyrius = "5.4.7" toolchain line
+        # in cyrius.cyml — every CI run pulls the same stdlib snapshot.
         run: cyrius deps
-
-      - name: Verify dep hashes
-        run: cyrius deps --verify
 
       - name: Lint
         # Auto-discover so new modules are covered without editing CI.
-        # Any "warn " line fails the build.
+        # Treat any warning as a failure (fail on any cyrlint "  warn " line).
         run: |
           fail=0
           for f in src/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr; do
@@ -53,6 +54,8 @@ jobs:
           [ $fail -eq 0 ] || { echo "lint: warnings present"; exit 1; }
 
       - name: Format check
+        # cyrius fmt --check emits the formatted source; diff against the
+        # committed file to enforce no drift.
         run: |
           fail=0
           for f in src/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr; do
@@ -99,6 +102,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Scan for dangerous patterns
+        # Matches code lines only — rejects patterns in # comments.
+        # Use awk instead of "grep -v '# '" which would eat any line with
+        # an inline comment and hide real hits.
         run: |
           FAIL=0
           scan() {
@@ -115,13 +121,17 @@ jobs:
               FAIL=1
             fi
           }
-          # Compression library should never spawn processes or touch the FS
+          # execve(59) / fork(57) / exec* family — compression must never
+          # spawn processes. Ever.
           scan "raw execve"   'syscall( *59'
           scan "raw fork"     'syscall( *57'
+          # sys_system — no shell-outs from a pure in-memory library
           scan "sys_system"   '\bsys_system\s*('
+          # Compression library must not touch the filesystem from src/.
+          # Tests/benches may open files; src/ must not.
           scan "sys_open"     '\bsys_open\s*('
           scan "sys_write"    '\bsys_write\s*('
-          # Large stack buffers (>= 64KB — force heap review)
+          # Unbounded stack buffers (>= 64KB — force heap review)
           awk -F: '
             /var [A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]/ {
               match($0, /\[[0-9]+\]/); s=substr($0,RSTART+1,RLENGTH-2); n=s+0;
@@ -150,4 +160,4 @@ jobs:
           VERSION=$(cat VERSION | tr -d '[:space:]')
           echo "VERSION file: $VERSION"
           grep -q "$VERSION" CHANGELOG.md || { echo "FAIL: version not in CHANGELOG.md"; exit 1; }
-          echo "Version consistent (cyrius.cyml pulls from VERSION via \${file:VERSION})"
+          echo "Version consistent (manifest pulls VERSION via \${file:VERSION})"
