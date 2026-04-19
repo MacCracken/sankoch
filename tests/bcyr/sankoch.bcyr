@@ -134,6 +134,23 @@ fn bench_d(name, fmt, src, slen, dst, dcap, iters) {
     return dlen;
 }
 
+# LZ4 frame compress benchmark (direct — no FORMAT_LZ4F in the generic API).
+fn bench_lz4f_c(name, src, slen, dst, dcap, iters) {
+    var clen = lz4f_compress(src, slen, dst, dcap);
+    if (clen < 0) { _print("  SKIP "); _print(name); _nl(); return 0 - 1; }
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) { lz4f_compress(src, slen, dst, dcap); i = i + 1; }
+    var elapsed = time_ns() - start;
+    var ns_per = elapsed / iters;
+    _print("  "); _print(name);
+    _print("  in="); _print_int(slen);
+    _print("  out="); _print_int(clen);
+    _print("  ns/op="); _print_int(ns_per);
+    _nl();
+    return clen;
+}
+
 # Checksum benchmark.
 fn bench_checksum(name, data, len, iters) {
     crc32_init_table();
@@ -212,6 +229,17 @@ fn main() {
     fill_text(src4k, 4096);
     var clen = lz4_compress(src4k, 4096, c, 16384);
     bench_d("lz4 d text  4K", FORMAT_LZ4, c, clen, d, 16384, iters);
+    println("");
+
+    # ---- LZ4F multi-block (v1.6.0) ----
+    # 128K exercises the chunking loop (2 × 64KB blocks per frame).
+    println("--- LZ4F multi-block (128K, 50 iters) ---");
+    var lsrc128 = alloc(131072);
+    var lc128   = alloc(135168);
+    fill_text(lsrc128, 131072);
+    bench_lz4f_c("lz4f c text 128K", lsrc128, 131072, lc128, 135168, 50);
+    fill_random(lsrc128, 131072);
+    bench_lz4f_c("lz4f c rand 128K", lsrc128, 131072, lc128, 135168, 50);
     println("");
 
     # ---- DEFLATE per-level ----
@@ -346,6 +374,15 @@ fn main() {
     size_line("zlib6_text_64K",    65536, zlib_compress_level(lsrc, 65536, lc, 270336, 6));
     size_line("gzip6_text_64K",    65536, gzip_compress_level(lsrc, 65536, lc, 270336, 6));
 
+    # ---- LZ4F multi-block sizes (v1.6.0) ----
+    # Exercises the 64KB chunking loop: 64K = 1 block, 128K = 2, 256K = 4.
+    fill_text(lsrc, 65536);
+    size_line("lz4f_text_64K",  65536,  lz4f_compress(lsrc, 65536,  lc, 270336));
+    fill_text(lsrc, 131072);
+    size_line("lz4f_text_128K", 131072, lz4f_compress(lsrc, 131072, lc, 270336));
+    fill_random(lsrc, 131072);
+    size_line("lz4f_rand_128K", 131072, lz4f_compress(lsrc, 131072, lc, 270336));
+
     # ---- 256K text ----
     fill_text(lsrc, 262144);
     size_line("lz4_text_256K",      262144, lz4_compress(lsrc, 262144, lc, 270336));
@@ -353,6 +390,7 @@ fn main() {
     size_line("deflate6_text_256K", 262144, deflate_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("zlib6_text_256K",    262144, zlib_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("gzip6_text_256K",    262144, gzip_compress_level(lsrc, 262144, lc, 270336, 6));
+    size_line("lz4f_text_256K",     262144, lz4f_compress(lsrc, 262144, lc, 270336));
 
     println("--- END SIZE ---");
     println("");

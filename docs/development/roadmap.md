@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.5.0) | **Last Updated**: 2026-04-19
+> **Status**: Stable (v1.6.0) | **Last Updated**: 2026-04-19
 
 ---
 
@@ -22,16 +22,18 @@ ships its own optimal tree tuned to its own frequencies. Replaces the
 `-ERR_BUFFER_TOO_SMALL` to valid output. No regression on the 26
 high-locality text bench sizes.
 
-### 🚧 v1.6.0 — LZ4 multi-block frames
+### ✅ v1.6.0 — LZ4 multi-block frames (shipped 2026-04-19)
 
-Current `lz4f_compress` emits a single block per frame regardless of
-input size. The reference `lz4` CLI chunks inputs over 64KB into
-multiple 64KB blocks within the same frame. Wrapper-level change in
-`lz4.cyr` (`lz4f_compress` / `lz4f_decompress` already handle the
-frame envelope, just not multi-block bodies).
+`lz4f_compress` now chunks inputs into ≤64KB blocks per the BD byte
+instead of emitting a single oversized block. Each chunk compresses
+independently (B.Indep=1) and falls back to an uncompressed block
+per-chunk when needed. `lz4f_decompress` needed no change — its
+block-size loop already handled multi-block frames.
 
-**Impact**: byte-identical output to `lz4` CLI on inputs >64KB;
-unlocks streaming-like LZ4F consumption patterns.
+**Impact shipped:** 128K text = 647B (2 blocks), 256K text = 1279B
+(4 blocks), 128K random = 131095B (2 uncompressed blocks — validates
+the per-chunk fallback path). Reference `lz4` CLI now accepts our
+output.
 
 ### 🚧 v1.7.0 — True incremental DEFLATE streaming
 

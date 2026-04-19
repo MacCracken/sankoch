@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-04-19
+
+**LZ4 multi-block frames. Second bite on the v2.0.0 track.**
+
+Pre-1.6.0 `lz4f_compress` emitted a single data block per frame
+regardless of input size — even though the frame header (BD byte =
+0x40) advertises a 64KB block max. On inputs over 64KB this violated
+the LZ4 Frame spec and the reference `lz4` CLI would reject the
+output.
+
+1.6.0 chunks the input into ≤64KB blocks and emits one data block per
+chunk. Each chunk is compressed independently (B.Indep=1 in FLG,
+matching our existing header), and falls back to an uncompressed block
+per-chunk when that chunk doesn't shrink. The content checksum still
+covers the whole uncompressed input. The decompressor (`lz4f_decompress`)
+was already multi-block-capable — its block-size loop handles the new
+output without change.
+
+### Fixed
+- **LZ4 frames over 64KB are now spec-compliant.** Inputs up to any
+  size are chunked into 64KB blocks per the BD byte; reference `lz4`
+  CLI will accept the output.
+
+### Changed
+- **`lz4f_compress`** (`src/lz4.cyr:303`) — single-block body replaced
+  with a chunking loop over `LZ4F_BLOCK_MAX = 65536`. Uncompressed
+  fallback now applies per-chunk rather than to the whole frame. Empty
+  input and content-checksum behavior unchanged.
+
+### Added
+- `enum LZ4F { LZ4F_BLOCK_MAX = 65536 }` — names the chunk size that
+  matches our BD byte.
+- `tests/tcyr/sankoch.tcyr` — two new tests:
+  - `test_lz4f_multiblock_roundtrip` — 150KB input, verifies 3 blocks
+    and byte-for-byte round-trip (≈150K per-byte assertions).
+  - `test_lz4f_boundary` — exactly 65536 bytes → 1 block; 65537 bytes
+    → 2 blocks; both round-trip.
+  - Adds a small `_count_lz4f_blocks` helper that walks the frame and
+    returns the block count (excluding the end mark).
+- `tests/bcyr/sankoch.bcyr` — new throughput benches `lz4f c text 128K`
+  and `lz4f c rand 128K`, plus SIZE lines `lz4f_text_64K/128K/256K`
+  and `lz4f_rand_128K`.
+
+### Metrics
+- **Sizes** (text = compressible, rand = incompressible):
+  - `lz4f_text_64K` (1 block): 331 bytes
+  - `lz4f_text_128K` (2 blocks): 647 bytes
+  - `lz4f_text_256K` (4 blocks): 1279 bytes
+  - `lz4f_rand_128K` (2 uncompressed blocks): 131095 bytes
+    (= 131072 payload + 8 block headers + 7 frame header + 4 end mark
+    + 4 content checksum — validates the uncompressed-block path
+    across chunk boundaries)
+- **Test suite**: 286979 assertions (5897 prior + 281082 new per-byte
+  checks from the multi-block round-trips), 0 failures
+- **git_object suite**: 134 assertions, 0 failures
+- **No regression** on any existing SIZE line
+- **`dist/sankoch.cyr`** regenerated: 3370 lines (was 3356 in 1.5.0)
+
+### Roadmap
+- v1.6.0 "LZ4 multi-block frames" → **shipped** (second of four
+  v2.0.0-track features).
+- Next: **v1.7.0 — true incremental DEFLATE streaming**
+  (re-architect `stream.cyr` + expose a "consume up to N bytes, emit
+  what's ready" API in `deflate.cyr`).
+- Then: v2.0.0 cut.
+
 ## [1.5.0] — 2026-04-19
 
 **Adaptive DEFLATE block splitting. First bite on the v2.0.0 track.**

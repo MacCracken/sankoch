@@ -231,6 +231,65 @@ fn test_lz4f_checksum() {
     return 0;
 }
 
+# Walk an LZ4F frame and count data blocks (excludes the end mark).
+# Assumes our wrapper layout: 7-byte header (no CSize, no DictID).
+fn _count_lz4f_blocks(frame, flen) {
+    var sp = 7;
+    var count = 0;
+    while (sp + 4 <= flen) {
+        var bs = load8(frame + sp) | (load8(frame + sp + 1) << 8) |
+        (load8(frame + sp + 2) << 16) | (load8(frame + sp + 3) << 24);
+        if (bs == 0) { return count; }
+        sp = sp + 4 + (bs & 2147483647);
+        count = count + 1;
+    }
+    return count;
+}
+
+fn test_lz4f_multiblock_roundtrip() {
+    var N = 150000;  # 2 full 64KB blocks + 18928B tail
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 17)); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    var clen = lz4f_compress(src, N, c, N + 4096);
+    assert(clen > 0, "lz4f multiblock compress");
+    assert(_count_lz4f_blocks(c, clen) == 3, "lz4f 150000B = 3 blocks");
+    var dlen = lz4f_decompress(c, clen, d, N);
+    assert(dlen == N, "lz4f multiblock rt size");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f multiblock rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_boundary() {
+    var src = alloc(65537);
+    var j = 0;
+    while (j < 65537) { store8(src + j, 65 + (j % 23)); j = j + 1; }
+    var c = alloc(70000);
+    var d = alloc(65537);
+
+    # Exactly 65536 bytes fits in a single 64KB block.
+    var clen = lz4f_compress(src, 65536, c, 70000);
+    assert(clen > 0, "lz4f 65536 compress");
+    assert(_count_lz4f_blocks(c, clen) == 1, "lz4f 65536 = 1 block");
+    var dlen = lz4f_decompress(c, clen, d, 65537);
+    assert(dlen == 65536, "lz4f 65536 rt size");
+    j = 0;
+    while (j < 65536) { assert(load8(d + j) == load8(src + j), "lz4f 65536 rt content"); j = j + 1; }
+
+    # 65537 spills into a second block (1B tail).
+    clen = lz4f_compress(src, 65537, c, 70000);
+    assert(clen > 0, "lz4f 65537 compress");
+    assert(_count_lz4f_blocks(c, clen) == 2, "lz4f 65537 = 2 blocks");
+    dlen = lz4f_decompress(c, clen, d, 65537);
+    assert(dlen == 65537, "lz4f 65537 rt size");
+    j = 0;
+    while (j < 65537) { assert(load8(d + j) == load8(src + j), "lz4f 65537 rt content"); j = j + 1; }
+    return 0;
+}
+
 # ================================================================
 # Format detection tests
 # ================================================================
@@ -808,6 +867,8 @@ fn main() {
     test_lz4f_roundtrip();
     test_lz4f_empty();
     test_lz4f_checksum();
+    test_lz4f_multiblock_roundtrip();
+    test_lz4f_boundary();
     test_detect_gzip();
     test_detect_zlib();
     test_detect_short_input();
