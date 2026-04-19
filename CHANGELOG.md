@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-04-19
+
+**Adaptive DEFLATE block splitting. First bite on the v2.0.0 track.**
+
+When the dynamic-Huffman symbol buffer (`DYN_SYM_MAX = 16384`) fills,
+1.4.0- would abort the dynamic block entirely and re-encode the whole
+range with the universal fixed-Huffman tree. On large low-locality
+inputs (random-ish, >16K symbols), this collapsed compression quality
+to fixed-tree baseline and — for inputs over ~256K — could even
+overflow the output buffer because fixed-Huffman on uniform bytes is
+~8.44 bits/literal, exceeding the caller-provided capacity.
+
+1.5.0 replaces the fallback with proper adaptive sub-block emission:
+each sub-block flushes when the buffer is near full, writes its own
+BFINAL=0 dynamic header with a Huffman tree tuned to *its own* symbol
+frequencies, and the next sub-block starts fresh. The last sub-block
+in the caller's range carries the caller's BFINAL flag.
+
+### Fixed
+- **256K random no longer returns `-ERR_BUFFER_TOO_SMALL`.** Pre-1.5.0
+  the fallback-to-fixed path produced 276KB+ of output for 256K random
+  input, overflowing a typical caller buffer. 1.5.0 compresses it to
+  262858 bytes via multiple adaptive dynamic sub-blocks — comfortably
+  within a standard output buffer sized at `src_len + small margin`.
+
+### Changed
+- **`_deflate_compress_dynamic_block`** refactored into a multi-sub-block
+  emitter. Same signature; same invocation surface for callers; new
+  internal flush loop. All 5897 DEFLATE assertions + 134 git-object
+  assertions + 1360 fuzz iterations still green.
+- **Comment on `DEFLATE_BLOCK_SIZE`** updated — it's now the outer
+  chunker step, not the sole determinant of block count. The dynamic
+  path subdivides further based on symbol-buffer fill.
+
+### Added
+- `tests/bcyr/sankoch.bcyr` — two new benchmarks exercising the
+  previously-broken overflow path:
+  - `deflate6_rand_64K`: 65719 bytes (was 69056 — **−3337, −4.8%**)
+  - `deflate6_rand_256K`: 262858 bytes (was `-2` error — **works**)
+
+### Metrics
+- **Size wins** (random / low-locality data):
+  - 64K random: 69056 → 65719 (−3337 bytes, −4.8%)
+  - 256K random: error → 262858 (correctness fix)
+- **No regression** on high-locality text inputs — 26/26 existing bench
+  sizes byte-identical to 1.4.0.
+- **Test suite**: 5897 + 134 = 6031 assertions, 0 failures
+- **Fuzz**: 1360 iterations, 0 failures
+- **`dist/sankoch.cyr`** regenerated: 3356 lines (was 3316 in 1.4.0)
+
+### Roadmap
+- v1.5.0 "Adaptive DEFLATE block splitting" → **shipped** (first of
+  four v2.0.0-track features).
+- Next: **v1.6.0 — LZ4 multi-block frames** (wrapper-level work in
+  `lz4.cyr`, chunks >64KB inputs into multiple 64KB frame blocks to
+  match the reference `lz4` CLI).
+- Then: v1.7.0 incremental streaming; v2.0.0 cut.
+
 ## [1.4.0] — 2026-04-19
 
 **Fuzz harnesses fixed and wired into CI. Roadmap 1.4.0 scaffold

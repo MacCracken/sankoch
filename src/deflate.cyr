@@ -975,13 +975,13 @@ fn _deflate_write_syms_dynamic(bw, lit_lens, lit_codes, dist_lens, dist_codes) {
     return 0;
 }
 
-# Block size for multi-block DEFLATE compression.
-# Large block size avoids per-block Huffman tree overhead on typical inputs.
-# Only splits when input exceeds this threshold (the dynamic path also
-# splits when its symbol buffer fills). For adaptive block splitting,
-# this would be replaced with a cost-based flush heuristic.
+# Outer chunk size. Caps the range a single invocation of the per-block
+# compressor sees; the dynamic path further subdivides adaptively based
+# on symbol-buffer fill (see _deflate_compress_dynamic_block). 1MB keeps
+# the fixed-Huffman path efficient (single tree per 1MB segment) without
+# pathological memory pressure on large inputs.
 enum DeflateBlock {
-    DEFLATE_BLOCK_SIZE = 1048576;  # 1MB — single block for most inputs
+    DEFLATE_BLOCK_SIZE = 1048576;  # 1MB — outer chunker step
 }
 
 # Compress data into a raw DEFLATE stream.
@@ -1137,122 +1137,162 @@ fn _deflate_alloc_dynamic_ws() {
     return 0;
 }
 
-# Emit one dynamic Huffman block covering src[sp_start..sp_end).
+# Emit one or more dynamic Huffman sub-blocks covering src[sp_start..sp_end).
+#
+# Adaptive block splitting (v1.5.0): collection stops when the shared
+# symbol buffer is nearly full, and a fresh sub-block begins — each
+# sub-block ships its own optimal Huffman tree tuned to its own symbol
+# frequencies. This replaces the v1.4.0- "fall back to fixed Huffman on
+# overflow" downgrade, which collapsed one dynamic block's tree quality
+# the moment the buffer filled. Net effect: inputs that generate more
+# than ~16K LZ77 symbols per 1MB chunk (random-ish / low-locality data)
+# now stay on the dynamic path with per-segment trees instead of
+# degrading to the universal fixed tree.
+#
+# BFINAL only fires on the very last sub-block, and only if the caller
+# requested it.
 fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal) {
     _deflate_alloc_dynamic_ws();
-    _dyn_sym_count = 0;
 
     var lit_freq = _dyn_lit_freq;
     var dist_freq = _dyn_dist_freq;
-    var i = 0;
-    while (i < 288) { store64(lit_freq + i * 8, 0); i = i + 1; }
-    i = 0;
-    while (i < 30) { store64(dist_freq + i * 8, 0); i = i + 1; }
+    var opt_lit_lens = _dyn_opt_lit_lens;
+    var opt_dist_lens = _dyn_opt_dist_lens;
+    var opt_lit_codes = _dyn_opt_lit_codes;
+    var opt_dist_codes = _dyn_opt_dist_codes;
 
-    # Pass 1: run LZ77 and collect symbols + frequencies for this block
     var sp = sp_start;
-    while (sp < sp_end) {
-        if (_dyn_sym_count >= DYN_SYM_MAX - 2) {
-            # Buffer full — emit as fixed block instead
-            _dyn_sym_count = 0;
-            return _deflate_compress_fixed_block(bw, src, src_len, sp_start, sp_end, bfinal);
-        }
+    var more_blocks = 1;
+    var i = 0;
+    var rc = 0;
+    var hlit = 0;
+    var hdist = 0;
+    var has_dist = 0;
+    var sub_bfinal = 0;
+    var byte = 0;
+    var mresult = 0;
+    var mlen = 0;
+    var mdist = 0;
+    var li = 0;
+    var lsym = 0;
+    var lextra = 0;
+    var lbase = 0;
+    var di = 0;
+    var dextra = 0;
+    var dbase = 0;
+    var k = 0;
 
-        if (sp + LZ77_MIN_MATCH <= src_len) {
-            var mresult = _lz77_find_match(src, src_len, sp);
-            _lz77_insert(src, sp);
+    while (more_blocks == 1) {
+        # Reset per-sub-block state
+        _dyn_sym_count = 0;
+        i = 0;
+        while (i < 288) { store64(lit_freq + i * 8, 0); i = i + 1; }
+        i = 0;
+        while (i < 30) { store64(dist_freq + i * 8, 0); i = i + 1; }
 
-            if (mresult > 0) {
-                var mlen = mresult & 65535;
-                var mdist = mresult >> 16;
+        # Pass 1: collect symbols + frequencies for this sub-block.
+        # Leave 3 slots: up to 2 for the current iteration's match +
+        # 1 for the EOB symbol added after the loop.
+        while (sp < sp_end && _dyn_sym_count < DYN_SYM_MAX - 3) {
+            if (sp + LZ77_MIN_MATCH <= src_len) {
+                mresult = _lz77_find_match(src, src_len, sp);
+                _lz77_insert(src, sp);
 
-                if (mlen >= LZ77_MIN_MATCH) {
-                    var li = _deflate_len_code(mlen);
-                    var lsym = li + 257;
-                    var lextra = load64(&_deflate_len_extra + li * 8);
-                    var lbase = load64(&_deflate_len_base + li * 8);
-                    store64(_dyn_sym_buf + _dyn_sym_count * 8,
-                    _dyn_pack(lsym, lextra, mlen - lbase));
-                    _dyn_sym_count = _dyn_sym_count + 1;
-                    store64(lit_freq + lsym * 8, load64(lit_freq + lsym * 8) + 1);
+                if (mresult > 0) {
+                    mlen = mresult & 65535;
+                    mdist = mresult >> 16;
 
-                    var di = _deflate_dist_code(mdist);
-                    var dextra = load64(&_deflate_dist_extra + di * 8);
-                    var dbase = load64(&_deflate_dist_base + di * 8);
-                    store64(_dyn_sym_buf + _dyn_sym_count * 8,
-                    _dyn_pack(di, dextra, mdist - dbase));
-                    _dyn_sym_count = _dyn_sym_count + 1;
-                    store64(dist_freq + di * 8, load64(dist_freq + di * 8) + 1);
+                    if (mlen >= LZ77_MIN_MATCH) {
+                        li = _deflate_len_code(mlen);
+                        lsym = li + 257;
+                        lextra = load64(&_deflate_len_extra + li * 8);
+                        lbase = load64(&_deflate_len_base + li * 8);
+                        store64(_dyn_sym_buf + _dyn_sym_count * 8,
+                        _dyn_pack(lsym, lextra, mlen - lbase));
+                        _dyn_sym_count = _dyn_sym_count + 1;
+                        store64(lit_freq + lsym * 8, load64(lit_freq + lsym * 8) + 1);
 
-                    var k = 1;
-                    while (k < mlen) {
-                        if (sp + k + LZ77_MIN_MATCH <= src_len) {
-                            _lz77_insert(src, sp + k);
+                        di = _deflate_dist_code(mdist);
+                        dextra = load64(&_deflate_dist_extra + di * 8);
+                        dbase = load64(&_deflate_dist_base + di * 8);
+                        store64(_dyn_sym_buf + _dyn_sym_count * 8,
+                        _dyn_pack(di, dextra, mdist - dbase));
+                        _dyn_sym_count = _dyn_sym_count + 1;
+                        store64(dist_freq + di * 8, load64(dist_freq + di * 8) + 1);
+
+                        k = 1;
+                        while (k < mlen) {
+                            if (sp + k + LZ77_MIN_MATCH <= src_len) {
+                                _lz77_insert(src, sp + k);
+                            }
+                            k = k + 1;
                         }
-                        k = k + 1;
+                        sp = sp + mlen;
+                        continue;
                     }
-                    sp = sp + mlen;
-                    continue;
                 }
             }
+
+            byte = load8(src + sp);
+            store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(byte, 0, 0));
+            _dyn_sym_count = _dyn_sym_count + 1;
+            store64(lit_freq + byte * 8, load64(lit_freq + byte * 8) + 1);
+            sp = sp + 1;
         }
 
-        var byte = load8(src + sp);
-        store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(byte, 0, 0));
+        # Decide BFINAL for this sub-block. Only the caller's final
+        # chunk gets BFINAL=1, and only on its last sub-block.
+        sub_bfinal = 0;
+        if (sp >= sp_end) {
+            more_blocks = 0;
+            if (bfinal == 1) { sub_bfinal = 1; }
+        }
+
+        # Add EOB
+        store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(256, 0, 0));
         _dyn_sym_count = _dyn_sym_count + 1;
-        store64(lit_freq + byte * 8, load64(lit_freq + byte * 8) + 1);
-        sp = sp + 1;
+        store64(lit_freq + 256 * 8, load64(lit_freq + 256 * 8) + 1);
+
+        # Pass 2: build optimal Huffman trees for THIS sub-block
+        huff_compute_lengths(lit_freq, 286, opt_lit_lens, 257);
+
+        hlit = 286;
+        while (hlit > 257 && load64(opt_lit_lens + (hlit - 1) * 8) == 0) {
+            hlit = hlit - 1;
+        }
+
+        has_dist = 0;
+        i = 0;
+        while (i < 30) {
+            if (load64(dist_freq + i * 8) > 0) { has_dist = 1; }
+            i = i + 1;
+        }
+        if (has_dist == 0) {
+            store64(dist_freq, 1);
+        }
+        huff_compute_lengths(dist_freq, 30, opt_dist_lens, 1);
+
+        hdist = 30;
+        while (hdist > 1 && load64(opt_dist_lens + (hdist - 1) * 8) == 0) {
+            hdist = hdist - 1;
+        }
+
+        _huff_build(opt_lit_lens, hlit, opt_lit_codes, _dyn_lit_fast_tmp);
+        _huff_build(opt_dist_lens, hdist, opt_dist_codes, _dyn_dist_fast_tmp);
+
+        # Pass 3: write the sub-block
+        rc = bw_write(bw, sub_bfinal, 1);
+        if (rc < 0) { return rc; }
+        rc = bw_write(bw, 2, 2);      # BTYPE = 10 (dynamic)
+        if (rc < 0) { return rc; }
+
+        rc = _deflate_write_dynamic_header(bw, opt_lit_lens, hlit, opt_dist_lens, hdist);
+        if (rc < 0) { return rc; }
+
+        rc = _deflate_write_syms_dynamic(bw, opt_lit_lens, opt_lit_codes,
+        opt_dist_lens, opt_dist_codes);
+        if (rc < 0) { return rc; }
     }
-
-    # Add EOB
-    store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(256, 0, 0));
-    _dyn_sym_count = _dyn_sym_count + 1;
-    store64(lit_freq + 256 * 8, load64(lit_freq + 256 * 8) + 1);
-
-    # Pass 2: build optimal Huffman trees
-    var opt_lit_lens = _dyn_opt_lit_lens;
-    huff_compute_lengths(lit_freq, 286, opt_lit_lens, 257);
-
-    var hlit = 286;
-    while (hlit > 257 && load64(opt_lit_lens + (hlit - 1) * 8) == 0) {
-        hlit = hlit - 1;
-    }
-
-    var opt_dist_lens = _dyn_opt_dist_lens;
-    var has_dist = 0;
-    i = 0;
-    while (i < 30) {
-        if (load64(dist_freq + i * 8) > 0) { has_dist = 1; }
-        i = i + 1;
-    }
-    if (has_dist == 0) {
-        store64(dist_freq, 1);
-    }
-    huff_compute_lengths(dist_freq, 30, opt_dist_lens, 1);
-
-    var hdist = 30;
-    while (hdist > 1 && load64(opt_dist_lens + (hdist - 1) * 8) == 0) {
-        hdist = hdist - 1;
-    }
-
-    var opt_lit_codes = _dyn_opt_lit_codes;
-    _huff_build(opt_lit_lens, hlit, opt_lit_codes, _dyn_lit_fast_tmp);
-
-    var opt_dist_codes = _dyn_opt_dist_codes;
-    _huff_build(opt_dist_lens, hdist, opt_dist_codes, _dyn_dist_fast_tmp);
-
-    # Pass 3: write the block
-    var rc = bw_write(bw, bfinal, 1);
-    if (rc < 0) { return rc; }
-    rc = bw_write(bw, 2, 2);      # BTYPE = 10 (dynamic)
-    if (rc < 0) { return rc; }
-
-    rc = _deflate_write_dynamic_header(bw, opt_lit_lens, hlit, opt_dist_lens, hdist);
-    if (rc < 0) { return rc; }
-
-    rc = _deflate_write_syms_dynamic(bw, opt_lit_lens, opt_lit_codes,
-    opt_dist_lens, opt_dist_codes);
-    if (rc < 0) { return rc; }
 
     return 0;
 }

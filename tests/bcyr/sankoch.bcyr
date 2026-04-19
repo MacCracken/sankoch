@@ -320,6 +320,16 @@ fn main() {
     fill_random(lsrc, 4096);
     size_line("deflate6_rand_4K", 4096, deflate_compress_level(lsrc, 4096, lc, 270336, 6));
 
+    # Random 64K / 256K — exercises the dynamic symbol-buffer overflow
+    # path (v1.5.0 adaptive sub-block flushing). Pre-1.5.0 this fell
+    # back to a single universal fixed-Huffman block; 1.5.0+ emits
+    # multiple dynamic sub-blocks, each with a per-segment tree.
+    fill_random(lsrc, 65536);
+    size_line("deflate6_rand_64K", 65536, deflate_compress_level(lsrc, 65536, lc, 270336, 6));
+
+    fill_random(lsrc, 262144);
+    size_line("deflate6_rand_256K", 262144, deflate_compress_level(lsrc, 262144, lc, 270336, 6));
+
     # ---- 16K text ----
     fill_text(lsrc, 16384);
     size_line("lz4_text_16K",      16384, lz4_compress(lsrc, 16384, lc, 270336));

@@ -1,51 +1,84 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.4.0) | **Last Updated**: 2026-04-19
+> **Status**: Stable (v1.5.0) | **Last Updated**: 2026-04-19
 
 ---
 
-## v1.5.0 — Scaffold follow-ups (remaining)
+## v2.0.0 track — Performance and Streaming
+
+Shipping the four major items as minor bumps rather than one big 2.0.0
+drop — smaller bites, easier bisection if regressions surface, each
+feature goes live as soon as it's ready. 2.0.0 gets cut when the stack
+is complete.
+
+### ✅ v1.5.0 — Adaptive DEFLATE block splitting (shipped 2026-04-19)
+
+Dynamic-Huffman path now emits multiple adaptive sub-blocks per caller
+chunk, flushing when the shared symbol buffer fills. Each sub-block
+ships its own optimal tree tuned to its own frequencies. Replaces the
+1.4.0- fallback-to-fixed downgrade.
+
+**Impact shipped:** 64K random −4.8%; 256K random went from
+`-ERR_BUFFER_TOO_SMALL` to valid output. No regression on the 26
+high-locality text bench sizes.
+
+### 🚧 v1.6.0 — LZ4 multi-block frames
+
+Current `lz4f_compress` emits a single block per frame regardless of
+input size. The reference `lz4` CLI chunks inputs over 64KB into
+multiple 64KB blocks within the same frame. Wrapper-level change in
+`lz4.cyr` (`lz4f_compress` / `lz4f_decompress` already handle the
+frame envelope, just not multi-block bodies).
+
+**Impact**: byte-identical output to `lz4` CLI on inputs >64KB;
+unlocks streaming-like LZ4F consumption patterns.
+
+### 🚧 v1.7.0 — True incremental DEFLATE streaming
+
+Today's `stream_compress_finish` buffers the whole input then
+compresses in one shot. True incremental streaming means the
+compressor emits DEFLATE bytes as each `stream_compress_write` chunk
+arrives. Requires `deflate.cyr` to expose a "consume up to N bytes,
+emit what's ready" API and `stream.cyr` to be re-architected around
+that state machine.
+
+**Impact**: required for compressing data larger than available
+memory; also unblocks network-streaming consumers.
+
+### ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
+
+4–10× CRC-32 speedup on x86_64 via the `PCLMULQDQ` carry-less multiply
+instruction. Gated on Cyrius exposing an inline-asm / intrinsic
+mechanism — 5.4.7 does not. Current table-driven CRC-32 runs at ~278
+MB/s on 4KB, which is fine for the consumers we have today. Revisit
+when Cyrius ships asm support.
+
+---
+
+## Scaffold follow-ups (parallel to v2.0.0 track)
 
 ### `cyrius fmt` in-place mode
 
-Currently the fmt gate prints formatted source to stdout; applying fixes
-requires a shell one-liner. `cyrius fmt --write` in 5.4.7 is still a
-no-op (prints to stdout like `--check`). Track the upstream command
-and adopt it once the flag actually writes back to the source file.
+Fmt gate prints formatted source to stdout; applying fixes requires a
+shell one-liner. `cyrius fmt --write` in 5.4.7 is a no-op (prints to
+stdout like `--check`). Adopt once the flag actually writes.
 
 ### Multi-profile distlib (kernel-safe subset)
 
-Yukti 1.3.0 ships a `dist/yukti-core.cyr` profile for bare-metal
-AGNOS kernel use. Sankoch's analog: an LZ4-only (no alloc, no
-stdlib) subset for initrd decompression in the kernel itself. Would
-require refactoring the LZ4 match-finder hash table off the heap
-onto a caller-provided workspace, and stripping the mutex. Not
-obviously needed yet — the AGNOS initrd loader hasn't asked — but
-track as the logical next "hardening" step once a consumer wants it.
+Yukti 1.3.0 ships a `dist/yukti-core.cyr` profile for bare-metal AGNOS
+kernel use. Sankoch's analog: an LZ4-only (no alloc, no stdlib) subset
+for initrd decompression in the kernel itself. Would require
+refactoring the LZ4 match-finder hash table off the heap onto a
+caller-provided workspace, and stripping the mutex. Not obviously
+needed yet — the AGNOS initrd loader hasn't asked — track as the next
+"hardening" step once a consumer wants it.
 
----
+### Cross-arch aarch64 builds
 
-## v2.0.0 — Performance and Streaming
-
-### Adaptive block splitting (DEFLATE)
-
-Replace the fixed 1MB block size with a cost-based heuristic that flushes a block when the Huffman tree becomes suboptimal. This is how C zlib achieves better L1 compression at large sizes. The multi-block infrastructure is in place (v1.2.0); this just needs the flush decision logic.
-
-**Impact**: Closes the L1 size gap at 64K+ inputs. L6 dynamic already matches C zlib.
-
-### True incremental DEFLATE streaming
-
-Block-by-block compress/decompress without buffering the entire input. Currently `stream_compress_finish` accumulates all writes and compresses in one shot. True streaming would emit DEFLATE blocks as data arrives.
-
-**Impact**: Required for compressing data larger than available memory.
-
-### SIMD CRC-32
-
-`PCLMULQDQ`-based CRC-32 for gzip. 4-10x speedup on x86_64. Requires Cyrius inline assembly or intrinsic support. Current table-driven CRC-32 runs at 278 MB/s on 4KB.
-
-### LZ4 multi-block frames
-
-Current LZ4F implementation emits a single block per frame. For inputs >64KB, split into multiple 64KB blocks within the frame, matching the `lz4` CLI behavior.
+Yukti 2.1.1 added `cyrius build --aarch64` to CI. Sankoch is
+pure-compute (no syscalls in `src/`), so the x86 build is already
+trivially portable — but shipping prebuilt aarch64 binaries + an
+`aarch64` ELF check in CI would match the first-party pattern.
 
 ---
 
