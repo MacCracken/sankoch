@@ -364,6 +364,94 @@ fn test_deflate_enc_fixed() {
     return 0;
 }
 
+# Shared helper: compress `src[0..N)` via enc API in chunks of `chunk_sz`,
+# decompress, and assert every byte round-trips. `label` tags asserts.
+fn _enc_rt(src, N, level, chunk_sz, c, c_cap, d, d_cap, label) {
+    var ctx = deflate_enc_init(level, c, c_cap);
+    assert(ctx != 0, label);
+    var fed = 0;
+    while (fed < N) {
+        var take = N - fed;
+        if (take > chunk_sz) { take = chunk_sz; }
+        assert(deflate_enc_write(ctx, src + fed, take) == 0, label);
+        fed = fed + take;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, label);
+    var dlen = deflate_decompress(c, clen, d, d_cap);
+    assert(dlen == N, label);
+    var j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), label); j = j + 1; }
+    return clen;
+}
+
+fn test_deflate_enc_levels() {
+    # Same 10KB text at each level — all must round-trip, and compressed
+    # size should not *grow* relative to the batch API for the same level.
+    var N = 10000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 26)); j = j + 1; }
+    var c = alloc(N + 1024);
+    var d = alloc(N);
+    _enc_rt(src, N, 1, N, c, N + 1024, d, N, "enc_levels L1");
+    _enc_rt(src, N, 3, N, c, N + 1024, d, N, "enc_levels L3");
+    _enc_rt(src, N, 6, N, c, N + 1024, d, N, "enc_levels L6");
+    _enc_rt(src, N, 9, N, c, N + 1024, d, N, "enc_levels L9");
+    return 0;
+}
+
+fn test_deflate_enc_window_boundary() {
+    # Exactly 65536 bytes — one full window, no slide needed.
+    # Then 65537 bytes — one byte past, forces the slide path.
+    var N = 65537;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 23)); j = j + 1; }
+    var c = alloc(N + 2048);
+    var d = alloc(N);
+    _enc_rt(src, 65536, 6, 8192, c, N + 2048, d, N, "enc 65536B");
+    _enc_rt(src, 65537, 6, 8192, c, N + 2048, d, N, "enc 65537B");
+    return 0;
+}
+
+fn test_deflate_enc_varied_chunks() {
+    # 80K text — feed in wildly varied chunk sizes to stress write-boundary
+    # interactions with LZ77 lookahead reserve + sub-block flush.
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 37 + j / 11) % 95); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    # Chunk sizes: 1, 258 (= LOOKAHEAD), 259, 1000, 4096, rest
+    var chunks[6];
+    store64(&chunks + 0 * 8, 1);
+    store64(&chunks + 1 * 8, 258);
+    store64(&chunks + 2 * 8, 259);
+    store64(&chunks + 3 * 8, 1000);
+    store64(&chunks + 4 * 8, 4096);
+    store64(&chunks + 5 * 8, N);
+    var ctx = deflate_enc_init(6, c, N + 4096);
+    assert(ctx != 0, "varied_chunks init");
+    var fed = 0;
+    var ci = 0;
+    while (fed < N) {
+        var take = load64(&chunks + (ci % 6) * 8);
+        if (take > N - fed) { take = N - fed; }
+        assert(deflate_enc_write(ctx, src + fed, take) == 0, "varied_chunks write");
+        fed = fed + take;
+        ci = ci + 1;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "varied_chunks finish");
+    var dlen = deflate_decompress(c, clen, d, N);
+    assert(dlen == N, "varied_chunks dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "varied_chunks content"); j = j + 1; }
+    return 0;
+}
+
 fn test_lz4f_roundtrip() {
     var src = alloc(120);
     var j = 0;
@@ -1043,6 +1131,9 @@ fn main() {
     test_deflate_enc_empty();
     test_deflate_enc_fixed();
     test_deflate_enc_slide();
+    test_deflate_enc_levels();
+    test_deflate_enc_window_boundary();
+    test_deflate_enc_varied_chunks();
     test_lz4f_roundtrip();
     test_lz4f_empty();
     test_lz4f_checksum();

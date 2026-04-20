@@ -97,6 +97,50 @@ fn fuzz_zlib_roundtrip(seed, data_len) {
     return 0;
 }
 
+# Streaming round-trip: input fed through deflate_enc_* in random-sized
+# chunks, then decompressed via batch deflate_decompress, verified.
+# Exercises window-slide + LZ77 rebase at larger sizes.
+var _fuzz_src = 0;
+var _fuzz_c = 0;
+var _fuzz_d = 0;
+
+fn fuzz_deflate_stream(seed, data_len, level) {
+    _fuzz_seed(seed);
+    # dst sized for worst-case fixed-path expansion on random bytes:
+    # average 8.44 bits/byte → ~1.055×, plus block overhead. 1.25× is safe.
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    var capped = data_len;
+    if (capped > 200000) { capped = 200000; }
+    _fuzz_fill(_fuzz_src, capped);
+
+    var ctx = deflate_enc_init(level, _fuzz_c, 262144);
+    if (ctx == 0) { assert(0 == 1, "deflate_enc stream init failed"); }
+    var fed = 0;
+    while (fed < capped) {
+        var chunk = (_fuzz_next() | (_fuzz_next() << 8)) & 4095;
+        if (chunk == 0) { chunk = 1; }
+        if (chunk > capped - fed) { chunk = capped - fed; }
+        var rc = deflate_enc_write(ctx, _fuzz_src + fed, chunk);
+        if (rc < 0) { assert(0 == 1, "deflate_enc stream write error"); }
+        fed = fed + chunk;
+    }
+    var clen = deflate_enc_finish(ctx);
+    if (clen < 0) { assert(0 == 1, "deflate_enc stream finish error"); }
+
+    var dlen = deflate_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+    assert(dlen == capped, "deflate stream fuzz size mismatch");
+    var i = 0;
+    while (i < capped) {
+        assert(load8(_fuzz_d + i) == load8(_fuzz_src + i), "deflate stream fuzz content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn fuzz_gzip_roundtrip(seed, data_len) {
     _fuzz_seed(seed);
     var src[2048];
@@ -179,6 +223,38 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_gzip: 160 round-trip tests passed");
+
+    # Streaming DEFLATE round-trip — cross-level, cross-size
+    var stream_sizes[6];
+    store64(&stream_sizes + 0 * 8, 0);
+    store64(&stream_sizes + 1 * 8, 1024);
+    store64(&stream_sizes + 2 * 8, 64000);    # just below window
+    store64(&stream_sizes + 3 * 8, 65536);    # exactly window
+    store64(&stream_sizes + 4 * 8, 100000);   # one slide
+    store64(&stream_sizes + 5 * 8, 200000);   # several slides
+
+    var levels[4];
+    store64(&levels + 0 * 8, 1);
+    store64(&levels + 1 * 8, 3);
+    store64(&levels + 2 * 8, 6);
+    store64(&levels + 3 * 8, 9);
+
+    seed = 1;
+    while (seed <= 5) {
+        var si = 0;
+        while (si < 6) {
+            var li = 0;
+            while (li < 4) {
+                fuzz_deflate_stream(seed * 4001 + si * 17 + li,
+                    load64(&stream_sizes + si * 8),
+                    load64(&levels + li * 8));
+                li = li + 1;
+            }
+            si = si + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 120 streaming round-trip tests passed");
 
     return 0;
 }
