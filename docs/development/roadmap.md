@@ -50,17 +50,47 @@ consumers yet. See `docs/audit/2026-04-19.md`.
 — fix lands alongside the streaming refactor that release needs
 anyway.
 
-### 🚧 v1.7.0 — True incremental DEFLATE streaming
+### 🚧 v1.7.0 — True incremental streaming (all four formats)
 
 Today's `stream_compress_finish` buffers the whole input then
 compresses in one shot. True incremental streaming means the
-compressor emits DEFLATE bytes as each `stream_compress_write` chunk
-arrives. Requires `deflate.cyr` to expose a "consume up to N bytes,
-emit what's ready" API and `stream.cyr` to be re-architected around
-that state machine.
+compressor emits output bytes as each `stream_write` chunk arrives.
+Scope for 1.7.0 is **all four formats**: DEFLATE (foundation),
+zlib/gzip (thin wrappers over DEFLATE with incremental Adler-32 /
+CRC-32 trailers), and LZ4F (multi-block frame with per-block emit,
+leveraging B.Indep=1).
+
+**Design decisions locked (2026-04-19):**
+- Per-format incremental API: `<fmt>_enc_init(level, dst, dst_cap)` →
+  `<fmt>_enc_write(ctx, chunk, len)` → `<fmt>_enc_finish(ctx)` →
+  `total_bytes_written`. `deflate_enc_*` is the foundation; zlib/gzip
+  wrap it; `lz4f_enc_*` wraps `lz4_compress` per 64KB block.
+- Encoder owns a 64 KB sliding window; slides every 32 KB of new
+  input; rebases `_lz77_head`/`_lz77_prev` on each slide (accept
+  ~16 B/input-byte rebase cost for first cut; ring-buffer rewrite of
+  match-finder deferred to 1.7.x if benchmarks justify).
+- Lazy matching disabled in streaming fixed path (levels ≤3 — greedy
+  only). Level ≥4 dynamic path is already greedy; no change there.
+- BFINAL choreography: `enc_write` always emits BFINAL=0; `enc_finish`
+  always emits one final sub-block with BFINAL=1 (even if the symbol
+  buffer is empty — trivial BFINAL=1 stored block with LEN=0).
+- Dynamic-path block emit refactored into three primitives
+  (`_dyn_reset`, `_dyn_collect_at`, `_dyn_flush_subblock`) so the
+  batch path and streaming path share the sub-block code.
+- Incremental xxhash32 API added (`xxhash32_init` / `_update` /
+  `_final`) for LZ4F content-checksum streaming; batch `xxhash32`
+  stays for callers who have the full input.
+- **Bundles MED-01 fix**: public direct-entry APIs (`lz4f_*`,
+  `zlib_*`, `gzip_*`, `deflate_*`, `stream_*`) get the two-tier
+  public/internal split so they can safely take `_sankoch_mtx`
+  without recursing through batch `compress()`. Single mutex held
+  from `enc_init` to `enc_finish`; concurrent encoders serialize.
+  Single-threaded contract: a live encoder precludes other
+  `compress`/`decompress` calls on the same thread until `finish`.
 
 **Impact**: required for compressing data larger than available
-memory; also unblocks network-streaming consumers.
+memory; also unblocks network-streaming consumers and closes the
+MED-01 thread-safety gap from the 2026-04-19 audit.
 
 ### ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 

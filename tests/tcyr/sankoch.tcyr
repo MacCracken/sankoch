@@ -259,6 +259,111 @@ fn test_xxhash32_known_vectors() {
 # LZ4 frame format tests
 # ================================================================
 
+fn test_deflate_enc_smoke() {
+    # Level 6 dynamic path — write 5 bytes, decompress, verify.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var ctx = deflate_enc_init(6, c, 64);
+    assert(ctx != 0, "enc_init returns ctx");
+    assert(deflate_enc_write(ctx, src, 5) == 0, "enc_write 5B");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_finish returns length");
+
+    var d = alloc(64);
+    var dlen = deflate_decompress(c, clen, d, 64);
+    assert(dlen == 5, "enc rt dlen");
+    assert(load8(d + 0) == 72 && load8(d + 1) == 101 && load8(d + 2) == 108
+           && load8(d + 3) == 108 && load8(d + 4) == 111, "enc rt content");
+    return 0;
+}
+
+fn test_deflate_enc_chunked() {
+    # Same 5 bytes but in 5 separate enc_write calls (byte-at-a-time).
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var ctx = deflate_enc_init(6, c, 64);
+    assert(ctx != 0, "enc_chunked init");
+    var i = 0;
+    while (i < 5) {
+        assert(deflate_enc_write(ctx, src + i, 1) == 0, "enc_write 1B");
+        i = i + 1;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_chunked finish");
+
+    var d = alloc(64);
+    var dlen = deflate_decompress(c, clen, d, 64);
+    assert(dlen == 5, "enc_chunked dlen");
+    i = 0;
+    while (i < 5) { assert(load8(d + i) == load8(src + i), "enc_chunked content"); i = i + 1; }
+    return 0;
+}
+
+fn test_deflate_enc_empty() {
+    # Zero bytes → enc_init + enc_finish must emit a valid empty stream.
+    var c = alloc(16);
+    var ctx = deflate_enc_init(6, c, 16);
+    assert(ctx != 0, "enc_empty init");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_empty finish");
+
+    var d = alloc(16);
+    assert(deflate_decompress(c, clen, d, 16) == 0, "enc_empty decompress empty");
+    return 0;
+}
+
+fn test_deflate_enc_slide() {
+    # 100K input — crosses the 64K window boundary, exercises slide+rebase.
+    var N = 100000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 17)); j = j + 1; }
+    var c = alloc(N + 4096);
+    var ctx = deflate_enc_init(6, c, N + 4096);
+    assert(ctx != 0, "enc_slide init");
+    # Feed in 4 KB chunks to force multiple consumes + at least one slide.
+    var fed = 0;
+    while (fed < N) {
+        var take = N - fed;
+        if (take > 4096) { take = 4096; }
+        assert(deflate_enc_write(ctx, src + fed, take) == 0, "enc_slide write chunk");
+        fed = fed + take;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_slide finish");
+
+    var d = alloc(N);
+    var dlen = deflate_decompress(c, clen, d, N);
+    assert(dlen == N, "enc_slide rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "enc_slide rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_deflate_enc_fixed() {
+    # Level 1 (fixed path) — verify the BFINAL=0 block + BFINAL=1 stored trailer works.
+    var src = alloc(120);
+    var j = 0;
+    while (j < 120) { store8(src + j, 65 + (j % 3)); j = j + 1; }
+    var c = alloc(256);
+    var ctx = deflate_enc_init(1, c, 256);
+    assert(ctx != 0, "enc_fixed init");
+    assert(deflate_enc_write(ctx, src, 120) == 0, "enc_fixed write");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_fixed finish");
+
+    var d = alloc(128);
+    var dlen = deflate_decompress(c, clen, d, 128);
+    assert(dlen == 120, "enc_fixed rt dlen");
+    j = 0;
+    while (j < 120) { assert(load8(d + j) == load8(src + j), "enc_fixed rt content"); j = j + 1; }
+    return 0;
+}
+
 fn test_lz4f_roundtrip() {
     var src = alloc(120);
     var j = 0;
@@ -933,6 +1038,11 @@ fn main() {
     test_lz4_roundtrip_1kb();
     test_lz4_buffer_too_small();
     test_xxhash32_known_vectors();
+    test_deflate_enc_smoke();
+    test_deflate_enc_chunked();
+    test_deflate_enc_empty();
+    test_deflate_enc_fixed();
+    test_deflate_enc_slide();
     test_lz4f_roundtrip();
     test_lz4f_empty();
     test_lz4f_checksum();

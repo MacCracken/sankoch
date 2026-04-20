@@ -588,16 +588,15 @@ fn _deflate_build_len_lookup() {
     if (_deflate_len_lookup_built == 1) { return 0; }
     if (_deflate_len_lookup == 0) { _deflate_len_lookup = alloc(2048); }
     _deflate_init_tables();
+    # Length-code bases are monotonically increasing, so walk both arrays
+    # in lockstep: ~285 comparisons instead of 256 × 29 = ~7424.
+    var code = 0;
     var len = 3;
     while (len <= 258) {
-        var i = 28;
-        while (i >= 0) {
-            if (len >= load64(&_deflate_len_base + i * 8)) {
-                store64(_deflate_len_lookup +(len - 3) * 8, i);
-                i = 0 - 1;  # break
-            }
-            i = i - 1;
+        while (code < 28 && len >= load64(&_deflate_len_base + (code + 1) * 8)) {
+            code = code + 1;
         }
+        store64(_deflate_len_lookup + (len - 3) * 8, code);
         len = len + 1;
     }
     _deflate_len_lookup_built = 1;
@@ -614,16 +613,16 @@ fn _deflate_build_dist_lookup() {
     if (_deflate_dist_lookup_built == 1) { return 0; }
     if (_deflate_dist_lookup == 0) { _deflate_dist_lookup = alloc(2048); }
     _deflate_init_tables();
+    # Distance-code bases are monotonically increasing. For d ≤ 256 the
+    # highest reachable code is 15 (base[16]=257), so the code pointer
+    # never advances past that within this loop.
+    var code = 0;
     var d = 1;
     while (d <= 256) {
-        var i = 29;
-        while (i >= 0) {
-            if (d >= load64(&_deflate_dist_base + i * 8)) {
-                store64(_deflate_dist_lookup +(d - 1) * 8, i);
-                i = 0 - 1;
-            }
-            i = i - 1;
+        while (code < 29 && d >= load64(&_deflate_dist_base + (code + 1) * 8)) {
+            code = code + 1;
         }
+        store64(_deflate_dist_lookup + (d - 1) * 8, code);
         d = d + 1;
     }
     _deflate_dist_lookup_built = 1;
@@ -1137,6 +1136,118 @@ fn _deflate_alloc_dynamic_ws() {
     return 0;
 }
 
+# Clear dynamic-path per-sub-block state: symbol count + freq tables.
+# Must be called before collecting symbols for a fresh sub-block.
+fn _dyn_reset() {
+    _dyn_sym_count = 0;
+    var i = 0;
+    while (i < 288) { store64(_dyn_lit_freq + i * 8, 0); i = i + 1; }
+    i = 0;
+    while (i < 30) { store64(_dyn_dist_freq + i * 8, 0); i = i + 1; }
+    return 0;
+}
+
+# Process one LZ77 step at position sp in src: try to find a match; if
+# found emit a (length, distance) pair and advance sp past the match,
+# otherwise emit the literal at src[sp] and advance by 1. Updates
+# _dyn_sym_buf, _dyn_sym_count, and the freq tables. Returns new sp.
+#
+# Caller must ensure _dyn_sym_count + 2 <= DYN_SYM_MAX before calling
+# (a single step writes at most 2 symbol slots — length + distance for
+# a match, or 1 for a literal).
+fn _dyn_collect_at(src, src_len, sp) {
+    if (sp + LZ77_MIN_MATCH <= src_len) {
+        var mresult = _lz77_find_match(src, src_len, sp);
+        _lz77_insert(src, sp);
+
+        if (mresult > 0) {
+            var mlen = mresult & 65535;
+            var mdist = mresult >> 16;
+
+            if (mlen >= LZ77_MIN_MATCH) {
+                var li = _deflate_len_code(mlen);
+                var lsym = li + 257;
+                var lextra = load64(&_deflate_len_extra + li * 8);
+                var lbase = load64(&_deflate_len_base + li * 8);
+                store64(_dyn_sym_buf + _dyn_sym_count * 8,
+                _dyn_pack(lsym, lextra, mlen - lbase));
+                _dyn_sym_count = _dyn_sym_count + 1;
+                store64(_dyn_lit_freq + lsym * 8, load64(_dyn_lit_freq + lsym * 8) + 1);
+
+                var di = _deflate_dist_code(mdist);
+                var dextra = load64(&_deflate_dist_extra + di * 8);
+                var dbase = load64(&_deflate_dist_base + di * 8);
+                store64(_dyn_sym_buf + _dyn_sym_count * 8,
+                _dyn_pack(di, dextra, mdist - dbase));
+                _dyn_sym_count = _dyn_sym_count + 1;
+                store64(_dyn_dist_freq + di * 8, load64(_dyn_dist_freq + di * 8) + 1);
+
+                var k = 1;
+                while (k < mlen) {
+                    if (sp + k + LZ77_MIN_MATCH <= src_len) {
+                        _lz77_insert(src, sp + k);
+                    }
+                    k = k + 1;
+                }
+                return sp + mlen;
+            }
+        }
+    }
+
+    var byte = load8(src + sp);
+    store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(byte, 0, 0));
+    _dyn_sym_count = _dyn_sym_count + 1;
+    store64(_dyn_lit_freq + byte * 8, load64(_dyn_lit_freq + byte * 8) + 1);
+    return sp + 1;
+}
+
+# Build Huffman trees from the current freq tables and emit one dynamic
+# sub-block (BFINAL=bfinal, BTYPE=10) carrying the buffered symbols.
+# Appends the EOB symbol before emitting. Returns 0 or negative error.
+fn _dyn_flush_subblock(bw, bfinal) {
+    # Append EOB
+    store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(256, 0, 0));
+    _dyn_sym_count = _dyn_sym_count + 1;
+    store64(_dyn_lit_freq + 256 * 8, load64(_dyn_lit_freq + 256 * 8) + 1);
+
+    # Build optimal trees for this sub-block's freqs
+    huff_compute_lengths(_dyn_lit_freq, 286, _dyn_opt_lit_lens, 257);
+    var hlit = 286;
+    while (hlit > 257 && load64(_dyn_opt_lit_lens + (hlit - 1) * 8) == 0) {
+        hlit = hlit - 1;
+    }
+
+    var has_dist = 0;
+    var i = 0;
+    while (i < 30) {
+        if (load64(_dyn_dist_freq + i * 8) > 0) { has_dist = 1; }
+        i = i + 1;
+    }
+    if (has_dist == 0) { store64(_dyn_dist_freq, 1); }
+    huff_compute_lengths(_dyn_dist_freq, 30, _dyn_opt_dist_lens, 1);
+
+    var hdist = 30;
+    while (hdist > 1 && load64(_dyn_opt_dist_lens + (hdist - 1) * 8) == 0) {
+        hdist = hdist - 1;
+    }
+
+    _huff_build(_dyn_opt_lit_lens, hlit, _dyn_opt_lit_codes, _dyn_lit_fast_tmp);
+    _huff_build(_dyn_opt_dist_lens, hdist, _dyn_opt_dist_codes, _dyn_dist_fast_tmp);
+
+    # Emit sub-block
+    var rc = bw_write(bw, bfinal, 1);
+    if (rc < 0) { return rc; }
+    rc = bw_write(bw, 2, 2);      # BTYPE = 10 (dynamic)
+    if (rc < 0) { return rc; }
+
+    rc = _deflate_write_dynamic_header(bw, _dyn_opt_lit_lens, hlit,
+    _dyn_opt_dist_lens, hdist);
+    if (rc < 0) { return rc; }
+
+    return _deflate_write_syms_dynamic(bw, _dyn_opt_lit_lens, _dyn_opt_lit_codes,
+    _dyn_opt_dist_lens, _dyn_opt_dist_codes);
+}
+
 # Emit one or more dynamic Huffman sub-blocks covering src[sp_start..sp_end).
 #
 # Adaptive block splitting: collection stops when the shared symbol buffer
@@ -1150,145 +1261,322 @@ fn _deflate_alloc_dynamic_ws() {
 fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal) {
     _deflate_alloc_dynamic_ws();
 
-    var lit_freq = _dyn_lit_freq;
-    var dist_freq = _dyn_dist_freq;
-    var opt_lit_lens = _dyn_opt_lit_lens;
-    var opt_dist_lens = _dyn_opt_dist_lens;
-    var opt_lit_codes = _dyn_opt_lit_codes;
-    var opt_dist_codes = _dyn_opt_dist_codes;
-
     var sp = sp_start;
-    var more_blocks = 1;
-    var i = 0;
-    var rc = 0;
-    var hlit = 0;
-    var hdist = 0;
-    var has_dist = 0;
-    var sub_bfinal = 0;
-    var byte = 0;
-    var mresult = 0;
-    var mlen = 0;
-    var mdist = 0;
-    var li = 0;
-    var lsym = 0;
-    var lextra = 0;
-    var lbase = 0;
-    var di = 0;
-    var dextra = 0;
-    var dbase = 0;
-    var k = 0;
+    while (1) {
+        _dyn_reset();
 
-    while (more_blocks == 1) {
-        # Reset per-sub-block state
-        _dyn_sym_count = 0;
-        i = 0;
-        while (i < 288) { store64(lit_freq + i * 8, 0); i = i + 1; }
-        i = 0;
-        while (i < 30) { store64(dist_freq + i * 8, 0); i = i + 1; }
-
-        # Pass 1: collect symbols + frequencies for this sub-block.
-        # Leave 3 slots: up to 2 for the current iteration's match +
-        # 1 for the EOB symbol added after the loop.
+        # Collect symbols into the buffer. Leave 3 slots of slack so one
+        # more step (2 slots for a match) plus the EOB (1 slot) always fit.
         while (sp < sp_end && _dyn_sym_count < DYN_SYM_MAX - 3) {
-            if (sp + LZ77_MIN_MATCH <= src_len) {
-                mresult = _lz77_find_match(src, src_len, sp);
-                _lz77_insert(src, sp);
-
-                if (mresult > 0) {
-                    mlen = mresult & 65535;
-                    mdist = mresult >> 16;
-
-                    if (mlen >= LZ77_MIN_MATCH) {
-                        li = _deflate_len_code(mlen);
-                        lsym = li + 257;
-                        lextra = load64(&_deflate_len_extra + li * 8);
-                        lbase = load64(&_deflate_len_base + li * 8);
-                        store64(_dyn_sym_buf + _dyn_sym_count * 8,
-                        _dyn_pack(lsym, lextra, mlen - lbase));
-                        _dyn_sym_count = _dyn_sym_count + 1;
-                        store64(lit_freq + lsym * 8, load64(lit_freq + lsym * 8) + 1);
-
-                        di = _deflate_dist_code(mdist);
-                        dextra = load64(&_deflate_dist_extra + di * 8);
-                        dbase = load64(&_deflate_dist_base + di * 8);
-                        store64(_dyn_sym_buf + _dyn_sym_count * 8,
-                        _dyn_pack(di, dextra, mdist - dbase));
-                        _dyn_sym_count = _dyn_sym_count + 1;
-                        store64(dist_freq + di * 8, load64(dist_freq + di * 8) + 1);
-
-                        k = 1;
-                        while (k < mlen) {
-                            if (sp + k + LZ77_MIN_MATCH <= src_len) {
-                                _lz77_insert(src, sp + k);
-                            }
-                            k = k + 1;
-                        }
-                        sp = sp + mlen;
-                        continue;
-                    }
-                }
-            }
-
-            byte = load8(src + sp);
-            store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(byte, 0, 0));
-            _dyn_sym_count = _dyn_sym_count + 1;
-            store64(lit_freq + byte * 8, load64(lit_freq + byte * 8) + 1);
-            sp = sp + 1;
+            sp = _dyn_collect_at(src, src_len, sp);
         }
 
-        # Decide BFINAL for this sub-block. Only the caller's final
-        # chunk gets BFINAL=1, and only on its last sub-block.
-        sub_bfinal = 0;
+        # BFINAL only on the last sub-block, and only if caller requested.
+        var sub_bfinal = 0;
+        var done = 0;
         if (sp >= sp_end) {
-            more_blocks = 0;
+            done = 1;
             if (bfinal == 1) { sub_bfinal = 1; }
         }
 
-        # Add EOB
-        store64(_dyn_sym_buf + _dyn_sym_count * 8, _dyn_pack(256, 0, 0));
-        _dyn_sym_count = _dyn_sym_count + 1;
-        store64(lit_freq + 256 * 8, load64(lit_freq + 256 * 8) + 1);
+        var rc = _dyn_flush_subblock(bw, sub_bfinal);
+        if (rc < 0) { return rc; }
+        if (done == 1) { return 0; }
+    }
+    return 0;
+}
 
-        # Pass 2: build optimal Huffman trees for THIS sub-block
-        huff_compute_lengths(lit_freq, 286, opt_lit_lens, 257);
+# ================================================================
+# Incremental DEFLATE encoder (v1.7.0)
+# ================================================================
+#
+# Usage:
+#   var ctx = deflate_enc_init(level, dst, dst_cap);
+#   deflate_enc_write(ctx, chunk1, len1);
+#   deflate_enc_write(ctx, chunk2, len2);
+#   ...
+#   var total = deflate_enc_finish(ctx);
+#
+# The encoder owns a 64KB sliding window. Input is copied into the
+# window on every enc_write; the LZ77 match-finder consumes bytes up
+# to `wptr - LZ77_MAX_MATCH` so full matches can be found across
+# write calls. When wptr reaches WINDOW_CAP, the last 32KB slides to
+# the front and LZ77 hash tables are rebased accordingly.
+#
+# BFINAL choreography: enc_write always emits sub-blocks with
+# BFINAL=0. enc_finish emits a final sub-block with BFINAL=1 (dynamic
+# path) or a trivial 5-byte BFINAL=1 stored block (fixed path) to
+# mark end-of-stream.
+#
+# Fixed path (levels 1-3): one continuous BFINAL=0 fixed block carries
+# the whole stream's symbols, followed by a BFINAL=1 stored-LEN=0
+# trailer on finish. Lazy matching from the batch fixed path is
+# disabled here — streaming fixed is strictly greedy.
+#
+# Dynamic path (levels 4-9): adaptive sub-block flushing from 1.5.0
+# applies — sub-blocks flush when _dyn_sym_count fills, each carrying
+# its own optimal Huffman tree.
+#
+# Thread-safety: enc_init takes _sankoch_mtx; enc_finish releases it.
+# A live encoder blocks other compress/decompress calls on the same
+# thread (single-threaded contract) or serializes concurrent encoders
+# (multi-threaded).
 
-        hlit = 286;
-        while (hlit > 257 && load64(opt_lit_lens + (hlit - 1) * 8) == 0) {
-            hlit = hlit - 1;
+enum DeflateEnc {
+    DENC_WINDOW_CAP = 65536;   # 64 KB — 32 KB lookback + 32 KB new
+    DENC_SLIDE_RETAIN = 32768; # Bytes retained after each slide
+    DENC_LOOKAHEAD = 258;      # Must equal LZ77_MAX_MATCH
+    DENC_CTX_SIZE = 96;        # Byte size of ctx header (layout below)
+
+    # ctx state
+    DENC_STATE_INIT = 0;
+    DENC_STATE_WRITING = 1;
+    DENC_STATE_DONE = 2;
+}
+
+# ctx layout (all 8-byte slots):
+#   +0   level
+#   +8   state
+#   +16  err                 — sticky error; 0 if OK
+#   +24  bw                  — bitwriter context ptr
+#   +32  total_in            — cumulative bytes written by caller
+#   +40  window              — heap buffer, DENC_WINDOW_CAP bytes
+#   +48  wptr                — next write offset within window
+#   +56  cptr                — match-finder consume offset
+#   +64  fixed_header_written — 1 after the streaming fixed block header is emitted
+#   +72  is_dynamic          — 1 if level >= 4 (dynamic path), else 0
+
+fn _denc_load_level(ctx)  { return load64(ctx); }
+fn _denc_state(ctx)       { return load64(ctx + 8); }
+fn _denc_err(ctx)         { return load64(ctx + 16); }
+fn _denc_bw(ctx)          { return load64(ctx + 24); }
+fn _denc_window(ctx)      { return load64(ctx + 40); }
+fn _denc_wptr(ctx)        { return load64(ctx + 48); }
+fn _denc_cptr(ctx)        { return load64(ctx + 56); }
+fn _denc_is_dynamic(ctx)  { return load64(ctx + 72); }
+
+# Start a new streaming DEFLATE encoder. Takes _sankoch_mtx for the
+# encoder's lifetime; returns ctx pointer, or 0 on allocation failure.
+fn deflate_enc_init(level, dst, dst_cap) {
+    _sankoch_lock();
+    var ctx = alloc(DENC_CTX_SIZE);
+    var window = alloc(DENC_WINDOW_CAP);
+    var bw = bw_init(dst, dst_cap);
+
+    store64(ctx, level);
+    store64(ctx + 8, DENC_STATE_INIT);
+    store64(ctx + 16, 0);
+    store64(ctx + 24, bw);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, window);
+    store64(ctx + 48, 0);
+    store64(ctx + 56, 0);
+    store64(ctx + 64, 0);
+    if (level >= 4) { store64(ctx + 72, 1); } else { store64(ctx + 72, 0); }
+
+    _deflate_init_tables();
+    lz77_set_level(level);
+    lz77_init();
+    if (level >= 4) {
+        _deflate_alloc_dynamic_ws();
+        _dyn_reset();
+    } else {
+        _deflate_build_enc_fixed();
+        _deflate_build_enc_dist();
+    }
+    return ctx;
+}
+
+# Append `in_len` bytes from `input` to the encoder's window, processing
+# them through LZ77 and emitting sub-blocks as the symbol buffer fills.
+# Keeps the last DENC_LOOKAHEAD bytes unconsumed so matches can extend
+# into subsequent writes. Returns 0 or negative error (ctx poisoned).
+fn deflate_enc_write(ctx, input, in_len) {
+    if (_denc_err(ctx) < 0) { return _denc_err(ctx); }
+    if (in_len <= 0) { return 0; }
+
+    var window = _denc_window(ctx);
+    var bw = _denc_bw(ctx);
+    var is_dyn = _denc_is_dynamic(ctx);
+    var wptr = _denc_wptr(ctx);
+    var cptr = _denc_cptr(ctx);
+
+    store64(ctx + 8, DENC_STATE_WRITING);
+    store64(ctx + 32, load64(ctx + 32) + in_len);
+
+    var in_pos = 0;
+    while (in_pos < in_len) {
+        # If the window is too full to hold more input, slide the last
+        # DENC_SLIDE_RETAIN bytes down and rebase LZ77 hash tables.
+        if (wptr + (in_len - in_pos) > DENC_WINDOW_CAP) {
+            # Before sliding, ensure cptr has consumed as much as it
+            # reasonably can — up to wptr - LOOKAHEAD.
+            var process_end = wptr;
+            if (process_end > DENC_LOOKAHEAD) { process_end = wptr - DENC_LOOKAHEAD; }
+            else { process_end = 0; }
+            var rc = _denc_consume(ctx, cptr, process_end);
+            if (rc < 0) { return rc; }
+            cptr = load64(ctx + 56);
+
+            var delta = wptr - DENC_SLIDE_RETAIN;
+            if (delta < 0) { delta = 0; }
+            if (delta > 0) {
+                var i = 0;
+                while (i < DENC_SLIDE_RETAIN) {
+                    store8(window + i, load8(window + delta + i));
+                    i = i + 1;
+                }
+                wptr = DENC_SLIDE_RETAIN;
+                cptr = cptr - delta;
+                if (cptr < 0) { cptr = 0; }
+                store64(ctx + 48, wptr);
+                store64(ctx + 56, cptr);
+                lz77_rebase(delta);
+            }
         }
 
-        has_dist = 0;
-        i = 0;
-        while (i < 30) {
-            if (load64(dist_freq + i * 8) > 0) { has_dist = 1; }
+        # Copy a chunk of input into the window.
+        var room = DENC_WINDOW_CAP - wptr;
+        var take = in_len - in_pos;
+        if (take > room) { take = room; }
+        var i = 0;
+        while (i < take) {
+            store8(window + wptr + i, load8(input + in_pos + i));
             i = i + 1;
         }
-        if (has_dist == 0) {
-            store64(dist_freq, 1);
+        wptr = wptr + take;
+        in_pos = in_pos + take;
+        store64(ctx + 48, wptr);
+
+        # Process bytes through LZ77 up to wptr - LOOKAHEAD.
+        var process_end = wptr;
+        if (process_end > DENC_LOOKAHEAD) { process_end = wptr - DENC_LOOKAHEAD; }
+        else { process_end = 0; }
+        var rc = _denc_consume(ctx, cptr, process_end);
+        if (rc < 0) { return rc; }
+        cptr = load64(ctx + 56);
+    }
+    return 0;
+}
+
+# Helper: consume window[cptr..end) through the active path, emitting
+# sub-blocks (dynamic) or literals/matches (fixed) as they're produced.
+# Updates ctx.cptr. Returns 0 or negative error (stored into ctx.err).
+fn _denc_consume(ctx, cptr, end) {
+    if (cptr >= end) { return 0; }
+    var window = _denc_window(ctx);
+    var wptr = _denc_wptr(ctx);
+    var bw = _denc_bw(ctx);
+    var is_dyn = _denc_is_dynamic(ctx);
+
+    if (is_dyn == 1) {
+        while (cptr < end) {
+            if (_dyn_sym_count >= DYN_SYM_MAX - 3) {
+                var rc = _dyn_flush_subblock(bw, 0);
+                if (rc < 0) { store64(ctx + 16, rc); return rc; }
+                _dyn_reset();
+            }
+            cptr = _dyn_collect_at(window, wptr, cptr);
         }
-        huff_compute_lengths(dist_freq, 30, opt_dist_lens, 1);
-
-        hdist = 30;
-        while (hdist > 1 && load64(opt_dist_lens + (hdist - 1) * 8) == 0) {
-            hdist = hdist - 1;
+    } else {
+        # Fixed path: emit the block header once; then emit literals /
+        # matches directly through the bitwriter.
+        if (load64(ctx + 64) == 0) {
+            var rc = bw_write(bw, 0, 1);      # BFINAL=0
+            if (rc < 0) { store64(ctx + 16, rc); return rc; }
+            rc = bw_write(bw, 1, 2);          # BTYPE=01 (fixed)
+            if (rc < 0) { store64(ctx + 16, rc); return rc; }
+            store64(ctx + 64, 1);
         }
+        while (cptr < end) {
+            var mresult = 0;
+            if (cptr + LZ77_MIN_MATCH <= wptr) {
+                mresult = _lz77_find_match(window, wptr, cptr);
+                _lz77_insert(window, cptr);
+            }
+            if (mresult > 0) {
+                var mlen = mresult & 65535;
+                var mdist = mresult >> 16;
+                if (mlen >= LZ77_MIN_MATCH) {
+                    var rc = _deflate_write_match(bw, mlen, mdist);
+                    if (rc < 0) { store64(ctx + 16, rc); return rc; }
+                    var k = 1;
+                    while (k < mlen) {
+                        if (cptr + k + LZ77_MIN_MATCH <= wptr) {
+                            _lz77_insert(window, cptr + k);
+                        }
+                        k = k + 1;
+                    }
+                    cptr = cptr + mlen;
+                    continue;
+                }
+            }
+            var rc = _deflate_write_literal(bw, load8(window + cptr));
+            if (rc < 0) { store64(ctx + 16, rc); return rc; }
+            cptr = cptr + 1;
+        }
+    }
+    store64(ctx + 56, cptr);
+    return 0;
+}
 
-        _huff_build(opt_lit_lens, hlit, opt_lit_codes, _dyn_lit_fast_tmp);
-        _huff_build(opt_dist_lens, hdist, opt_dist_codes, _dyn_dist_fast_tmp);
+# Flush remaining buffered input, emit end-of-stream marker, release
+# _sankoch_mtx, and return total bytes written to dst (or neg error).
+fn deflate_enc_finish(ctx) {
+    if (_denc_err(ctx) < 0) {
+        _sankoch_unlock();
+        return _denc_err(ctx);
+    }
+    var bw = _denc_bw(ctx);
+    var window = _denc_window(ctx);
+    var wptr = _denc_wptr(ctx);
+    var cptr = _denc_cptr(ctx);
+    var is_dyn = _denc_is_dynamic(ctx);
 
-        # Pass 3: write the sub-block
-        rc = bw_write(bw, sub_bfinal, 1);
-        if (rc < 0) { return rc; }
-        rc = bw_write(bw, 2, 2);      # BTYPE = 10 (dynamic)
-        if (rc < 0) { return rc; }
-
-        rc = _deflate_write_dynamic_header(bw, opt_lit_lens, hlit, opt_dist_lens, hdist);
-        if (rc < 0) { return rc; }
-
-        rc = _deflate_write_syms_dynamic(bw, opt_lit_lens, opt_lit_codes,
-        opt_dist_lens, opt_dist_codes);
-        if (rc < 0) { return rc; }
+    # Consume remaining window bytes (no lookahead reservation).
+    var rc = _denc_consume(ctx, cptr, wptr);
+    if (rc < 0) {
+        _sankoch_unlock();
+        return rc;
     }
 
-    return 0;
+    if (is_dyn == 1) {
+        # Dynamic: last sub-block is BFINAL=1. If the symbol buffer is
+        # empty (total_in was a multiple of whatever flushed the last
+        # sub-block), emit an empty-body BFINAL=1 sub-block (just EOB).
+        rc = _dyn_flush_subblock(bw, 1);
+        if (rc < 0) { _sankoch_unlock(); return rc; }
+    } else {
+        # Fixed: close the BFINAL=0 block with EOB, then append a
+        # trivial BFINAL=1 stored block with LEN=0 as the trailer.
+        if (load64(ctx + 64) == 0) {
+            # No data was ever written; emit a single empty BFINAL=1
+            # stored block. bfinal=1, btype=00, pad, LEN=0, NLEN=0xFFFF.
+            rc = bw_write(bw, 1, 1);        # BFINAL=1
+            if (rc < 0) { _sankoch_unlock(); return rc; }
+            rc = bw_write(bw, 0, 2);        # BTYPE=00 stored
+            if (rc < 0) { _sankoch_unlock(); return rc; }
+        } else {
+            # Close the open fixed block with EOB.
+            rc = _deflate_write_eob(bw);
+            if (rc < 0) { _sankoch_unlock(); return rc; }
+
+            # BFINAL=1 stored-LEN=0 trailer.
+            rc = bw_write(bw, 1, 1);        # BFINAL=1
+            if (rc < 0) { _sankoch_unlock(); return rc; }
+            rc = bw_write(bw, 0, 2);        # BTYPE=00
+            if (rc < 0) { _sankoch_unlock(); return rc; }
+        }
+        bw_align(bw);                        # pad to byte
+        # LEN = 0 (LE u16), NLEN = 0xFFFF (LE u16)
+        rc = bw_write_byte(bw, 0); if (rc < 0) { _sankoch_unlock(); return rc; }
+        rc = bw_write_byte(bw, 0); if (rc < 0) { _sankoch_unlock(); return rc; }
+        rc = bw_write_byte(bw, 255); if (rc < 0) { _sankoch_unlock(); return rc; }
+        rc = bw_write_byte(bw, 255); if (rc < 0) { _sankoch_unlock(); return rc; }
+    }
+
+    store64(ctx + 8, DENC_STATE_DONE);
+    var total = bw_finish(bw);
+    _sankoch_unlock();
+    return total;
 }

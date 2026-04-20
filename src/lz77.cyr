@@ -108,6 +108,32 @@ fn lz77_set_level(level) {
     return 0;
 }
 
+# Subtract `delta` from every entry in _lz77_head and _lz77_prev.
+# Entries that go negative become -1 (sentinel for "no entry").
+# Used by the streaming encoder after sliding its input window: the
+# window content moved down by `delta` bytes, so every cached position
+# in the hash chains must move with it or be invalidated.
+fn lz77_rebase(delta) {
+    if (_lz77_head == 0) { return 0; }
+    var i = 0;
+    while (i < LZ77_HASH_SIZE) {
+        var h = load64(_lz77_head + i * 8);
+        if (h >= 0) {
+            h = h - delta;
+            if (h < 0) { h = 0 - 1; }
+            store64(_lz77_head + i * 8, h);
+        }
+        var p = load64(_lz77_prev + i * 8);
+        if (p >= 0) {
+            p = p - delta;
+            if (p < 0) { p = 0 - 1; }
+            store64(_lz77_prev + i * 8, p);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 # Initialize hash tables (heap-allocate + clear to -1).
 fn lz77_init() {
     if (_lz77_head == 0) {
