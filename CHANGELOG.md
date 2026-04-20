@@ -7,6 +7,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-04-19
+
+**True incremental streaming across all four formats + MED-01 closed.
+Third of four v2.0.0-track features.**
+
+Before 1.7.0, `stream_compress_finish` accumulated the caller's full
+input in a growing buffer and then called the batch compressor once.
+Useless for inputs larger than memory. 1.7.0 replaces that with
+per-format `*_enc_init/write/finish` triplets that emit compressed
+output as each chunk arrives; `stream.cyr` dispatches to them. All
+four formats stream now: DEFLATE (foundation), zlib and gzip (thin
+wrappers over `deflate_enc_*` with incremental Adler-32 / CRC-32
+trailers), and LZ4F (multi-block frame with per-64KB-block emit and
+incremental xxHash32 content checksum).
+
+The 1.6.1 audit's MED-01 — direct-entry batch APIs bypassing
+`_sankoch_mtx` — is closed. Every public function that touches shared
+mutable state now takes the mutex and delegates to an unlocked
+`_*_inner` variant; internal callers use the inner variants to avoid
+self-deadlock.
+
+### Added
+- **`deflate_enc_init(level, dst, dst_cap)` / `_write(ctx, chunk, len)`
+  / `_finish(ctx)`** (`src/deflate.cyr`). 64 KB sliding window,
+  slides every 32 KB with `lz77_rebase(delta)` keeping the hash
+  tables consistent. LOOKAHEAD = 258 bytes held back during `_write`
+  so matches can extend across chunks; `_finish` processes the full
+  window. Dynamic path reuses 1.5.0 adaptive block splitting via
+  three new primitives refactored out of the batch path —
+  `_dyn_reset` / `_dyn_collect_at` / `_dyn_flush_subblock` — so
+  batch and streaming share sub-block emit code. Fixed path
+  (levels 1-3) emits one continuous BFINAL=0 block then a 5-byte
+  BFINAL=1 stored-LEN=0 trailer; lazy matching disabled in the
+  streaming fixed path (greedy only).
+- **`zlib_enc_init/write/finish`** (`src/zlib.cyr`) wrapping
+  `deflate_enc_*` with CMF/FLG header and a big-endian Adler-32
+  trailer. Incremental Adler-32 in `src/checksum.cyr`:
+  `adler32_init/update/final`.
+- **`gzip_enc_init/write/finish`** (`src/gzip.cyr`) wrapping
+  `deflate_enc_*` with a 10-byte gzip header and a little-endian
+  CRC-32 + ISIZE trailer. Incremental CRC-32:
+  `crc32_init/update/final`.
+- **`lz4f_enc_init/write/finish`** (`src/lz4.cyr`). Accumulates up
+  to `LZ4F_BLOCK_MAX = 65536` bytes, emits one LZ4 block per full
+  buffer (B.Indep=1 makes each block independent), incremental
+  xxHash32 across the frame. New checksum API: `xxhash32_init`
+  (seed=0, stripe accumulators initialized), `xxhash32_update`
+  (partial-stripe buffer + full-stripe direct processing),
+  `xxhash32_final` (short vs long path by `total_len >= 16`).
+- **`FORMAT_LZ4F = 5`** in `src/types.cyr`. Batch
+  `compress(FORMAT_LZ4F, …)` and `decompress(FORMAT_LZ4F, …)` now
+  dispatch through `_compress_inner` / `_decompress_inner`.
+- **Rewritten `src/stream.cyr`**: `stream_compress_init(format,
+  level, dst, dst_cap)` dispatches to the right `*_enc_init`;
+  `stream_write` dispatches to the right `*_enc_write`;
+  `stream_compress_finish(ctx)` dispatches to `*_enc_finish` and
+  returns total bytes written. Decompression side unchanged
+  (still buffers then batch-decompresses — true incremental
+  decompression is future work). `FORMAT_LZ4` (raw block format)
+  returns 0 from `stream_compress_init` — use `FORMAT_LZ4F` for
+  streaming LZ4.
+
+### Changed (MED-01 closed)
+- Every batch public compression / DEFLATE-decompression entry
+  takes `_sankoch_mtx` and delegates to a new internal
+  `_*_inner(...)` function:
+  - `lz4_compress`, `lz4f_compress`
+  - `deflate_compress`, `deflate_compress_level`,
+    `deflate_decompress`, `deflate_decompress_dict`
+  - `zlib_compress`, `zlib_compress_level`, `zlib_decompress`,
+    `zlib_decompress_dict`
+  - `gzip_compress`, `gzip_compress_level`, `gzip_decompress`
+- `lib.cyr`'s `_compress_inner` / `_decompress_inner` call the
+  `_*_inner` variants directly (avoids double-lock via `compress()`
+  wrapper).
+- `lz4_decompress` / `lz4f_decompress` stay lock-free — they touch
+  no shared mutable state.
+- **Contract**: a live streaming encoder holds `_sankoch_mtx` from
+  `enc_init` through `enc_finish`. On the same thread, `compress()`
+  / `decompress()` calls in between deadlock (non-recursive mutex).
+  Document this as a single-threaded invariant; concurrent
+  encoders across threads serialize naturally.
+- `_deflate_build_len_lookup` / `_dist_lookup` switched to forward
+  iteration — audit INFO-01 from 2026-04-19.md. ~285 comparisons
+  instead of ~7.4K at startup.
+
+### Tests (selected — 1028623 total assertions, 0 failures)
+- `test_deflate_enc_smoke/chunked/empty/fixed/slide/levels/window_boundary/varied_chunks`
+  — cross-level, boundary, byte-at-a-time, 100 KB slide + rebase
+- `test_zlib_enc_roundtrip/empty`, `test_gzip_enc_roundtrip/empty`,
+  `test_lz4f_enc_roundtrip/multiblock/empty`
+- `test_adler32_incremental`, `test_crc32_incremental`,
+  `test_xxhash32_incremental` — each checks byte-at-a-time and
+  varied-chunk updates against the batch function
+- `test_stream_format_dispatch` — DEFLATE/ZLIB/GZIP/LZ4F through
+  `stream_compress_*`; verifies `FORMAT_LZ4` raw-block is rejected
+- `test_compress_dispatch_lz4f` — batch `compress(FORMAT_LZ4F, ...)`
+- `test_enc_error_paths` — dst-overflow poisons ctx, sticky error,
+  mutex released on error, subsequent compress works
+- `test_enc_zero_write` — `enc_write(ctx, _, 0)` is a no-op
+
+### Fuzz (new — 204 streaming iterations, 0 failures)
+- `fuzz_deflate_stream` — 120 iters: 5 seeds × 6 sizes
+  (0 / 1 KB / 64 KB / 65536 / 100 KB / 200 KB) × 4 levels
+- `fuzz_zlib_stream` — 36 iters: 3 seeds × 4 sizes × 3 levels
+- `fuzz_gzip_stream` — 36 iters: 3 seeds × 4 sizes × 3 levels
+- `fuzz_lz4f_stream` — 12 iters: 3 seeds × 4 sizes, random chunks
+  up to 16 KB (crosses the 64 KB LZ4 block boundary)
+
+### End-to-end reference-CLI validation
+- `zlib_enc_*` output on 100 KB decoded by Python `zlib.decompress`,
+  md5 matches expected input.
+- `gzip_enc_*` output on 100 KB decoded by `gunzip`, md5 matches.
+- `lz4f_enc_*` output on 150 KB decoded by `lz4 -dc`, md5 matches.
+
+### Metrics
+- **Source**: ~3770 lines across 12 domain modules.
+- **Tests**: 1028623 assertions (many from large per-byte round-trip
+  checks in streaming tests), 0 failures.
+- **git_object suite**: 134 assertions, 0 failures.
+- **Fuzz**: 1564 iterations across both harnesses, 0 failures.
+- **Cleanliness**: `cyrius build` 0 warnings, `cyrius lint` 0,
+  `cyrius fmt --check` clean, `cyrius vet` 18/0/0.
+- **Streaming throughput** (128 KB input, 4 KB chunks, 50 iters):
+  - `stream deflate L1 text`: 3.25 ms/op (~40 MB/s)
+  - `stream deflate L6 text`: 3.27 ms/op
+  - `stream zlib L6 text`: 3.59 ms/op
+  - `stream gzip L6 text`: 3.75 ms/op
+  - `stream lz4f text`: 1.25 ms/op (~105 MB/s)
+- **Streaming output sizes** vs batch (128 KB text, level 6):
+  - `stream_deflate6_text_128K = 440` (batch: ~440 interpolated)
+  - `stream_zlib6_text_128K = 446`
+  - `stream_gzip6_text_128K = 458`
+  - `stream_lz4f_text_128K = 647` (byte-identical to batch `lz4f_text_128K`)
+- **Batch SIZE lines** unchanged from 1.6.1 baseline (md5
+  `085f17f1227b863a21597969dea9a74a` on the original 35 entries).
+
+### Breaking changes
+- `stream_compress_init` signature: `(format, level)` →
+  `(format, level, dst, dst_cap)`. Output dst is now provided at
+  init, not finish.
+- `stream_compress_finish` signature: `(ctx, dst, dst_cap)` →
+  `(ctx)`. Returns total bytes written to the dst passed at init.
+- `FORMAT_LZ4` is no longer accepted by `stream_compress_init` —
+  use `FORMAT_LZ4F` for streaming LZ4.
+
+No downstream consumer has shipped against these stream APIs
+(CLAUDE.md lists all consumers as planned). The break was taken
+deliberately to match the incremental shape for 1.7.0+.
+
+### Roadmap
+- v1.7.0 "True incremental streaming + MED-01" → **shipped**
+  (third of four v2.0.0-track features).
+- Next: **v2.0.0** — cut once the feature stack is stable. Any
+  remaining scaffolding / polish work lives in 1.7.x point releases.
+- Follow-up candidates for 1.7.x (not blocking v2.0.0): true
+  incremental decompression; ring-buffer match-finder (replaces
+  the slide-rebase scheme); zlib/gzip `_enc_*_dict` with preset
+  dictionary; LZ4F with configurable block-max size.
+
 ## [1.6.1] — 2026-04-19
 
 **xxHash32 spec-compliance fix + P(-1) scaffold hardening.**

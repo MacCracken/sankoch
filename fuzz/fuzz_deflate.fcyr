@@ -141,6 +141,116 @@ fn fuzz_deflate_stream(seed, data_len, level) {
     return 0;
 }
 
+# Streaming round-trip for zlib: fed in random chunks, decompressed by
+# batch zlib_decompress, content verified.
+fn fuzz_zlib_stream(seed, data_len, level) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    var capped = data_len;
+    if (capped > 200000) { capped = 200000; }
+    _fuzz_fill(_fuzz_src, capped);
+
+    var ctx = zlib_enc_init(level, _fuzz_c, 262144);
+    if (ctx == 0) { assert(0 == 1, "zlib_enc stream init failed"); }
+    var fed = 0;
+    while (fed < capped) {
+        var chunk = (_fuzz_next() | (_fuzz_next() << 8)) & 4095;
+        if (chunk == 0) { chunk = 1; }
+        if (chunk > capped - fed) { chunk = capped - fed; }
+        if (zlib_enc_write(ctx, _fuzz_src + fed, chunk) < 0) {
+            assert(0 == 1, "zlib_enc stream write error");
+        }
+        fed = fed + chunk;
+    }
+    var clen = zlib_enc_finish(ctx);
+    if (clen < 0) { assert(0 == 1, "zlib_enc stream finish error"); }
+
+    var dlen = zlib_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+    assert(dlen == capped, "zlib stream fuzz size mismatch");
+    var i = 0;
+    while (i < capped) {
+        assert(load8(_fuzz_d + i) == load8(_fuzz_src + i), "zlib stream fuzz content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fuzz_gzip_stream(seed, data_len, level) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    var capped = data_len;
+    if (capped > 200000) { capped = 200000; }
+    _fuzz_fill(_fuzz_src, capped);
+
+    var ctx = gzip_enc_init(level, _fuzz_c, 262144);
+    if (ctx == 0) { assert(0 == 1, "gzip_enc stream init failed"); }
+    var fed = 0;
+    while (fed < capped) {
+        var chunk = (_fuzz_next() | (_fuzz_next() << 8)) & 4095;
+        if (chunk == 0) { chunk = 1; }
+        if (chunk > capped - fed) { chunk = capped - fed; }
+        if (gzip_enc_write(ctx, _fuzz_src + fed, chunk) < 0) {
+            assert(0 == 1, "gzip_enc stream write error");
+        }
+        fed = fed + chunk;
+    }
+    var clen = gzip_enc_finish(ctx);
+    if (clen < 0) { assert(0 == 1, "gzip_enc stream finish error"); }
+
+    var dlen = gzip_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+    assert(dlen == capped, "gzip stream fuzz size mismatch");
+    var i = 0;
+    while (i < capped) {
+        assert(load8(_fuzz_d + i) == load8(_fuzz_src + i), "gzip stream fuzz content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fuzz_lz4f_stream(seed, data_len) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    var capped = data_len;
+    if (capped > 200000) { capped = 200000; }
+    _fuzz_fill(_fuzz_src, capped);
+
+    var ctx = lz4f_enc_init(_fuzz_c, 262144);
+    if (ctx == 0) { assert(0 == 1, "lz4f_enc stream init failed"); }
+    var fed = 0;
+    while (fed < capped) {
+        var chunk = (_fuzz_next() | (_fuzz_next() << 8)) & 16383;   # up to ~16KB
+        if (chunk == 0) { chunk = 1; }
+        if (chunk > capped - fed) { chunk = capped - fed; }
+        if (lz4f_enc_write(ctx, _fuzz_src + fed, chunk) < 0) {
+            assert(0 == 1, "lz4f_enc stream write error");
+        }
+        fed = fed + chunk;
+    }
+    var clen = lz4f_enc_finish(ctx);
+    if (clen < 0) { assert(0 == 1, "lz4f_enc stream finish error"); }
+
+    var dlen = lz4f_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+    assert(dlen == capped, "lz4f stream fuzz size mismatch");
+    var i = 0;
+    while (i < capped) {
+        assert(load8(_fuzz_d + i) == load8(_fuzz_src + i), "lz4f stream fuzz content");
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn fuzz_gzip_roundtrip(seed, data_len) {
     _fuzz_seed(seed);
     var src[2048];
@@ -246,8 +356,8 @@ fn main() {
             var li = 0;
             while (li < 4) {
                 fuzz_deflate_stream(seed * 4001 + si * 17 + li,
-                    load64(&stream_sizes + si * 8),
-                    load64(&levels + li * 8));
+                load64(&stream_sizes + si * 8),
+                load64(&levels + li * 8));
                 li = li + 1;
             }
             si = si + 1;
@@ -255,6 +365,41 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_deflate: 120 streaming round-trip tests passed");
+
+    # Streaming zlib / gzip / lz4f — 4 sizes × 3 levels × 3 seeds = 36 each
+    var sm_sizes[4];
+    store64(&sm_sizes + 0 * 8, 512);
+    store64(&sm_sizes + 1 * 8, 20000);
+    store64(&sm_sizes + 2 * 8, 80000);
+    store64(&sm_sizes + 3 * 8, 150000);
+
+    var sm_levels[3];
+    store64(&sm_levels + 0 * 8, 1);
+    store64(&sm_levels + 1 * 8, 6);
+    store64(&sm_levels + 2 * 8, 9);
+
+    seed = 1;
+    while (seed <= 3) {
+        var si = 0;
+        while (si < 4) {
+            var li = 0;
+            while (li < 3) {
+                fuzz_zlib_stream(seed * 5003 + si * 13 + li,
+                load64(&sm_sizes + si * 8),
+                load64(&sm_levels + li * 8));
+                fuzz_gzip_stream(seed * 6007 + si * 13 + li,
+                load64(&sm_sizes + si * 8),
+                load64(&sm_levels + li * 8));
+                li = li + 1;
+            }
+            fuzz_lz4f_stream(seed * 7001 + si * 17, load64(&sm_sizes + si * 8));
+            si = si + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_zlib: 36 streaming round-trip tests passed");
+    println("fuzz_gzip: 36 streaming round-trip tests passed");
+    println("fuzz_lz4f: 12 streaming round-trip tests passed");
 
     return 0;
 }

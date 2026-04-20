@@ -151,6 +151,61 @@ fn bench_lz4f_c(name, src, slen, dst, dcap, iters) {
     return clen;
 }
 
+# Run streaming compression once and return compressed length (no timing).
+# Used to get SIZE lines for streaming output.
+fn _bench_stream_sz(format, level, src, slen, dst, dcap, chunk_sz) {
+    var ctx = stream_compress_init(format, level, dst, dcap);
+    if (ctx == 0) { return 0 - 1; }
+    var fed = 0;
+    while (fed < slen) {
+        var take = slen - fed;
+        if (take > chunk_sz) { take = chunk_sz; }
+        stream_write(ctx, src + fed, take);
+        fed = fed + take;
+    }
+    return stream_compress_finish(ctx);
+}
+
+# Streaming-encoder benchmark via stream_compress_*. Feeds `slen` bytes
+# in `chunk_sz`-sized pieces; measures ns/op for the full init/write*/finish
+# sequence. Returns compressed length, or -1 on SKIP.
+fn bench_stream(name, format, level, src, slen, dst, dcap, chunk_sz, iters) {
+    var ctx = stream_compress_init(format, level, dst, dcap);
+    if (ctx == 0) { _print("  SKIP "); _print(name); _nl(); return 0 - 1; }
+    var fed = 0;
+    while (fed < slen) {
+        var take = slen - fed;
+        if (take > chunk_sz) { take = chunk_sz; }
+        stream_write(ctx, src + fed, take);
+        fed = fed + take;
+    }
+    var clen = stream_compress_finish(ctx);
+    if (clen < 0) { _print("  SKIP "); _print(name); _nl(); return 0 - 1; }
+
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) {
+        ctx = stream_compress_init(format, level, dst, dcap);
+        fed = 0;
+        while (fed < slen) {
+            var take = slen - fed;
+            if (take > chunk_sz) { take = chunk_sz; }
+            stream_write(ctx, src + fed, take);
+            fed = fed + take;
+        }
+        stream_compress_finish(ctx);
+        i = i + 1;
+    }
+    var elapsed = time_ns() - start;
+    var ns_per = elapsed / iters;
+    _print("  "); _print(name);
+    _print("  in="); _print_int(slen);
+    _print("  out="); _print_int(clen);
+    _print("  ns/op="); _print_int(ns_per);
+    _nl();
+    return clen;
+}
+
 # Checksum benchmark.
 fn bench_checksum(name, data, len, iters) {
     crc32_init_table();
@@ -240,6 +295,23 @@ fn main() {
     bench_lz4f_c("lz4f c text 128K", lsrc128, 131072, lc128, 135168, 50);
     fill_random(lsrc128, 131072);
     bench_lz4f_c("lz4f c rand 128K", lsrc128, 131072, lc128, 135168, 50);
+    println("");
+
+    # ---- Streaming encoders (v1.7.0) ----
+    # Feed 128K in 4K chunks through stream_compress_*. Throughput
+    # includes the init/finish overhead on every iteration. The batch
+    # equivalents above are the baseline.
+    println("--- Streaming encoders (128K, 4K chunks, 50 iters) ---");
+    var slc = alloc(262144);                 # dst sized for fixed-path random
+    fill_text(lsrc128, 131072);
+    bench_stream("stream deflate L1 text 128K", FORMAT_DEFLATE, 1, lsrc128, 131072, slc, 262144, 4096, 50);
+    bench_stream("stream deflate L6 text 128K", FORMAT_DEFLATE, 6, lsrc128, 131072, slc, 262144, 4096, 50);
+    bench_stream("stream zlib    L6 text 128K", FORMAT_ZLIB,    6, lsrc128, 131072, slc, 262144, 4096, 50);
+    bench_stream("stream gzip    L6 text 128K", FORMAT_GZIP,    6, lsrc128, 131072, slc, 262144, 4096, 50);
+    bench_stream("stream lz4f       text 128K", FORMAT_LZ4F,    0, lsrc128, 131072, slc, 262144, 4096, 50);
+    fill_random(lsrc128, 131072);
+    bench_stream("stream deflate L1 rand 128K", FORMAT_DEFLATE, 1, lsrc128, 131072, slc, 262144, 4096, 50);
+    bench_stream("stream lz4f       rand 128K", FORMAT_LZ4F,    0, lsrc128, 131072, slc, 262144, 4096, 50);
     println("");
 
     # ---- DEFLATE per-level ----
@@ -391,6 +463,16 @@ fn main() {
     size_line("zlib6_text_256K",    262144, zlib_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("gzip6_text_256K",    262144, gzip_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("lz4f_text_256K",     262144, lz4f_compress(lsrc, 262144, lc, 270336));
+
+    # ---- Streaming SIZE comparison (v1.7.0) ----
+    # Verifies that streaming output is in the same ballpark as batch.
+    # Sizes can differ because block boundaries shift with window slides,
+    # but should be within a few percent for text.
+    fill_text(lsrc, 131072);
+    size_line("stream_deflate6_text_128K", 131072, _bench_stream_sz(FORMAT_DEFLATE, 6, lsrc, 131072, lc, 270336, 4096));
+    size_line("stream_zlib6_text_128K",    131072, _bench_stream_sz(FORMAT_ZLIB,    6, lsrc, 131072, lc, 270336, 4096));
+    size_line("stream_gzip6_text_128K",    131072, _bench_stream_sz(FORMAT_GZIP,    6, lsrc, 131072, lc, 270336, 4096));
+    size_line("stream_lz4f_text_128K",     131072, _bench_stream_sz(FORMAT_LZ4F,    0, lsrc, 131072, lc, 270336, 4096));
 
     println("--- END SIZE ---");
     println("");

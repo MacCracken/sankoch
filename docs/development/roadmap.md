@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.6.1) | **Last Updated**: 2026-04-19
+> **Status**: Stable (v1.7.0) | **Last Updated**: 2026-04-19
 
 ---
 
@@ -50,7 +50,7 @@ consumers yet. See `docs/audit/2026-04-19.md`.
 — fix lands alongside the streaming refactor that release needs
 anyway.
 
-### 🚧 v1.7.0 — True incremental streaming (all four formats)
+### ✅ v1.7.0 — True incremental streaming + MED-01 (shipped 2026-04-19)
 
 Today's `stream_compress_finish` buffers the whole input then
 compresses in one shot. True incremental streaming means the

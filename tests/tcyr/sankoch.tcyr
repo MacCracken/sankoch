@@ -254,6 +254,62 @@ fn test_xxhash32_known_vectors() {
     return 0;
 }
 
+fn test_adler32_incremental() {
+    # Byte-at-a-time and varied-chunk updates must match batch adler32.
+    var buf = alloc(150);
+    var j = 0;
+    while (j < 150) { store8(buf + j, (j * 19 + 7) % 256); j = j + 1; }
+
+    # Empty
+    var st = adler32_init();
+    assert(adler32_final(st) == adler32(buf, 0), "adler32 inc empty");
+
+    # 1..65 bytes, byte-at-a-time — crosses NMAX is not relevant here, but
+    # spans both small and medium sizes for robustness.
+    j = 0;
+    while (j <= 65) {
+        st = adler32_init();
+        var k = 0;
+        while (k < j) { adler32_update(st, buf + k, 1); k = k + 1; }
+        assert(adler32_final(st) == adler32(buf, j), "adler32 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    # Varied chunks totaling 150
+    st = adler32_init();
+    adler32_update(st, buf, 7);
+    adler32_update(st, buf + 7, 53);
+    adler32_update(st, buf + 60, 90);
+    assert(adler32_final(st) == adler32(buf, 150), "adler32 inc varied");
+    return 0;
+}
+
+fn test_crc32_incremental() {
+    crc32_init_table();
+    var buf = alloc(150);
+    var j = 0;
+    while (j < 150) { store8(buf + j, (j * 37 + 11) % 256); j = j + 1; }
+
+    var st = crc32_init();
+    assert(crc32_final(st) == crc32(buf, 0), "crc32 inc empty");
+
+    j = 0;
+    while (j <= 40) {
+        st = crc32_init();
+        var k = 0;
+        while (k < j) { crc32_update(st, buf + k, 1); k = k + 1; }
+        assert(crc32_final(st) == crc32(buf, j), "crc32 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    st = crc32_init();
+    crc32_update(st, buf, 7);
+    crc32_update(st, buf + 7, 8);     # just past the 8-byte unroll boundary
+    crc32_update(st, buf + 15, 135);
+    assert(crc32_final(st) == crc32(buf, 150), "crc32 inc varied");
+    return 0;
+}
+
 fn test_xxhash32_incremental() {
     # Streaming xxhash32 must match batch for every input size, regardless
     # of how the bytes are fed in. Boundary cases around 16-byte stripe.
@@ -308,7 +364,7 @@ fn test_deflate_enc_smoke() {
     var dlen = deflate_decompress(c, clen, d, 64);
     assert(dlen == 5, "enc rt dlen");
     assert(load8(d + 0) == 72 && load8(d + 1) == 101 && load8(d + 2) == 108
-           && load8(d + 3) == 108 && load8(d + 4) == 111, "enc rt content");
+    && load8(d + 3) == 108 && load8(d + 4) == 111, "enc rt content");
     return 0;
 }
 
@@ -532,7 +588,7 @@ fn test_lz4f_enc_roundtrip() {
     assert(ctx != 0, "lz4f_enc init");
     # Magic 0x184D2204 little-endian = 04 22 4D 18
     assert(load8(c) == 4 && load8(c + 1) == 34 && load8(c + 2) == 77 && load8(c + 3) == 24,
-        "lz4f_enc magic");
+    "lz4f_enc magic");
     var fed = 0;
     while (fed < N) {
         var take = 3000;
@@ -547,6 +603,139 @@ fn test_lz4f_enc_roundtrip() {
     assert(dlen == N, "lz4f_enc rt dlen");
     j = 0;
     while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_gzip_enc_empty() {
+    var c = alloc(64);
+    var ctx = gzip_enc_init(6, c, 64);
+    assert(ctx != 0, "gzip_enc empty init");
+    var clen = gzip_enc_finish(ctx);
+    assert(clen > 0, "gzip_enc empty finish");
+    var d = alloc(16);
+    assert(gzip_decompress(c, clen, d, 16) == 0, "gzip_enc empty decompress");
+    return 0;
+}
+
+fn test_lz4f_enc_empty() {
+    var c = alloc(64);
+    var ctx = lz4f_enc_init(c, 64);
+    assert(ctx != 0, "lz4f_enc empty init");
+    var clen = lz4f_enc_finish(ctx);
+    assert(clen > 0, "lz4f_enc empty finish");
+    var d = alloc(16);
+    assert(lz4f_decompress(c, clen, d, 16) == 0, "lz4f_enc empty decompress");
+    return 0;
+}
+
+fn test_compress_dispatch_lz4f() {
+    # Batch compress(FORMAT_LZ4F, ...) — new dispatch added with 1.7.0.
+    var src = alloc(64);
+    var j = 0;
+    while (j < 64) { store8(src + j, 65 + (j % 26)); j = j + 1; }
+    var c = alloc(128);
+    var d = alloc(128);
+    var clen = compress(FORMAT_LZ4F, src, 64, c, 128);
+    assert(clen > 0, "compress FORMAT_LZ4F");
+    assert(decompress(FORMAT_LZ4F, c, clen, d, 128) == 64, "decompress FORMAT_LZ4F");
+    j = 0;
+    while (j < 64) { assert(load8(d + j) == load8(src + j), "lz4f dispatch content"); j = j + 1; }
+    return 0;
+}
+
+fn test_enc_error_paths() {
+    # Poisoned encoder: second enc_write after a dst-overflow error returns
+    # the same sticky error, finish releases the lock and returns it too.
+    # (Give a tiny dst that can't hold the output of a 20 KB input.)
+    var src = alloc(20000);
+    var j = 0;
+    while (j < 20000) { store8(src + j, 32 + (j * 13) % 95); j = j + 1; }
+
+    # Need enough for the frame header + bw_init bookkeeping; too small
+    # for the compressed body. 128 bytes is comfortably under 20 KB output.
+    var c = alloc(128);
+    var ctx = deflate_enc_init(1, c, 128);   # level 1 fixed to force expansion
+    assert(ctx != 0, "err_paths init");
+    var rc1 = deflate_enc_write(ctx, src, 20000);
+    assert(rc1 < 0, "err_paths first write overflows");
+    # Poisoned: next write returns same error without corrupting further state
+    var rc2 = deflate_enc_write(ctx, src, 100);
+    assert(rc2 < 0 && rc2 == rc1, "err_paths sticky error");
+    # Finish propagates the error and releases the mutex
+    var fin = deflate_enc_finish(ctx);
+    assert(fin < 0, "err_paths finish returns error");
+    # Another compress after error must still work (mutex was released)
+    var c2 = alloc(64);
+    var d = alloc(64);
+    var small[5];
+    store8(&small, 65); store8(&small + 1, 66); store8(&small + 2, 67);
+    store8(&small + 3, 68); store8(&small + 4, 69);
+    var clen = deflate_compress(&small, 5, c2, 64);
+    assert(clen > 0, "err_paths: can compress after error release");
+    return 0;
+}
+
+fn test_enc_zero_write() {
+    # stream_write / enc_write with len=0 must be a no-op and return 0.
+    var c = alloc(128);
+    var ctx = deflate_enc_init(6, c, 128);
+    assert(ctx != 0, "zero_write init");
+    var nothing = alloc(1);
+    assert(deflate_enc_write(ctx, nothing, 0) == 0, "enc_write 0 bytes");
+    # Write real data; finish; decompress.
+    var src = alloc(5);
+    store8(src, 72); store8(src + 1, 73); store8(src + 2, 73);
+    store8(src + 3, 74); store8(src + 4, 75);
+    assert(deflate_enc_write(ctx, src, 5) == 0, "zero_write real");
+    var clen = deflate_enc_finish(ctx);
+    var d = alloc(8);
+    assert(deflate_decompress(c, clen, d, 8) == 5, "zero_write rt");
+    return 0;
+}
+
+fn test_stream_format_dispatch() {
+    # stream_compress_init must dispatch correctly for every supported
+    # format. Round-trip 12 bytes via each format's streaming path.
+    var src = alloc(12);
+    var i = 0;
+    while (i < 12) { store8(src + i, 65 + i); i = i + 1; }
+    var c = alloc(256);
+    var d = alloc(64);
+
+    # DEFLATE
+    var ctx = stream_compress_init(FORMAT_DEFLATE, 6, c, 256);
+    assert(ctx != 0, "stream dispatch DEFLATE");
+    stream_write(ctx, src, 12);
+    var clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream DEFLATE finish");
+    assert(deflate_decompress(c, clen, d, 64) == 12, "stream DEFLATE rt");
+
+    # ZLIB
+    ctx = stream_compress_init(FORMAT_ZLIB, 6, c, 256);
+    assert(ctx != 0, "stream dispatch ZLIB");
+    stream_write(ctx, src, 12);
+    clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream ZLIB finish");
+    assert(zlib_decompress(c, clen, d, 64) == 12, "stream ZLIB rt");
+
+    # GZIP
+    ctx = stream_compress_init(FORMAT_GZIP, 6, c, 256);
+    assert(ctx != 0, "stream dispatch GZIP");
+    stream_write(ctx, src, 12);
+    clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream GZIP finish");
+    assert(gzip_decompress(c, clen, d, 64) == 12, "stream GZIP rt");
+
+    # LZ4F
+    ctx = stream_compress_init(FORMAT_LZ4F, 6, c, 256);
+    assert(ctx != 0, "stream dispatch LZ4F");
+    stream_write(ctx, src, 12);
+    clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream LZ4F finish");
+    assert(lz4f_decompress(c, clen, d, 64) == 12, "stream LZ4F rt");
+
+    # FORMAT_LZ4 (raw block) — unsupported for streaming
+    assert(stream_compress_init(FORMAT_LZ4, 6, c, 256) == 0, "stream LZ4 raw unsupported");
     return 0;
 }
 
@@ -1298,6 +1487,8 @@ fn main() {
     test_lz4_buffer_too_small();
     test_xxhash32_known_vectors();
     test_xxhash32_incremental();
+    test_adler32_incremental();
+    test_crc32_incremental();
     test_deflate_enc_smoke();
     test_deflate_enc_chunked();
     test_deflate_enc_empty();
@@ -1309,8 +1500,14 @@ fn main() {
     test_zlib_enc_roundtrip();
     test_zlib_enc_empty();
     test_gzip_enc_roundtrip();
+    test_gzip_enc_empty();
     test_lz4f_enc_roundtrip();
     test_lz4f_enc_multiblock();
+    test_lz4f_enc_empty();
+    test_compress_dispatch_lz4f();
+    test_enc_error_paths();
+    test_enc_zero_write();
+    test_stream_format_dispatch();
     test_lz4f_roundtrip();
     test_lz4f_empty();
     test_lz4f_checksum();
