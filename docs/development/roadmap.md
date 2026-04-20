@@ -149,12 +149,38 @@ caller-provided workspace, and stripping the mutex. Not obviously
 needed yet — the AGNOS initrd loader hasn't asked — track as the next
 "hardening" step once a consumer wants it.
 
-### Cross-arch aarch64 builds
+### 📌 Cross-arch aarch64 builds (pinned — known issue)
 
-Yukti 2.1.1 added `cyrius build --aarch64` to CI. Sankoch is
-pure-compute (no syscalls in `src/`), so the x86 build is already
-trivially portable — but shipping prebuilt aarch64 binaries + an
-`aarch64` ELF check in CI would match the first-party pattern.
+**Status**: deferred. First-party parity with Yukti says we should
+carry aarch64 cross-builds in CI and release, but there's a current
+issue that has to be sorted before wiring it up. Not blocking v2.0.0.
+
+**What Yukti does** (for reference when we revisit):
+- CI step: `cyrius build --aarch64 src/main.cyr build/yukti-aarch64`
+  (plus the same for programs/ and fuzz/), with a graceful skip if
+  `cc5_aarch64` isn't in the toolchain bundle:
+
+  ```yaml
+  - name: Cross-build aarch64
+    run: |
+      if [ ! -x "$HOME/.cyrius/bin/cc5_aarch64" ]; then
+        echo "::warning::cc5_aarch64 not shipped with Cyrius $CYRIUS_VERSION"
+        exit 0
+      fi
+      CYRIUS_DCE=1 cyrius build --aarch64 src/main.cyr build/yukti-aarch64
+      for bin in build/*-aarch64; do
+        file "$bin" | grep -q "aarch64" || { echo "not aarch64 ELF"; exit 1; }
+      done
+  ```
+- Release step: mirrors above with `ship prebuilt aarch64 binary if
+  produced` best-effort copy in the archive step.
+
+**Why sankoch hasn't adopted yet**: `cross build is still an issue
+right now` (2026-04-19). When the underlying blocker clears, the
+work is a straight port of the Yukti pattern above — no sankoch
+source changes needed, since `src/` is pure-compute (no direct
+syscalls). Revisit this item once the toolchain / cross-compile
+path is unblocked.
 
 ---
 
@@ -183,30 +209,34 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary
+## File Summary (at v2.0.0)
 
 | File | Lines | Role |
 |------|-------|------|
-| types.cyr | 36 | Enums: formats, errors, limits |
-| checksum.cyr | 189 | Adler-32, CRC-32, xxHash32 |
-| bitreader.cyr | 99 | LSB-first bit-stream reader |
-| bitwriter.cyr | 142 | LSB-first bit-stream writer |
-| huffman.cyr | 491 | Huffman build/decode, fixed trees, optimal tree construction |
-| lz4.cyr | 457 | LZ4 block + frame compress/decompress |
-| lz77.cyr | 124 | Sliding window match-finder |
-| deflate.cyr | 1257 | DEFLATE decompress + compress, multi-block, dictionary support |
-| zlib.cyr | 102 | RFC 1950 wrapper + FDICT dictionary support |
-| gzip.cyr | 159 | RFC 1952 wrapper + concatenated member support |
-| lib.cyr | 115 | Public API, thread safety |
-| stream.cyr | 124 | Streaming compress/decompress |
-| **Total** | **3295** | |
+| types.cyr     |   37 | Enums: formats (incl. FORMAT_LZ4F), errors, limits |
+| checksum.cyr  |  469 | Adler-32 / CRC-32 / xxHash32 — batch + incremental state APIs |
+| bitreader.cyr |   99 | LSB-first bit-stream reader |
+| bitwriter.cyr |  143 | LSB-first bit-stream writer |
+| huffman.cyr   |  499 | Huffman build/decode, fixed trees, optimal tree construction |
+| lz77.cyr      |  150 | Sliding window match-finder + `lz77_rebase` for streaming slides |
+| lz4.cyr       |  647 | LZ4 block + frame de/compress + `lz4f_enc_*` streaming |
+| deflate.cyr   | 1607 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` streaming, dict |
+| zlib.cyr      |  169 | RFC 1950 wrapper + FDICT + `zlib_enc_*` streaming |
+| gzip.cyr      |  237 | RFC 1952 wrapper + concatenated members + `gzip_enc_*` streaming |
+| lib.cyr       |  150 | Public API, `_sankoch_mtx`, two-tier lock dispatch |
+| stream.cyr    |  162 | Streaming dispatch (`stream_compress_init/write/finish` → per-format `_enc_*`) |
+| **Total**     | **4369** | |
 
-Tests: 48 functions in sankoch.tcyr (856 lines) + git_object.tcyr (119 lines)
-Assertions: 5897 + 134 = 6031 total
+Assertions: 1028625 (sankoch.tcyr) + 134 (git_object.tcyr) = 1028759 total
+Fuzz: 1564 iterations across both harnesses (incl. 204 streaming
+round-trips covering all four `_enc_*` encoders)
 
 ## Dependencies
 
-**Zero.** Checksums (Adler-32, CRC-32) are inline. No sigil dependency. No stdlib beyond what `[deps.stdlib]` in `cyrius.cyml` provides.
+**Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
+incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
+`string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
+ship with Cyrius ≥ 5.4.7).
 
 ## Key References
 

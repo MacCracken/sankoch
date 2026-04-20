@@ -10,6 +10,8 @@ Every algorithm in sankoch traces to a published specification or paper.
 | RFC 1950 | ZLIB Compressed Data Format Specification v3.3 | zlib.cyr | https://www.rfc-editor.org/rfc/rfc1950 |
 | RFC 1952 | GZIP File Format Specification v4.3 | gzip.cyr | https://www.rfc-editor.org/rfc/rfc1952 |
 | LZ4 Block Format | LZ4 Block Compression Format Description | lz4.cyr | https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md |
+| LZ4 Frame Format | LZ4 Frame Format Description (with content checksum + multi-block) | lz4.cyr | https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md |
+| xxHash32 Spec | xxHash32 reference specification (stripe accumulators, primes) | checksum.cyr | https://github.com/Cyan4973/xxHash/blob/dev/doc/xxhash_spec.md |
 
 ## Foundational Papers
 
@@ -39,5 +41,9 @@ Every algorithm in sankoch traces to a published specification or paper.
 
 | Algorithm | Spec | Used By | Notes |
 |-----------|------|---------|-------|
-| Adler-32 | RFC 1950, Section 2.2 | zlib.cyr | Two running sums mod 65521 |
-| CRC-32 | RFC 1952, Section 8 | gzip.cyr | Polynomial 0xEDB88320 (reflected) |
+| Adler-32 | RFC 1950, Section 2.2 | zlib.cyr | Two running sums mod 65521; deferred-modulo inner loop with 16-byte unroll (batch) |
+| CRC-32   | RFC 1952, Section 8  | gzip.cyr | Polynomial 0xEDB88320 (reflected); 8-byte unrolled table lookup |
+| xxHash32 | xxHash spec (Cyan4973) | lz4.cyr (frame format), tests | 4-parallel-stripe accumulator for len ≥ 16; short path for len < 16. PRIME4 in the 4-byte tail — omitting it is a spec-divergent bug we shipped pre-v1.6.1 and have regression-tested against `xxh32sum` since |
+
+All three are also exposed as incremental APIs (`<name>_init` /
+`_update` / `_final`) for streaming consumers.

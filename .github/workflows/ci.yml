@@ -88,6 +88,11 @@ jobs:
           CYRIUS_DCE=1 cyrius build src/lib.cyr build/sankoch
           echo "sankoch: $(wc -c < build/sankoch) bytes"
 
+      - name: Verify ELF
+        # Catch a degenerate codegen that silently produces a non-ELF.
+        # 0x7F 'E' 'L' 'F' = 7f45 4c46.
+        run: xxd -l 4 build/sankoch | grep -q "7f45 4c46"
+
       - name: Test
         run: |
           cyrius test tests/tcyr/sankoch.tcyr

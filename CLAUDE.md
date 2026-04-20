@@ -37,6 +37,10 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 - **Toolchain**: Cyrius 5.4.7 (`cyrius.cyml: cyrius = "5.4.7"`)
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
+- **Distribution**: 2.0.0 lands in the next Cyrius lang release as
+  `lib/sankoch.cyr` in the stdlib. Consumers import it via
+  `include "lib/sankoch.cyr"` once Cyrius ships; no separate
+  dependency declaration needed in their `cyrius.cyml`.
 
 ## Consumers
 
@@ -77,23 +81,23 @@ cyrius distlib                           # → dist/sankoch.cyr
 
 ```
 src/
-  lib.cyr          — Include chain (stdlib + domain modules) + public API
-  types.cyr        — Enums: formats, errors, limits, magic bytes
-  checksum.cyr     — Adler-32, CRC-32, xxHash32 (inline)
+  lib.cyr          — Include chain (stdlib + domain modules) + public API + _sankoch_mtx
+  types.cyr        — Enums: formats (incl. FORMAT_LZ4F), errors, limits
+  checksum.cyr     — Adler-32 / CRC-32 / xxHash32, batch + incremental (_init/_update/_final)
   bitreader.cyr    — LSB-first bit-stream reader (DEFLATE)
   bitwriter.cyr    — LSB-first bit-stream writer (DEFLATE)
   huffman.cyr      — Huffman build/decode, fixed trees, optimal trees
-  lz77.cyr         — Sliding window match-finder (3-byte hash)
-  lz4.cyr          — LZ4 block + frame compress/decompress
-  deflate.cyr      — DEFLATE (RFC 1951) de/compress, multi-block, dict
-  zlib.cyr         — zlib (RFC 1950) wrapper + FDICT
-  gzip.cyr         — gzip (RFC 1952) wrapper + concatenated members
-  stream.cyr       — Streaming de/compress (buffered)
+  lz77.cyr         — Sliding window match-finder + lz77_rebase (for streaming slide)
+  lz4.cyr          — LZ4 block + frame de/compress + lz4f_enc_*
+  deflate.cyr      — DEFLATE de/compress, adaptive blocks, dict, deflate_enc_* streaming
+  zlib.cyr         — zlib wrapper + FDICT + zlib_enc_*
+  gzip.cyr         — gzip wrapper + concatenated members + gzip_enc_*
+  stream.cyr       — Streaming dispatch (stream_compress_init / write / finish → *_enc_*)
 tests/tcyr/        — test suites (sankoch.tcyr, git_object.tcyr)
 tests/bcyr/        — benchmarks (sankoch.bcyr)
-fuzz/              — fuzz harnesses (lz4, deflate) — out-of-CI
+fuzz/              — fuzz harnesses (lz4, deflate — both wired into CI)
 dist/
-  sankoch.cyr      — distlib bundle (`cyrius distlib`)
+  sankoch.cyr      — distlib bundle (`cyrius distlib`); ships as lib/sankoch.cyr in Cyrius stdlib
 cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] modules)
 ```
 
@@ -130,7 +134,7 @@ bundle.
 1. Cleanliness: `cyrius build` (0 warnings for library path),
    `cyrius lint` (0 warnings), `cyrius fmt --check` diff-clean,
    `cyrius vet src/lib.cyr` clean
-2. Test sweep: 1028759+ assertions pass; fuzz harness wire-up compiles
+2. Test sweep: both tcyr suites green, fuzz harnesses green
 3. Benchmark baseline: `cyrius bench tests/bcyr/sankoch.bcyr`
 4. Internal deep review — gaps, optimizations, correctness
 5. External research — RFC errata / zlib / lz4 reference changes
@@ -153,7 +157,7 @@ bundle.
 
 ### Closeout Pass (before every minor/major bump)
 
-1. Full test suite — 287122+ pass, 0 failures
+1. Full test suite — 0 failures on both tcyr suites
 2. Benchmark run — `cyrius bench`, save CSV
 3. Dead code audit — review `dead:` list from `cyrius build`;
    unreferenced public functions should be removed or justified

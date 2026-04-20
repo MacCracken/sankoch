@@ -33,12 +33,18 @@ compile errors across the full include chain before running tests.
 ### Test
 
 ```bash
-cyrius test tests/tcyr/sankoch.tcyr      # 5897 assertions
+cyrius test tests/tcyr/sankoch.tcyr      # 1028625 assertions
 cyrius test tests/tcyr/git_object.tcyr   # 134 assertions (git integration)
 ```
 
 Both tcyr files include `src/lib.cyr` (full chain) + `lib/assert.cyr`.
 No manual stdlib imports — `src/lib.cyr` owns that.
+
+The bulk of `sankoch.tcyr` assertions come from per-byte round-trip
+checks in the streaming tests: every byte of each 65536 / 100000 /
+150000 / 200000-byte test input is asserted equal after round-trip.
+The assertion count climbs proportionally with test input size, not
+with "number of distinct test functions" — that's by design.
 
 ### Benchmark
 
@@ -87,32 +93,40 @@ mv src/checksum.cyr.new src/checksum.cyr
 
 (A direct in-place mode may land in a later Cyrius version.)
 
-### Fuzz (currently out-of-CI)
+### Fuzz
 
 ```bash
-cyrius build fuzz/fuzz_lz4.fcyr     build/fuzz_lz4
-cyrius build fuzz/fuzz_deflate.fcyr build/fuzz_deflate
-./build/fuzz_lz4 && ./build/fuzz_deflate
+cyrius fuzz                          # auto-discovers fuzz/*.fcyr
+# or run one harness at a time:
+cyrius build fuzz/fuzz_lz4.fcyr     build/fuzz_lz4 && ./build/fuzz_lz4
+cyrius build fuzz/fuzz_deflate.fcyr build/fuzz_deflate && ./build/fuzz_deflate
 ```
 
-Round-trip fuzzing at varying sizes + malformed-input survival. The
-harnesses compile clean under 5.4.7 but are not wired into CI pending a
-dedicated runtime-stability pass — tracked on the roadmap.
+Round-trip fuzzing at varying sizes + malformed-input survival.
+`fuzz_lz4` runs 500 round-trip + 200 malformed iterations; `fuzz_deflate`
+runs 240 + 100 for DEFLATE itself, 160 each for zlib/gzip wrappers,
+plus 204 streaming iterations across all four streaming encoders
+(DEFLATE / zlib / gzip / LZ4F). Both harnesses run in CI per
+`.github/workflows/ci.yml` — a non-zero exit (assert fires or crash)
+fails the build.
 
 ## Release flow
 
 ```bash
-./scripts/version-bump.sh 1.4.0          # updates VERSION
-# edit CHANGELOG.md — add [1.4.0] section with release date
+./scripts/version-bump.sh 2.1.0          # updates VERSION
+# edit CHANGELOG.md — add [2.1.0] section with release date
 cyrius distlib                           # regenerate bundle with new version header
-git commit -am "release 1.4.0"
-git tag 1.4.0                            # bare semver, no v prefix
+git commit -am "release 2.1.0"
+git tag 2.1.0                            # bare semver, no v prefix
 git push --tags                          # triggers .github/workflows/release.yml
 ```
 
-The release workflow: runs CI → verifies `VERSION == tag` → builds +
-tests + regenerates bundle → archives src tarball + `dist/sankoch.cyr`
-+ `cyrius.lock` + SHA256SUMS → creates a GitHub Release.
+The release workflow: runs CI → verifies `VERSION == tag` → builds
+with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates
+bundle → archives src tarball + `dist/sankoch.cyr` + SHA256SUMS →
+creates a GitHub Release. No `cyrius.lock` is shipped — sankoch is
+stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.4.7"`
+in `cyrius.cyml` is the lockfile.
 
 ## Gotchas
 
