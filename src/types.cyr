@@ -3,10 +3,11 @@
 
 # Compression formats
 enum Format {
-    FORMAT_LZ4 = 1;
+    FORMAT_LZ4 = 1;       # Raw LZ4 block format (no frame envelope)
     FORMAT_DEFLATE = 2;
     FORMAT_ZLIB = 3;
     FORMAT_GZIP = 4;
+    FORMAT_LZ4F = 5;      # LZ4 frame format (magic + header + blocks + trailer)
 }
 
 # Error codes

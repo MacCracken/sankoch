@@ -247,10 +247,43 @@ fn test_xxhash32_known_vectors() {
     store8(&s+36,105); store8(&s+37,111); store8(&s+38,110);
     assert(xxhash32(&s, 39) == 3794352943, "xxh32 'Nobody inspects…'");
 
-    # 64 zero bytes — 0x56328790 (4 full stripes, no tail)
     j = 0;
     while (j < 64) { store8(buf + j, 0); j = j + 1; }
     assert(xxhash32(buf, 64) == 1446152080, "xxh32 64×0x00");
+
+    return 0;
+}
+
+fn test_xxhash32_incremental() {
+    # Streaming xxhash32 must match batch for every input size, regardless
+    # of how the bytes are fed in. Boundary cases around 16-byte stripe.
+    var buf = alloc(200);
+    var j = 0;
+    while (j < 200) { store8(buf + j, (j * 37 + 11) % 256); j = j + 1; }
+
+    # 1. Total all at once (update with full len)
+    var st = xxhash32_init();
+    xxhash32_update(st, buf, 67);
+    assert(xxhash32_final(st) == xxhash32(buf, 67), "xxh32 inc one-shot 67B");
+
+    # 2. Byte-at-a-time for sizes spanning the stripe boundary.
+    j = 0;
+    while (j <= 40) {
+        st = xxhash32_init();
+        var k = 0;
+        while (k < j) { xxhash32_update(st, buf + k, 1); k = k + 1; }
+        assert(xxhash32_final(st) == xxhash32(buf, j), "xxh32 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    # 3. Varied chunk sizes totaling 150B (multiple stripes + tail).
+    st = xxhash32_init();
+    xxhash32_update(st, buf + 0, 5);       # short of stripe
+    xxhash32_update(st, buf + 5, 12);      # fills + part of second stripe
+    xxhash32_update(st, buf + 17, 16);     # exactly one stripe
+    xxhash32_update(st, buf + 33, 100);    # multiple stripes
+    xxhash32_update(st, buf + 133, 17);    # stripe + tail
+    assert(xxhash32_final(st) == xxhash32(buf, 150), "xxh32 inc varied chunks");
 
     return 0;
 }
@@ -449,6 +482,138 @@ fn test_deflate_enc_varied_chunks() {
     assert(dlen == N, "varied_chunks dlen");
     j = 0;
     while (j < N) { assert(load8(d + j) == load8(src + j), "varied_chunks content"); j = j + 1; }
+    return 0;
+}
+
+fn test_zlib_enc_roundtrip() {
+    # 80K text fed in varied chunks, decoded via zlib_decompress.
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 13 + j / 7) % 95); j = j + 1; }
+    var c = alloc(N + 2048);
+    var d = alloc(N);
+    var ctx = zlib_enc_init(6, c, N + 2048);
+    assert(ctx != 0, "zlib_enc init");
+    # CMF=0x78, FLG=0x01 header bytes written up front
+    assert(load8(c) == 120 && load8(c + 1) == 1, "zlib_enc header");
+    var chunks[4];
+    store64(&chunks + 0 * 8, 1);
+    store64(&chunks + 1 * 8, 1024);
+    store64(&chunks + 2 * 8, 4096);
+    store64(&chunks + 3 * 8, N);
+    var fed = 0;
+    var ci = 0;
+    while (fed < N) {
+        var take = load64(&chunks + (ci % 4) * 8);
+        if (take > N - fed) { take = N - fed; }
+        assert(zlib_enc_write(ctx, src + fed, take) == 0, "zlib_enc write");
+        fed = fed + take;
+        ci = ci + 1;
+    }
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 0, "zlib_enc finish");
+
+    var dlen = zlib_decompress(c, clen, d, N);
+    assert(dlen == N, "zlib_enc rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "zlib_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_enc_roundtrip() {
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 19 + j / 3) % 95); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    var ctx = lz4f_enc_init(c, N + 4096);
+    assert(ctx != 0, "lz4f_enc init");
+    # Magic 0x184D2204 little-endian = 04 22 4D 18
+    assert(load8(c) == 4 && load8(c + 1) == 34 && load8(c + 2) == 77 && load8(c + 3) == 24,
+        "lz4f_enc magic");
+    var fed = 0;
+    while (fed < N) {
+        var take = 3000;
+        if (take > N - fed) { take = N - fed; }
+        assert(lz4f_enc_write(ctx, src + fed, take) == 0, "lz4f_enc write");
+        fed = fed + take;
+    }
+    var clen = lz4f_enc_finish(ctx);
+    assert(clen > 0, "lz4f_enc finish");
+
+    var dlen = lz4f_decompress(c, clen, d, N);
+    assert(dlen == N, "lz4f_enc rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_enc_multiblock() {
+    # 150 KB — crosses the 64 KB block boundary multiple times, tests
+    # per-block emit + incremental content-checksum across blocks.
+    var N = 150000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 17)); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    var ctx = lz4f_enc_init(c, N + 4096);
+    # Varied chunk sizes force cross-block buffer boundaries.
+    var fed = 0;
+    while (fed < N) {
+        var take = 7777;
+        if (take > N - fed) { take = N - fed; }
+        assert(lz4f_enc_write(ctx, src + fed, take) == 0, "lz4f_enc mb write");
+        fed = fed + take;
+    }
+    var clen = lz4f_enc_finish(ctx);
+    assert(clen > 0, "lz4f_enc mb finish");
+    var dlen = lz4f_decompress(c, clen, d, N);
+    assert(dlen == N, "lz4f_enc mb rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f_enc mb rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_gzip_enc_roundtrip() {
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 41 + j / 5) % 95); j = j + 1; }
+    var c = alloc(N + 2048);
+    var d = alloc(N);
+    var ctx = gzip_enc_init(6, c, N + 2048);
+    assert(ctx != 0, "gzip_enc init");
+    # Magic bytes 0x1f 0x8b
+    assert(load8(c) == 31 && load8(c + 1) == 139, "gzip_enc magic");
+    var fed = 0;
+    while (fed < N) {
+        var take = 3000;
+        if (take > N - fed) { take = N - fed; }
+        assert(gzip_enc_write(ctx, src + fed, take) == 0, "gzip_enc write");
+        fed = fed + take;
+    }
+    var clen = gzip_enc_finish(ctx);
+    assert(clen > 0, "gzip_enc finish");
+
+    var dlen = gzip_decompress(c, clen, d, N);
+    assert(dlen == N, "gzip_enc rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "gzip_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_zlib_enc_empty() {
+    # Minimum viable: 2 hdr + empty-dynamic-block (~16B) + 4 adler = ~22B
+    var c = alloc(64);
+    var ctx = zlib_enc_init(6, c, 64);
+    assert(ctx != 0, "zlib_enc empty init");
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 0, "zlib_enc empty finish");
+    var d = alloc(16);
+    assert(zlib_decompress(c, clen, d, 16) == 0, "zlib_enc empty decompress");
     return 0;
 }
 
@@ -978,7 +1143,10 @@ fn test_dynamic_vs_fixed() {
 # ================================================================
 
 fn test_stream_compress() {
-    var ctx = stream_compress_init(FORMAT_ZLIB, 6);
+    # "Hello, world" (12 bytes) split across two stream_write calls,
+    # now using the incremental encoder dispatch via stream.cyr.
+    var out = alloc(128);
+    var ctx = stream_compress_init(FORMAT_ZLIB, 6, out, 128);
     var c1 = alloc(5);
     store8(c1 + 0, 72); store8(c1 + 1, 101); store8(c1 + 2, 108);
     store8(c1 + 3, 108); store8(c1 + 4, 111);
@@ -987,9 +1155,7 @@ fn test_stream_compress() {
     store8(c2 + 3, 111); store8(c2 + 4, 114); store8(c2 + 5, 108); store8(c2 + 6, 100);
     stream_write(ctx, c1, 5);
     stream_write(ctx, c2, 7);
-    assert(stream_buffered(ctx) == 12, "stream buffered 12");
-    var out = alloc(128);
-    var clen = stream_compress_finish(ctx, out, 128);
+    var clen = stream_compress_finish(ctx);
     assert(clen > 0, "stream compress finish");
     var d = alloc(64);
     assert(decompress(FORMAT_ZLIB, out, clen, d, 64) == 12, "stream compress rt");
@@ -1016,20 +1182,25 @@ fn test_stream_decompress() {
 }
 
 fn test_stream_reset() {
-    var ctx = stream_compress_init(FORMAT_DEFLATE, 1);
-    var data = alloc(8);
+    # stream_reset is meaningful only on decompress contexts now
+    # (compressors can't be rewound — output has already been emitted).
+    # Verify reset empties the decompress input buffer.
+    var src = alloc(8);
     var i = 0;
-    while (i < 8) { store8(data + i, i + 65); i = i + 1; }
-    stream_write(ctx, data, 8);
-    assert(stream_buffered(ctx) == 8, "buffered before reset");
-    stream_reset(ctx);
-    assert(stream_buffered(ctx) == 0, "buffered after reset");
-    stream_write(ctx, data, 4);
+    while (i < 8) { store8(src + i, i + 65); i = i + 1; }
     var c = alloc(64);
+    var clen = gzip_compress(src, 8, c, 64);
+
+    var ctx = stream_decompress_init(FORMAT_GZIP);
+    stream_write(ctx, c, clen);
+    assert(stream_buffered(ctx) == clen, "dec buffered before reset");
+    stream_reset(ctx);
+    assert(stream_buffered(ctx) == 0, "dec buffered after reset");
+
+    # After reset, we can reuse the context for a fresh stream.
+    stream_write(ctx, c, clen);
     var d = alloc(64);
-    var clen = stream_compress_finish(ctx, c, 64);
-    assert(clen > 0, "compress after reset");
-    assert(deflate_decompress(c, clen, d, 64) == 4, "decompress after reset");
+    assert(stream_decompress_finish(ctx, d, 64) == 8, "dec rt after reset");
     return 0;
 }
 
@@ -1126,6 +1297,7 @@ fn main() {
     test_lz4_roundtrip_1kb();
     test_lz4_buffer_too_small();
     test_xxhash32_known_vectors();
+    test_xxhash32_incremental();
     test_deflate_enc_smoke();
     test_deflate_enc_chunked();
     test_deflate_enc_empty();
@@ -1134,6 +1306,11 @@ fn main() {
     test_deflate_enc_levels();
     test_deflate_enc_window_boundary();
     test_deflate_enc_varied_chunks();
+    test_zlib_enc_roundtrip();
+    test_zlib_enc_empty();
+    test_gzip_enc_roundtrip();
+    test_lz4f_enc_roundtrip();
+    test_lz4f_enc_multiblock();
     test_lz4f_roundtrip();
     test_lz4f_empty();
     test_lz4f_checksum();

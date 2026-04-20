@@ -71,7 +71,7 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
 
     # DEFLATE payload starts at offset
     var deflate_len = src_len - offset;
-    var dlen = deflate_decompress(src + offset, deflate_len, dst, dst_cap);
+    var dlen = _deflate_decompress_inner(src + offset, deflate_len, dst, dst_cap);
     if (dlen < 0) { return dlen; }
 
     # Trailer starts right after the DEFLATE stream consumed bytes
@@ -96,6 +96,14 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
 
 # Decompress a gzip stream (supports concatenated members per RFC 1952).
 fn gzip_decompress(src, src_len, dst, dst_cap) {
+    _sankoch_lock();
+    var r = _gzip_decompress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _gzip_decompress_inner(src, src_len, dst, dst_cap) {
     var total = 0;
     var pos = 0;
 
@@ -117,11 +125,80 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
 
 # Compress data into a gzip stream.
 fn gzip_compress(src, src_len, dst, dst_cap) {
-    return gzip_compress_level(src, src_len, dst, dst_cap, 6);
+    _sankoch_lock();
+    var r = _gzip_compress_level_inner(src, src_len, dst, dst_cap, 6);
+    _sankoch_unlock();
+    return r;
+}
+
+# Streaming gzip encoder (v1.7.0). Wraps deflate_enc_* with the 10-byte
+# gzip header and a trailing little-endian CRC-32 + ISIZE (mod 2^32).
+#
+# Layout (32 bytes):
+#   +0:  inner deflate_enc ctx pointer
+#   +8:  crc32 incremental state pointer
+#   +16: dst pointer (for appending the trailer)
+#   +24: total_in (cumulative bytes written — becomes ISIZE)
+fn gzip_enc_init(level, dst, dst_cap) {
+    if (dst_cap < 18) { return 0; }   # 10 hdr + 8 trailer minimum
+
+    # 10-byte header identical to gzip_compress
+    store8(dst + 0, 31);    store8(dst + 1, 139);   store8(dst + 2, 8);
+    store8(dst + 3, 0);     store8(dst + 4, 0);     store8(dst + 5, 0);
+    store8(dst + 6, 0);     store8(dst + 7, 0);     store8(dst + 8, 0);
+    store8(dst + 9, 255);
+
+    var inner = deflate_enc_init(level, dst + 10, dst_cap - 18);
+    if (inner == 0) { return 0; }
+
+    var ctx = alloc(32);
+    store64(ctx, inner);
+    store64(ctx + 8, crc32_init());
+    store64(ctx + 16, dst);
+    store64(ctx + 24, 0);
+    return ctx;
+}
+
+fn gzip_enc_write(ctx, input, in_len) {
+    if (in_len <= 0) { return 0; }
+    crc32_update(load64(ctx + 8), input, in_len);
+    store64(ctx + 24, load64(ctx + 24) + in_len);
+    return deflate_enc_write(load64(ctx), input, in_len);
+}
+
+fn gzip_enc_finish(ctx) {
+    var clen = deflate_enc_finish(load64(ctx));
+    if (clen < 0) { return clen; }
+
+    var dst = load64(ctx + 16);
+    var c = crc32_final(load64(ctx + 8));
+    var isize = load64(ctx + 24) & 4294967295;
+    var pos = 10 + clen;
+
+    # CRC-32 little-endian
+    store8(dst + pos, c & 255);
+    store8(dst + pos + 1, (c >> 8) & 255);
+    store8(dst + pos + 2, (c >> 16) & 255);
+    store8(dst + pos + 3, (c >> 24) & 255);
+    # ISIZE little-endian
+    store8(dst + pos + 4, isize & 255);
+    store8(dst + pos + 5, (isize >> 8) & 255);
+    store8(dst + pos + 6, (isize >> 16) & 255);
+    store8(dst + pos + 7, (isize >> 24) & 255);
+
+    return pos + 8;   # 10 hdr + clen deflate + 4 crc + 4 isize
 }
 
 # Compress data into a gzip stream with explicit compression level.
 fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
+    _sankoch_lock();
+    var r = _gzip_compress_level_inner(src, src_len, dst, dst_cap, level);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _gzip_compress_level_inner(src, src_len, dst, dst_cap, level) {
     # Need: 10-byte header + DEFLATE + 8-byte trailer
     if (dst_cap < 18) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
@@ -138,7 +215,7 @@ fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
     store8(dst + 9, 255);  # OS = unknown
 
     # Compress DEFLATE into dst+10
-    var clen = deflate_compress_level(src, src_len, dst + 10, dst_cap - 18, level);
+    var clen = _deflate_compress_level_inner(src, src_len, dst + 10, dst_cap - 18, level);
     if (clen < 0) { return clen; }
 
     # Write trailer: CRC-32 (little-endian) + ISIZE (little-endian)

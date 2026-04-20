@@ -192,6 +192,14 @@ fn lz4_decompress(src, src_len, dst, dst_cap) {
 # Uses a hash table on 4-byte sequences to find matches.
 # Greedy: takes the first match found (no optimal parsing).
 fn lz4_compress(src, src_len, dst, dst_cap) {
+    _sankoch_lock();
+    var r = _lz4_compress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _lz4_compress_inner(src, src_len, dst, dst_cap) {
     if (src_len == 0) {
         return 0;
     }
@@ -301,6 +309,14 @@ enum LZ4F {
 
 # Compress data into an LZ4 frame.
 fn lz4f_compress(src, src_len, dst, dst_cap) {
+    _sankoch_lock();
+    var r = _lz4f_compress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _lz4f_compress_inner(src, src_len, dst, dst_cap) {
     # Frame overhead: 7 (header) + 4 (block size) + 4 (end mark) + 4 (content checksum) = 19
     if (dst_cap < 19) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
@@ -358,7 +374,7 @@ fn lz4f_compress(src, src_len, dst, dst_cap) {
         var block_cap = dst_cap - dp - 4 - 4 - 4;
         if (block_cap < 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
-        var block_len = lz4_compress(src + sp, this_chunk, dst + block_start, block_cap);
+        var block_len = _lz4_compress_inner(src + sp, this_chunk, dst + block_start, block_cap);
         if (block_len < 0) { return block_len; }
 
         if (block_len >= this_chunk) {
@@ -397,6 +413,166 @@ fn lz4f_compress(src, src_len, dst, dst_cap) {
     store8(dst + dp + 3, (cc >> 24) & 255);
     dp = dp + 4;
 
+    return dp;
+}
+
+# Streaming LZ4F encoder (v1.7.0). Accumulates input into a 64 KB buffer,
+# emits one LZ4 block per full buffer (B.Indep=1 — each block compresses
+# independently, so buffering to the block boundary is correct). Content
+# checksum accumulates incrementally across writes.
+#
+# Layout (64 bytes):
+#   +0:  dst pointer
+#   +8:  dst_cap
+#   +16: dp (next write offset in dst)
+#   +24: block_buf pointer (LZ4F_BLOCK_MAX bytes)
+#   +32: block_buf_len (0..LZ4F_BLOCK_MAX)
+#   +40: cc_state (xxhash32 incremental state ptr)
+#   +48: err (sticky; negative poisons the encoder)
+#   +56: (reserved)
+
+fn _lz4f_enc_err(ctx) { return load64(ctx + 48); }
+
+# Compress ctx.block_buf[0..block_buf_len] as one LZ4 block into dst,
+# writing the 4-byte size header + payload. Updates dp. Returns 0 or
+# negative error (stored into ctx.err and returned).
+fn _lz4f_enc_emit_block(ctx) {
+    var dst = load64(ctx);
+    var dst_cap = load64(ctx + 8);
+    var dp = load64(ctx + 16);
+    var block_buf = load64(ctx + 24);
+    var block_buf_len = load64(ctx + 32);
+
+    # Reserve room for: this block size header (4) + end mark (4) + content checksum (4).
+    var block_cap = dst_cap - dp - 4 - 4 - 4;
+    if (block_cap < 0) {
+        store64(ctx + 48, 0 - ERR_BUFFER_TOO_SMALL);
+        return 0 - ERR_BUFFER_TOO_SMALL;
+    }
+
+    var block_len = _lz4_compress_inner(block_buf, block_buf_len, dst + dp + 4, block_cap);
+    if (block_len < 0) {
+        store64(ctx + 48, block_len);
+        return block_len;
+    }
+
+    if (block_len >= block_buf_len) {
+        # Incompressible — emit as uncompressed block (MSB=1).
+        if (dp + 4 + block_buf_len + 4 + 4 > dst_cap) {
+            store64(ctx + 48, 0 - ERR_BUFFER_TOO_SMALL);
+            return 0 - ERR_BUFFER_TOO_SMALL;
+        }
+        var usize = block_buf_len | 2147483648;
+        store8(dst + dp, usize & 255);
+        store8(dst + dp + 1, (usize >> 8) & 255);
+        store8(dst + dp + 2, (usize >> 16) & 255);
+        store8(dst + dp + 3, (usize >> 24) & 255);
+        dp = dp + 4;
+        var i = 0;
+        while (i < block_buf_len) {
+            store8(dst + dp + i, load8(block_buf + i));
+            i = i + 1;
+        }
+        dp = dp + block_buf_len;
+    } else {
+        store8(dst + dp, block_len & 255);
+        store8(dst + dp + 1, (block_len >> 8) & 255);
+        store8(dst + dp + 2, (block_len >> 16) & 255);
+        store8(dst + dp + 3, (block_len >> 24) & 255);
+        dp = dp + 4 + block_len;
+    }
+    store64(ctx + 16, dp);
+    store64(ctx + 32, 0);
+    return 0;
+}
+
+fn lz4f_enc_init(dst, dst_cap) {
+    if (dst_cap < 19) { return 0; }   # 7 hdr + 4 end + 4 cc + 4 min block
+    _sankoch_lock();
+
+    # Frame header (7 bytes): magic 0x184D2204 LE + FLG 0x64 + BD 0x40 + HC
+    store8(dst, 4); store8(dst + 1, 34); store8(dst + 2, 77); store8(dst + 3, 24);
+    store8(dst + 4, 100);  # FLG
+    store8(dst + 5, 64);   # BD = 64KB block max
+    var hc_buf[2];
+    store8(&hc_buf, 100); store8(&hc_buf + 1, 64);
+    var hc = (xxhash32(&hc_buf, 2) >> 8) & 255;
+    store8(dst + 6, hc);
+
+    var ctx = alloc(64);
+    store64(ctx, dst);
+    store64(ctx + 8, dst_cap);
+    store64(ctx + 16, 7);              # dp past header
+    store64(ctx + 24, alloc(LZ4F_BLOCK_MAX));
+    store64(ctx + 32, 0);              # block_buf_len
+    store64(ctx + 40, xxhash32_init());
+    store64(ctx + 48, 0);
+    return ctx;
+}
+
+fn lz4f_enc_write(ctx, input, in_len) {
+    if (_lz4f_enc_err(ctx) < 0) { return _lz4f_enc_err(ctx); }
+    if (in_len <= 0) { return 0; }
+
+    xxhash32_update(load64(ctx + 40), input, in_len);
+
+    var block_buf = load64(ctx + 24);
+    var block_buf_len = load64(ctx + 32);
+    var off = 0;
+    while (off < in_len) {
+        var room = LZ4F_BLOCK_MAX - block_buf_len;
+        var take = in_len - off;
+        if (take > room) { take = room; }
+        var i = 0;
+        while (i < take) {
+            store8(block_buf + block_buf_len + i, load8(input + off + i));
+            i = i + 1;
+        }
+        block_buf_len = block_buf_len + take;
+        off = off + take;
+        if (block_buf_len == LZ4F_BLOCK_MAX) {
+            store64(ctx + 32, block_buf_len);
+            var rc = _lz4f_enc_emit_block(ctx);
+            if (rc < 0) { return rc; }
+            block_buf_len = 0;
+        }
+    }
+    store64(ctx + 32, block_buf_len);
+    return 0;
+}
+
+fn lz4f_enc_finish(ctx) {
+    if (_lz4f_enc_err(ctx) < 0) {
+        _sankoch_unlock();
+        return _lz4f_enc_err(ctx);
+    }
+
+    # Flush any pending partial block.
+    if (load64(ctx + 32) > 0) {
+        var rc = _lz4f_enc_emit_block(ctx);
+        if (rc < 0) { _sankoch_unlock(); return rc; }
+    }
+
+    var dst = load64(ctx);
+    var dst_cap = load64(ctx + 8);
+    var dp = load64(ctx + 16);
+
+    if (dp + 8 > dst_cap) { _sankoch_unlock(); return 0 - ERR_BUFFER_TOO_SMALL; }
+
+    # End mark (4 zero bytes)
+    store8(dst + dp, 0); store8(dst + dp + 1, 0);
+    store8(dst + dp + 2, 0); store8(dst + dp + 3, 0);
+    dp = dp + 4;
+
+    # Content checksum LE
+    var cc = xxhash32_final(load64(ctx + 40));
+    store8(dst + dp, cc & 255);
+    store8(dst + dp + 1, (cc >> 8) & 255);
+    store8(dst + dp + 2, (cc >> 16) & 255);
+    store8(dst + dp + 3, (cc >> 24) & 255);
+    dp = dp + 4;
+
+    _sankoch_unlock();
     return dp;
 }
 

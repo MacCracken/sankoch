@@ -71,17 +71,22 @@ fn compress_level(format, src, src_len, dst, dst_cap, level) {
 }
 
 fn _compress_inner(format, src, src_len, dst, dst_cap, level) {
+    # We already hold _sankoch_mtx here (taken in compress_level). Dispatch
+    # to the unlocked inner entries to avoid re-locking.
     if (format == FORMAT_LZ4) {
-        return lz4_compress(src, src_len, dst, dst_cap);
+        return _lz4_compress_inner(src, src_len, dst, dst_cap);
     }
     if (format == FORMAT_DEFLATE) {
-        return deflate_compress_level(src, src_len, dst, dst_cap, level);
+        return _deflate_compress_level_inner(src, src_len, dst, dst_cap, level);
     }
     if (format == FORMAT_ZLIB) {
-        return zlib_compress_level(src, src_len, dst, dst_cap, level);
+        return _zlib_compress_level_inner(src, src_len, dst, dst_cap, level);
     }
     if (format == FORMAT_GZIP) {
-        return gzip_compress_level(src, src_len, dst, dst_cap, level);
+        return _gzip_compress_level_inner(src, src_len, dst, dst_cap, level);
+    }
+    if (format == FORMAT_LZ4F) {
+        return _lz4f_compress_inner(src, src_len, dst, dst_cap);
     }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
@@ -96,17 +101,23 @@ fn decompress(format, src, src_len, dst, dst_cap) {
 }
 
 fn _decompress_inner(format, src, src_len, dst, dst_cap) {
+    # We already hold _sankoch_mtx here. lz4_decompress and lz4f_decompress
+    # touch no shared state (no lock needed). DEFLATE-based formats dispatch
+    # to their unlocked inners.
     if (format == FORMAT_LZ4) {
         return lz4_decompress(src, src_len, dst, dst_cap);
     }
     if (format == FORMAT_DEFLATE) {
-        return deflate_decompress(src, src_len, dst, dst_cap);
+        return _deflate_decompress_inner(src, src_len, dst, dst_cap);
     }
     if (format == FORMAT_ZLIB) {
-        return zlib_decompress(src, src_len, dst, dst_cap);
+        return _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0);
     }
     if (format == FORMAT_GZIP) {
-        return gzip_decompress(src, src_len, dst, dst_cap);
+        return _gzip_decompress_inner(src, src_len, dst, dst_cap);
+    }
+    if (format == FORMAT_LZ4F) {
+        return lz4f_decompress(src, src_len, dst, dst_cap);
     }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }

@@ -334,6 +334,14 @@ fn deflate_bytes_consumed() {
 # dst_cap: capacity of output buffer
 # Returns: decompressed length, or negative error code.
 fn deflate_decompress(src, src_len, dst, dst_cap) {
+    _sankoch_lock();
+    var r = _deflate_decompress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _deflate_decompress_inner(src, src_len, dst, dst_cap) {
     _deflate_init_tables();
 
     var br = br_init(src, src_len);
@@ -400,6 +408,14 @@ fn deflate_decompress(src, src_len, dst, dst_cap) {
 # byte count (excluding the dictionary prefix).
 # dict_len must be <= DEFLATE_WINDOW_SIZE (32768).
 fn deflate_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len) {
+    _sankoch_lock();
+    var r = _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len) {
     if (dict_len > DEFLATE_WINDOW_SIZE) { return 0 - ERR_INVALID_INPUT; }
     if (dict_len > dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
@@ -985,13 +1001,24 @@ enum DeflateBlock {
 
 # Compress data into a raw DEFLATE stream.
 fn deflate_compress(src, src_len, dst, dst_cap) {
-    return deflate_compress_level(src, src_len, dst, dst_cap, 1);
+    _sankoch_lock();
+    var r = _deflate_compress_level_inner(src, src_len, dst, dst_cap, 1);
+    _sankoch_unlock();
+    return r;
 }
 
 # Compress with explicit level (1=fast, 6=default, 9=best).
 # Levels 1-3 use fixed Huffman, levels 4-9 use dynamic Huffman.
 # Inputs larger than 32K are split into multiple blocks.
 fn deflate_compress_level(src, src_len, dst, dst_cap, level) {
+    _sankoch_lock();
+    var r = _deflate_compress_level_inner(src, src_len, dst, dst_cap, level);
+    _sankoch_unlock();
+    return r;
+}
+
+# Internal unlocked entry. Callers must already hold _sankoch_mtx.
+fn _deflate_compress_level_inner(src, src_len, dst, dst_cap, level) {
     _deflate_init_tables();
     lz77_set_level(level);
     lz77_init();

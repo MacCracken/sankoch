@@ -78,6 +78,55 @@ fn adler32(data, len) {
     return (s2 * 65536) + s1;  # (s2 << 16) | s1
 }
 
+# Incremental Adler-32 API — used by zlib streaming.
+#
+# Layout (24 bytes):
+#   +0:  s1 (running, modulo deferred within NMAX window)
+#   +8:  s2 (running, modulo deferred within NMAX window)
+#   +16: n_since_mod (bytes processed since last modulo reduction)
+
+fn adler32_init() {
+    var st = alloc(24);
+    store64(st, 1);        # s1 = 1
+    store64(st + 8, 0);    # s2 = 0
+    store64(st + 16, 0);
+    return st;
+}
+
+fn adler32_update(st, data, len) {
+    if (len <= 0) { return 0; }
+    var s1 = load64(st);
+    var s2 = load64(st + 8);
+    var n = load64(st + 16);
+    var off = 0;
+    while (off < len) {
+        var block = ADLER_NMAX - n;
+        if (block > len - off) { block = len - off; }
+        var end = off + block;
+        while (off < end) {
+            s1 = s1 + load8(data + off);
+            s2 = s2 + s1;
+            off = off + 1;
+        }
+        n = n + block;
+        if (n >= ADLER_NMAX) {
+            s1 = s1 % ADLER_MOD;
+            s2 = s2 % ADLER_MOD;
+            n = 0;
+        }
+    }
+    store64(st, s1);
+    store64(st + 8, s2);
+    store64(st + 16, n);
+    return 0;
+}
+
+fn adler32_final(st) {
+    var s1 = load64(st) % ADLER_MOD;
+    var s2 = load64(st + 8) % ADLER_MOD;
+    return (s2 * 65536) + s1;
+}
+
 # CRC-32: table-driven, polynomial 0xEDB88320 (reflected).
 # Source: RFC 1952, Section 8
 # Table must be initialized once via crc32_init_table().
@@ -141,6 +190,57 @@ fn crc32(data, len) {
 
     # Final inversion, masked to 32 bits
     return (crc ^ 4294967295) & 4294967295;
+}
+
+# Incremental CRC-32 API — used by gzip streaming. State is a single
+# u64 holding the running (not-yet-inverted) CRC. init sets 0xFFFFFFFF,
+# update folds bytes through the same table used by batch crc32, final
+# inverts and masks.
+#
+# Layout (8 bytes):
+#   +0: running CRC (pre-inversion)
+
+fn crc32_init() {
+    crc32_init_table();
+    var st = alloc(8);
+    store64(st, 4294967295);   # 0xFFFFFFFF
+    return st;
+}
+
+fn crc32_update(st, data, len) {
+    if (len <= 0) { return 0; }
+    var crc = load64(st);
+    var i = 0;
+    while (i + 8 <= len) {
+        var idx = (crc ^ load8(data + i)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 1)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 2)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 3)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 4)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 5)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 6)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        idx = (crc ^ load8(data + i + 7)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        i = i + 8;
+    }
+    while (i < len) {
+        var idx = (crc ^ load8(data + i)) & 255;
+        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
+        i = i + 1;
+    }
+    store64(st, crc);
+    return 0;
+}
+
+fn crc32_final(st) {
+    return (load64(st) ^ 4294967295) & 4294967295;
 }
 
 # ================================================================
@@ -222,6 +322,139 @@ fn xxhash32(data, len) {
     # Byte tail
     while (i < len) {
         h = (h + (load8(data + i) * XXH32_PRIME5) & m) & m;
+        h = (_xxh32_rotl(h, 11) * XXH32_PRIME1) & m;
+        i = i + 1;
+    }
+
+    # Avalanche
+    h = h ^ (h >> 15);
+    h = (h * XXH32_PRIME2) & m;
+    h = h ^ (h >> 13);
+    h = (h * XXH32_PRIME3) & m;
+    h = h ^ (h >> 16);
+    return h;
+}
+
+# Incremental xxHash32 API — used by LZ4F content-checksum streaming.
+# State layout (64 bytes):
+#   +0:  v1 (stripe accumulator)
+#   +8:  v2
+#   +16: v3
+#   +24: v4
+#   +32..48: partial-stripe buffer (16 bytes, byte-addressable)
+#   +48: buf_len (0..15)
+#   +56: total_len (cumulative bytes seen)
+# Stripe accumulators are kept valid from init so the update path can
+# flush a completed 16-byte buffer without branching on "first stripe".
+# Final distinguishes short path (total_len < 16) from long path by
+# checking total_len itself.
+
+fn xxhash32_init() {
+    var m = 4294967295;
+    var st = alloc(64);
+    store64(st, (XXH32_PRIME1 + XXH32_PRIME2) & m);   # v1
+    store64(st + 8, XXH32_PRIME2);                     # v2
+    store64(st + 16, 0);                               # v3
+    store64(st + 24, (0 - XXH32_PRIME1) & m);          # v4
+    store64(st + 48, 0);                               # buf_len
+    store64(st + 56, 0);                               # total_len
+    return st;
+}
+
+# Process one 16-byte stripe at data_ptr into the state's v1..v4.
+fn _xxh32_stripe_into(st, data_ptr) {
+    var m = 4294967295;
+    var k1 = load8(data_ptr) | (load8(data_ptr + 1) << 8) |
+    (load8(data_ptr + 2) << 16) | (load8(data_ptr + 3) << 24);
+    var k2 = load8(data_ptr + 4) | (load8(data_ptr + 5) << 8) |
+    (load8(data_ptr + 6) << 16) | (load8(data_ptr + 7) << 24);
+    var k3 = load8(data_ptr + 8) | (load8(data_ptr + 9) << 8) |
+    (load8(data_ptr + 10) << 16) | (load8(data_ptr + 11) << 24);
+    var k4 = load8(data_ptr + 12) | (load8(data_ptr + 13) << 8) |
+    (load8(data_ptr + 14) << 16) | (load8(data_ptr + 15) << 24);
+    store64(st, _xxh32_round(load64(st), k1 & m));
+    store64(st + 8, _xxh32_round(load64(st + 8), k2 & m));
+    store64(st + 16, _xxh32_round(load64(st + 16), k3 & m));
+    store64(st + 24, _xxh32_round(load64(st + 24), k4 & m));
+    return 0;
+}
+
+fn xxhash32_update(st, data, len) {
+    if (len <= 0) { return 0; }
+    store64(st + 56, load64(st + 56) + len);
+    var buf = st + 32;
+    var buf_len = load64(st + 48);
+    var off = 0;
+
+    # Fill the partial buffer first.
+    if (buf_len > 0) {
+        var need = 16 - buf_len;
+        var take = need;
+        if (take > len) { take = len; }
+        var i = 0;
+        while (i < take) {
+            store8(buf + buf_len + i, load8(data + i));
+            i = i + 1;
+        }
+        buf_len = buf_len + take;
+        off = take;
+        if (buf_len == 16) {
+            _xxh32_stripe_into(st, buf);
+            buf_len = 0;
+        }
+    }
+
+    # Process full 16-byte stripes directly from the input.
+    while (off + 16 <= len) {
+        _xxh32_stripe_into(st, data + off);
+        off = off + 16;
+    }
+
+    # Save tail into the partial buffer.
+    var tail = len - off;
+    if (tail > 0) {
+        var i = 0;
+        while (i < tail) {
+            store8(buf + i, load8(data + off + i));
+            i = i + 1;
+        }
+        buf_len = tail;
+    }
+    store64(st + 48, buf_len);
+    return 0;
+}
+
+fn xxhash32_final(st) {
+    var m = 4294967295;
+    var total = load64(st + 56);
+    var buf_len = load64(st + 48);
+    var buf = st + 32;
+
+    var h = 0;
+    if (total >= 16) {
+        h = (_xxh32_rotl(load64(st), 1) +
+        _xxh32_rotl(load64(st + 8), 7) +
+        _xxh32_rotl(load64(st + 16), 12) +
+        _xxh32_rotl(load64(st + 24), 18)) & m;
+    } else {
+        h = XXH32_PRIME5;
+    }
+    h = (h + total) & m;
+
+    # 4-byte tail
+    var i = 0;
+    while (i + 4 <= buf_len) {
+        var k = load8(buf + i) | (load8(buf + i + 1) << 8) |
+        (load8(buf + i + 2) << 16) | (load8(buf + i + 3) << 24);
+        k = k & m;
+        h = (h + (k * XXH32_PRIME3) & m) & m;
+        h = (_xxh32_rotl(h, 17) * XXH32_PRIME4) & m;
+        i = i + 4;
+    }
+
+    # Byte tail
+    while (i < buf_len) {
+        h = (h + (load8(buf + i) * XXH32_PRIME5) & m) & m;
         h = (_xxh32_rotl(h, 11) * XXH32_PRIME1) & m;
         i = i + 1;
     }
