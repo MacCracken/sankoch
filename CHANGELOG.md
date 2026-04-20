@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-04-19
+
+**Stable cut. Closes the v2.0.0 track.**
+
+The four v2.0.0-track feature areas — 1.5.0 adaptive DEFLATE block
+splitting, 1.6.0 LZ4 multi-block frames, 1.6.1 xxHash32 spec
+compliance, 1.7.0 true incremental streaming across all four formats
+(DEFLATE / zlib / gzip / LZ4F) — are all shipped and production-
+settled. 2.0.0 declares the API stable and closes out the P(-1)
+audit findings. No new features; no API changes from 1.7.0.
+
+See `docs/audit/2026-04-19-pre-2.0.0.md` for the pre-release audit.
+
+### Fixed (from the pre-2.0.0 audit)
+- **LOW-01: `stream_compress_finish` / `stream_decompress_finish`
+  now validate mode.** Previously, calling the wrong finish on a
+  mismatched-mode ctx would dispatch `deflate_enc_finish` against a
+  buffer pointer (or vice versa) and crash or emit garbage. Both
+  functions now return `-ERR_INVALID_INPUT` up front if the ctx's
+  mode doesn't match. Test: `test_stream_mode_mismatch`.
+- **LOW-02: dead encoder-accessor helpers removed.**
+  `_denc_load_level` and `_denc_state` in `src/deflate.cyr` were
+  prospective getters that never got used. `_denc_err` stays.
+
+### Known limitations (not blocking 2.0.0)
+- **INFO-01**: `*_enc_init` functions don't check `alloc()` return
+  for OOM — inherited project-wide pattern, rarely triggered by the
+  auto-growing bump allocator. Backlogged for a v2.x hardening pass.
+- **INFO-02**: `adler32_update` is byte-at-a-time; batch `adler32`
+  uses a 16-byte unroll. `crc32_update` already has the matching
+  unroll. Backlogged as a v2.x perf item.
+
+### No public-API breaks vs 1.7.0
+Anything compiling against 1.7.0 compiles + runs against 2.0.0
+unchanged. Same function signatures, same return semantics, same
+wire-format output byte-for-byte.
+
+### Metrics
+- **Source**: 4369 lines across 12 modules.
+- **Tests**: 1028625 + 134 = 1028759 assertions; 0 failures.
+- **Fuzz**: 1564 iterations across both harnesses; 0 failures.
+- **Cleanliness**: `cyrius build` 0 warnings, `cyrius lint` 0,
+  `cyrius fmt --check` clean.
+- **SIZE md5** (batch + streaming lines):
+  `83a039b0bbaa40dbbaca4f7fd4961197` — unchanged from 1.7.0.
+- **End-to-end reference compatibility** still holds:
+  `zlib.decompress`, `gunzip`, `lz4 -dc` each accept our streamed
+  output byte-for-byte.
+
+### Roadmap
+- v2.0.0 → **shipped**.
+- v2.x candidates (post-2.0.0, no commitment): true incremental
+  decompression; ring-buffer LZ77 match-finder (replaces the
+  slide-rebase scheme); `<fmt>_enc_init_dict` with preset dictionary;
+  configurable LZ4F block-max size; Adler-32 16-byte unroll in the
+  incremental path; defensive `alloc()` failure handling.
+- Long-term (separate major version or separate crate): Zstandard,
+  LZMA, Brotli, GPU texture codecs.
+
 ## [1.7.0] — 2026-04-19
 
 **True incremental streaming across all four formats + MED-01 closed.

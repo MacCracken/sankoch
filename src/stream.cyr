@@ -128,6 +128,7 @@ fn stream_write(ctx, data, len) {
 # Finish streaming compression. Returns total bytes written to dst,
 # or negative error. Releases any mutex taken by the inner encoder.
 fn stream_compress_finish(ctx) {
+    if (load64(ctx + 16) != STREAM_COMPRESS) { return 0 - ERR_INVALID_INPUT; }
     var format = load64(ctx);
     var inner = load64(ctx + 24);
     if (format == FORMAT_DEFLATE) { return deflate_enc_finish(inner); }
@@ -139,6 +140,7 @@ fn stream_compress_finish(ctx) {
 
 # Finish streaming decompression: decompress all buffered input into dst.
 fn stream_decompress_finish(ctx, dst, dst_cap) {
+    if (load64(ctx + 16) != STREAM_DECOMPRESS) { return 0 - ERR_INVALID_INPUT; }
     var format = load64(ctx);
     var buf = load64(ctx + 24);
     var len = load64(ctx + 40);

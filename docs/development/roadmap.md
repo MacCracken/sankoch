@@ -1,15 +1,16 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v1.7.0) | **Last Updated**: 2026-04-19
+> **Status**: Stable (v2.0.0) | **Last Updated**: 2026-04-19
 
 ---
 
-## v2.0.0 track — Performance and Streaming
+## v2.0.0 — shipped 2026-04-19
 
-Shipping the four major items as minor bumps rather than one big 2.0.0
-drop — smaller bites, easier bisection if regressions surface, each
-feature goes live as soon as it's ready. 2.0.0 gets cut when the stack
-is complete.
+Four-item v2.0.0 track landed as incremental minor bumps, then cut to
+2.0.0 after a P(-1) pass. Declares the LZ4 + DEFLATE + zlib + gzip
+surface stable. No API changes in 2.0.0 itself — just a closeout pass
+(two LOW audit findings fixed, dead accessors removed, docs swept).
+See `docs/audit/2026-04-19-pre-2.0.0.md`.
 
 ### ✅ v1.5.0 — Adaptive DEFLATE block splitting (shipped 2026-04-19)
 
@@ -102,7 +103,35 @@ when Cyrius ships asm support.
 
 ---
 
-## Scaffold follow-ups (parallel to v2.0.0 track)
+## v2.x candidates (post-2.0.0, no commitment yet)
+
+Follow-ups that don't change the public API and don't require a
+major-version bump. Each lands in its own 2.x point release when
+there's a reason to prioritize it:
+
+- **True incremental decompression** — mirror the streaming encoder
+  work on the decompression side. The current buffered model
+  (`stream_decompress_*` accumulates compressed input then batch-
+  decompresses) is fine for most consumers but doesn't help when
+  decompressed output is larger than memory.
+- **Ring-buffer LZ77 match-finder** — replace the window-slide +
+  `lz77_rebase` scheme (currently ~16 B/input-byte of rebase
+  overhead) with a proper circular buffer that wraps the window.
+  Zero slide cost; requires `_lz77_find_match` to handle wrap-around.
+- **Preset dictionary in streaming encoders** — `<fmt>_enc_init_dict`
+  variants carrying a caller-provided dict (matches existing
+  `deflate_decompress_dict` / `zlib_decompress_dict` semantics).
+- **Configurable LZ4F block-max size** — today the BD byte is fixed
+  to 64 KB; allow 256 KB / 1 MB / 4 MB per the spec.
+- **Adler-32 16-byte unroll in `adler32_update`** — mirror the batch
+  inner-loop shape for streaming throughput parity (INFO-02 in the
+  2026-04-19-pre-2.0.0 audit).
+- **Defensive `alloc()` failure handling** in `*_enc_init` — wrap
+  alloc + unlock-on-failure helper (INFO-01 in that audit).
+
+---
+
+## Scaffold follow-ups (independent of codec work)
 
 ### `cyrius fmt` in-place mode
 

@@ -693,6 +693,21 @@ fn test_enc_zero_write() {
     return 0;
 }
 
+fn test_stream_mode_mismatch() {
+    # Calling stream_compress_finish on a decompress ctx (or vice versa)
+    # must return -ERR_INVALID_INPUT, not crash.
+    var c = alloc(64);
+    var dctx = stream_decompress_init(FORMAT_GZIP);
+    assert(stream_compress_finish(dctx) == 0 - ERR_INVALID_INPUT, "compress_finish on dec ctx");
+
+    var cctx = stream_compress_init(FORMAT_GZIP, 6, c, 64);
+    var d = alloc(64);
+    assert(stream_decompress_finish(cctx, d, 64) == 0 - ERR_INVALID_INPUT, "decompress_finish on enc ctx");
+    # Still need to finish the enc ctx to release its mutex.
+    stream_compress_finish(cctx);
+    return 0;
+}
+
 fn test_stream_format_dispatch() {
     # stream_compress_init must dispatch correctly for every supported
     # format. Round-trip 12 bytes via each format's streaming path.
@@ -1507,6 +1522,7 @@ fn main() {
     test_compress_dispatch_lz4f();
     test_enc_error_paths();
     test_enc_zero_write();
+    test_stream_mode_mismatch();
     test_stream_format_dispatch();
     test_lz4f_roundtrip();
     test_lz4f_empty();

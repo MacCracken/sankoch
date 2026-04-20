@@ -1373,8 +1373,6 @@ enum DeflateEnc {
 #   +64  fixed_header_written — 1 after the streaming fixed block header is emitted
 #   +72  is_dynamic          — 1 if level >= 4 (dynamic path), else 0
 
-fn _denc_load_level(ctx)  { return load64(ctx); }
-fn _denc_state(ctx)       { return load64(ctx + 8); }
 fn _denc_err(ctx)         { return load64(ctx + 16); }
 fn _denc_bw(ctx)          { return load64(ctx + 24); }
 fn _denc_window(ctx)      { return load64(ctx + 40); }
