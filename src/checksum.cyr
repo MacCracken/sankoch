@@ -2,11 +2,15 @@
 # Adler-32 (RFC 1950), CRC-32 (RFC 1952), xxHash32 (for LZ4 frame format).
 # Inline implementations — too small to warrant a sigil dependency.
 #
-# Adler-32 uses scalar optimizations for the inner loop:
+# Adler-32 uses scalar optimizations for the inner loop (both batch
+# `adler32` and incremental `adler32_update`):
 # - Deferred modulo: % 65521 every NMAX (5552) bytes instead of every byte
 # - 16-byte unrolled inner loop accumulating s2 in closed form
 # - Scalar fallback for the tail
-# Real SIMD (SSE2/AVX2 / PCLMULQDQ for CRC-32) awaits Cyrius inline-asm.
+# True SIMD (SSE2/AVX2, PCLMULQDQ for CRC-32) is feasible on 5.5.11
+# (raw `asm` blocks are exposed) but deferred on priority grounds —
+# the scalar unroll already puts checksums off the hot path for the
+# consumers we have today.
 
 enum Checksum {
     ADLER_MOD = 65521;   # largest prime < 2^16
@@ -103,6 +107,41 @@ fn adler32_update(st, data, len) {
         var block = ADLER_NMAX - n;
         if (block > len - off) { block = len - off; }
         var end = off + block;
+
+        # 16-byte unroll — mirrors the closed-form inner loop in
+        # batch adler32(). Safe within a block because block <=
+        # ADLER_NMAX - n <= NMAX, so s1/s2 cannot overflow i64.
+        while (off + 16 <= end) {
+            var b0 = load8(data + off);
+            var b1 = load8(data + off + 1);
+            var b2 = load8(data + off + 2);
+            var b3 = load8(data + off + 3);
+            var b4 = load8(data + off + 4);
+            var b5 = load8(data + off + 5);
+            var b6 = load8(data + off + 6);
+            var b7 = load8(data + off + 7);
+            var b8 = load8(data + off + 8);
+            var b9 = load8(data + off + 9);
+            var b10 = load8(data + off + 10);
+            var b11 = load8(data + off + 11);
+            var b12 = load8(data + off + 12);
+            var b13 = load8(data + off + 13);
+            var b14 = load8(data + off + 14);
+            var b15 = load8(data + off + 15);
+
+            s2 = s2 + (s1 * 16);
+            s2 = s2 + (b0 * 16) + (b1 * 15) + (b2 * 14) + (b3 * 13);
+            s2 = s2 + (b4 * 12) + (b5 * 11) + (b6 * 10) + (b7 * 9);
+            s2 = s2 + (b8 * 8) + (b9 * 7) + (b10 * 6) + (b11 * 5);
+            s2 = s2 + (b12 * 4) + (b13 * 3) + (b14 * 2) + b15;
+
+            s1 = s1 + b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7;
+            s1 = s1 + b8 + b9 + b10 + b11 + b12 + b13 + b14 + b15;
+
+            off = off + 16;
+        }
+
+        # Scalar tail for remaining bytes in this block
         while (off < end) {
             s1 = s1 + load8(data + off);
             s2 = s2 + s1;

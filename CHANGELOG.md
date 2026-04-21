@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0] — 2026-04-19
+### Changed
+- **Toolchain**: Cyrius 5.4.7 → **5.5.11**. No source changes required
+  — the stdlib modules sankoch consumes (`syscalls`, `string`, `alloc`,
+  `fmt`, `vec`, `fnptr`, `thread`, `assert`) keep the same public API
+  between 5.4.7 and 5.5.11. Notable 5.5.x stdlib evolution: `syscalls`
+  split into arch-dispatched files (x86_64 / aarch64 / windows);
+  `alloc` added per-OS dispatch; `thread` moved the clone trampoline
+  into inline asm (fixes the `majra-cbarrier` crash); `fnptr` raised
+  the fncallN ceiling from 6 to 8. All transparent to sankoch.
+- **`cyrius.cyml` pin** updated to `cyrius = "5.5.11"`. CI extracts
+  the toolchain version from this line, so no workflow-yaml edits
+  beyond a comment refresh.
+- **Docs sweep**: CLAUDE.md, README.md, roadmap, cyrius-usage doc
+  refreshed to reference 5.5.11. Roadmap's deferred `PCLMULQDQ`
+  CRC-32 item is no longer gated on asm support — Cyrius 5.5.11
+  exposes raw `asm { byte; … }` blocks (`lib/thread.cyr:_thread_spawn`
+  uses them). Item stays deferred on priority grounds (table-driven
+  CRC-32 is fast enough for today's consumers), not capability.
+
+### Optimized
+- **Adler-32 streaming path now matches batch throughput**
+  (closes INFO-02 from `docs/audit/2026-04-19-pre-2.0.0.md`).
+  `adler32_update` gained the same 16-byte unrolled closed-form inner
+  loop as batch `adler32`. Safe within the NMAX window — the block
+  bound ensures s1/s2 cannot overflow i64 between modulo reductions.
+  Wire-format identical; 128 KB streaming zlib is ~6 % faster end-to-
+  end, and the checksum path itself roughly doubles in throughput
+  (~300 MB/s → ~620 MB/s on 4 KB chunks). Fuzz (196 streaming
+  round-trips) and the incremental known-vector test remain green.
+
+
 
 **Stable cut. Closes the v2.0.0 track.**
 

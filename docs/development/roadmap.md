@@ -96,10 +96,11 @@ MED-01 thread-safety gap from the 2026-04-19 audit.
 ### ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
 4–10× CRC-32 speedup on x86_64 via the `PCLMULQDQ` carry-less multiply
-instruction. Gated on Cyrius exposing an inline-asm / intrinsic
-mechanism — 5.4.7 does not. Current table-driven CRC-32 runs at ~278
-MB/s on 4KB, which is fine for the consumers we have today. Revisit
-when Cyrius ships asm support.
+instruction. Cyrius 5.5.11 exposes raw `asm { byte; byte; … }` blocks
+(see `lib/thread.cyr` `_thread_spawn`), so the toolchain gate is
+cleared. Not prioritized yet because current table-driven CRC-32 runs
+at ~278 MB/s on 4KB, which is fine for the consumers we have today —
+revisit if a consumer actually pushes CRC-32 onto the hot path.
 
 ---
 
@@ -123,9 +124,10 @@ there's a reason to prioritize it:
   `deflate_decompress_dict` / `zlib_decompress_dict` semantics).
 - **Configurable LZ4F block-max size** — today the BD byte is fixed
   to 64 KB; allow 256 KB / 1 MB / 4 MB per the spec.
-- **Adler-32 16-byte unroll in `adler32_update`** — mirror the batch
-  inner-loop shape for streaming throughput parity (INFO-02 in the
-  2026-04-19-pre-2.0.0 audit).
+- ~~**Adler-32 16-byte unroll in `adler32_update`**~~ — **landed in
+  the Unreleased / next 2.x point release**. INFO-02 from the
+  2026-04-19-pre-2.0.0 audit is closed; streaming zlib now sits
+  ~6 % closer to streaming DEFLATE on 128 KB inputs.
 - **Defensive `alloc()` failure handling** in `*_enc_init` — wrap
   alloc + unlock-on-failure helper (INFO-01 in that audit).
 
@@ -136,8 +138,9 @@ there's a reason to prioritize it:
 ### `cyrius fmt` in-place mode
 
 Fmt gate prints formatted source to stdout; applying fixes requires a
-shell one-liner. `cyrius fmt --write` in 5.4.7 is a no-op (prints to
-stdout like `--check`). Adopt once the flag actually writes.
+shell one-liner. `cyrius fmt --write` in 5.5.11 is still not a
+documented flag (`cyrius fmt` help lists only `--check`). Adopt once
+the flag actually writes.
 
 ### Multi-profile distlib (kernel-safe subset)
 
@@ -236,7 +239,7 @@ round-trips covering all four `_enc_*` encoders)
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 5.4.7).
+ship with Cyrius ≥ 5.5.11).
 
 ## Key References
 
