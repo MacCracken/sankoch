@@ -84,7 +84,7 @@ suites + **1564 fuzz iterations**. Distlib: `dist/sankoch.cyr` at
 
 ## Toolchain
 
-Cyrius 5.5.11 (pinned in `cyrius.cyml`).
+Cyrius 5.5.20 (pinned in `cyrius.cyml`).
 
 ## Why
 

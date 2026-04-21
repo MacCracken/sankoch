@@ -55,7 +55,7 @@ enum Limits {
 # - Deferred modulo: % 65521 every NMAX (5552) bytes instead of every byte
 # - 16-byte unrolled inner loop accumulating s2 in closed form
 # - Scalar fallback for the tail
-# True SIMD (SSE2/AVX2, PCLMULQDQ for CRC-32) is feasible on 5.5.11
+# True SIMD (SSE2/AVX2, PCLMULQDQ for CRC-32) is feasible on 5.5.20
 # (raw `asm` blocks are exposed) but deferred on priority grounds —
 # the scalar unroll already puts checksums off the hot path for the
 # consumers we have today.

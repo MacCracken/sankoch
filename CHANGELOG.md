@@ -8,20 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- **Toolchain**: Cyrius 5.4.7 → **5.5.11**. No source changes required
+- **Toolchain**: Cyrius 5.4.7 → **5.5.20**. No source changes required
   — the stdlib modules sankoch consumes (`syscalls`, `string`, `alloc`,
   `fmt`, `vec`, `fnptr`, `thread`, `assert`) keep the same public API
-  between 5.4.7 and 5.5.11. Notable 5.5.x stdlib evolution: `syscalls`
-  split into arch-dispatched files (x86_64 / aarch64 / windows);
-  `alloc` added per-OS dispatch; `thread` moved the clone trampoline
-  into inline asm (fixes the `majra-cbarrier` crash); `fnptr` raised
-  the fncallN ceiling from 6 to 8. All transparent to sankoch.
-- **`cyrius.cyml` pin** updated to `cyrius = "5.5.11"`. CI extracts
+  across the jump. Notable 5.5.x stdlib evolution, none of which
+  affects sankoch's Linux x86_64 path: `syscalls` split into
+  arch-dispatched files (x86_64 / aarch64 / windows); `alloc` added
+  per-OS dispatch (Windows `VirtualAlloc` at 5.5.0; macOS mmap at
+  5.5.16 — Darwin has no brk); `thread` moved the clone trampoline
+  into inline asm (fixes the `majra-cbarrier` crash at 5.5.10);
+  `fnptr` raised the fncallN ceiling from 6 to 8 and gained a Win64
+  shadow-space shim at 5.5.7.
+- **`cyrius.cyml` pin** updated to `cyrius = "5.5.20"`. CI extracts
   the toolchain version from this line, so no workflow-yaml edits
   beyond a comment refresh.
 - **Docs sweep**: CLAUDE.md, README.md, roadmap, cyrius-usage doc
-  refreshed to reference 5.5.11. Roadmap's deferred `PCLMULQDQ`
-  CRC-32 item is no longer gated on asm support — Cyrius 5.5.11
+  refreshed to reference 5.5.20. Roadmap's deferred `PCLMULQDQ`
+  CRC-32 item is no longer gated on asm support — Cyrius 5.5.x
   exposes raw `asm { byte; … }` blocks (`lib/thread.cyr:_thread_spawn`
   uses them). Item stays deferred on priority grounds (table-driven
   CRC-32 is fast enough for today's consumers), not capability.

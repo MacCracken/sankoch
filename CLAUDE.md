@@ -34,7 +34,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
   across all four formats (DEFLATE, zlib, gzip, LZ4F) via
   `*_enc_init/write/finish` APIs; public-API thread safety via the
   two-tier mutex split
-- **Toolchain**: Cyrius 5.5.11 (`cyrius.cyml: cyrius = "5.5.11"`)
+- **Toolchain**: Cyrius 5.5.20 (`cyrius.cyml: cyrius = "5.5.20"`)
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
 - **Distribution**: 2.0.0 lands in the next Cyrius lang release as
@@ -55,7 +55,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 ## Dependencies
 
 - **Cyrius stdlib** — `syscalls`, `string`, `alloc`, `fmt`, `vec`,
-  `fnptr`, `thread`, `assert` (ships with Cyrius >= 5.5.11)
+  `fnptr`, `thread`, `assert` (ships with Cyrius >= 5.5.20)
 
 No external deps. No FFI. No libc. Checksums (Adler-32, CRC-32,
 xxHash32) are inline — no sigil dependency for 30-line primitives that
@@ -196,7 +196,7 @@ bundle.
 
 ## CI / Release
 
-- **Toolchain pin**: `cyrius = "5.5.11"` in `cyrius.cyml`. CI and
+- **Toolchain pin**: `cyrius = "5.5.20"` in `cyrius.cyml`. CI and
   release both read from the manifest
 - **Tag filter**: release workflow triggers on bare semver tags
   (`2.0.0`, not `v2.0.0`)
@@ -207,7 +207,7 @@ bundle.
 - **Format gate**: CI runs `cyrius fmt --check`; drift fails the build
 - **No lock gate**: sankoch is stdlib-only (zero git deps), so there is
   no `cyrius.lock` to verify against. The stdlib pin comes from the
-  toolchain version itself (`cyrius = "5.5.11"` in `cyrius.cyml`)
+  toolchain version itself (`cyrius = "5.5.20"` in `cyrius.cyml`)
 - **Dist gate**: CI regenerates `dist/sankoch.cyr` via
   `cyrius distlib` and fails on drift
 - **Concurrency**: CI uses `cancel-in-progress: true` keyed on
