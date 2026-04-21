@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-04-21
+
+**Toolchain refresh + Adler-32 streaming perf. No API or wire-format
+change.**
+
 ### Changed
 - **Toolchain**: Cyrius 5.4.7 → **5.5.22**. No source changes required
   — the stdlib modules sankoch consumes (`syscalls`, `string`, `alloc`,
@@ -46,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (~300 MB/s → ~620 MB/s on 4 KB chunks). Fuzz (196 streaming
   round-trips) and the incremental known-vector test remain green.
 
-
+## [2.0.0] — 2026-04-19
 
 **Stable cut. Closes the v2.0.0 track.**
 
