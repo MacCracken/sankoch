@@ -96,7 +96,7 @@ MED-01 thread-safety gap from the 2026-04-19 audit.
 ### ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
 4–10× CRC-32 speedup on x86_64 via the `PCLMULQDQ` carry-less multiply
-instruction. Cyrius 5.5.20 exposes raw `asm { byte; byte; … }` blocks
+instruction. Cyrius 5.5.22 exposes raw `asm { byte; byte; … }` blocks
 (see `lib/thread.cyr` `_thread_spawn`), so the toolchain gate is
 cleared. Not prioritized yet because current table-driven CRC-32 runs
 at ~278 MB/s on 4KB, which is fine for the consumers we have today —
@@ -135,12 +135,17 @@ there's a reason to prioritize it:
 
 ## Scaffold follow-ups (independent of codec work)
 
-### `cyrius fmt` in-place mode
+### ✅ `cyrfmt` in-place mode — shipped in Cyrius 5.5.22
 
-Fmt gate prints formatted source to stdout; applying fixes requires a
-shell one-liner. `cyrius fmt --write` in 5.5.20 is still not a
-documented flag (`cyrius fmt` help lists only `--check`). Adopt once
-the flag actually writes.
+`cyrfmt --write <file.cyr>` (or `-w`, gofmt convention) reformats in
+place. Idempotent — a clean file short-circuits before the write
+syscall so mtime doesn't churn. Truncate-and-overwrite (not atomic
+temp+rename; Cyrius doesn't expose `sys_rename` yet). Replaces the
+prior `cyrfmt x.cyr > x.new && mv x.new x` shell one-liner. The
+`cyrius fmt` frontend banner still shows only `[--check]` in 5.5.22
+but passes `--write` / `-w` through to the underlying `cyrfmt`
+binary — use the direct `cyrfmt` invocation or pass the flag
+through `cyrius fmt` either way.
 
 ### Multi-profile distlib (kernel-safe subset)
 
@@ -239,7 +244,7 @@ round-trips covering all four `_enc_*` encoders)
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 5.5.20).
+ship with Cyrius ≥ 5.5.22).
 
 ## Key References
 

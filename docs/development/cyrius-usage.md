@@ -10,7 +10,7 @@ Toolchain pinned in `cyrius.cyml`:
 
 ```toml
 [package]
-cyrius = "5.5.20"
+cyrius = "5.5.22"
 ```
 
 CI reads the pin from the manifest; locally you can install that version
@@ -79,19 +79,19 @@ cyrius vet  src/lib.cyr         # audit include dependencies
 
 Sankoch is stdlib-only, so there is no `cyrius.lock` and no
 `cyrius deps --verify` gate — the stdlib snapshot is implicitly pinned
-by the toolchain version (`cyrius = "5.5.20"` in `cyrius.cyml`). Add
+by the toolchain version (`cyrius = "5.5.22"` in `cyrius.cyml`). Add
 `cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
 ever added under `[deps.*]`.
 
 All four run in CI. `fmt --check` emits the formatted source; CI diffs
-against the committed file and fails on drift. To apply the fix:
+against the committed file and fails on drift. To apply the fix
+in-place (Cyrius 5.5.22+):
 
 ```bash
-cyrius fmt src/checksum.cyr --check > src/checksum.cyr.new
-mv src/checksum.cyr.new src/checksum.cyr
+cyrfmt --write src/checksum.cyr    # or -w
 ```
 
-(A direct in-place mode may land in a later Cyrius version.)
+Idempotent — re-running on a clean file is a no-op (mtime unchanged).
 
 ### Fuzz
 
@@ -125,7 +125,7 @@ The release workflow: runs CI → verifies `VERSION == tag` → builds
 with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates
 bundle → archives src tarball + `dist/sankoch.cyr` + SHA256SUMS →
 creates a GitHub Release. No `cyrius.lock` is shipped — sankoch is
-stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.5.20"`
+stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.5.22"`
 in `cyrius.cyml` is the lockfile.
 
 ## Gotchas
