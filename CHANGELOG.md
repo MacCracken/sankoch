@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] — 2026-04-24
+
+**Critical fix: dynamic-block code-length-tree depth limit.**
+
+### Fixed
+- **`zlib_compress` (and `deflate_compress` / `gzip_compress` at level
+  ≥ 4) produced non-decodable output for inputs whose code-length
+  alphabet's natural Huffman depth exceeded 7 bits.**
+  Reported in `docs/development/issues/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md`,
+  discovered during cyrius v5.6.35 triage of sit's "symptom 2 of 2"
+  memory anomaly at scale. Affected any input whose dynamic block
+  produced a cl-symbol frequency distribution skewed enough that the
+  natural Huffman tree on the 19-symbol code-length alphabet pushed
+  past 7 bits (e.g. one super-common literal-length plus rare
+  repeat-codes). Tree-shaped inputs from sit's git tree objects hit
+  this regularly: 50/300 tree objects in sit's 100-commit fixture
+  failed standalone roundtrip; the smallest minimal repro was a
+  484-byte truncation of one such tree. RFC 1951 §3.2.7 caps the
+  code-length alphabet at 7 bits, and sankoch wrote each cl_len in a
+  3-bit header field — so any cl length above 7 aliased on the
+  decoder side, leaving the cl tree malformed and the lit/dist
+  length stream unreadable. Reference Python `zlib.decompress`
+  rejected the same byte streams with `Error -3 invalid code lengths
+  set`, matching sankoch's own decoder return of `-ERR_INVALID_HUFFMAN`.
+
+  The root cause was `huff_compute_lengths` having no notion of an
+  alphabet-specific max code length: it clamped each individual leaf
+  at `HUFF_MAX_BITS=15`, but that clamp (a) could not enforce the
+  cl alphabet's 7-bit ceiling, and (b) when it did fire on the lit/
+  dist alphabets at depth > 15, broke the Kraft inequality by
+  shortening individual codes without redistributing the saved code
+  space.
+
+  Fix: `huff_compute_lengths` gains a fifth `max_bits` parameter, the
+  buggy individual-leaf clamp is removed, and a new helper
+  `_huff_redistribute` runs after the natural-Huffman DFS. It applies
+  zlib's iterative `gen_bitlen` algorithm (zlib `trees.c`): every
+  leaf at depth > max_bits is moved down to max_bits, then pairs of
+  overflow leaves are paid for by extending one shorter leaf by one
+  bit (its slot splits into two at length+1) — keeping
+  Σ 2^(-len_i) = 1 exactly. Lengths are then reassigned to symbols
+  in descending-frequency order so optimality up to the cap is
+  preserved. Three call sites updated: cl tree at max_bits=7,
+  litlen and dist trees at max_bits=15.
+
+  Wire-format identical for inputs that already roundtripped on
+  2.0.1 (the natural-depth tree was already ≤ max_bits, so the
+  redistribution short-circuits). Compression ratio unchanged: the
+  751-byte issue input still produces a 660-byte zlib stream at
+  level 6, byte-identical to what 2.0.1 emitted — but now decodable.
+
+### Added
+- `tests/tcyr/git_object.tcyr`: three regressions covering the bug
+  class — `test_tree_shape_sweep_roundtrip` sweeps 1..20 entries
+  through the failing band; `test_tree_751_byte_regression` pins the
+  exact 16-entry tree from the issue (asserts `n == 751`);
+  `test_tree_513_byte_regression` cycles every level on an 11-entry
+  tree from inside the 507-520 failing band. The `_build_tree`
+  helper produces deterministic tree objects mimicking real git
+  format. Suite now reports 13929 assertions (was 134).
+- `fuzz/fuzz_deflate.fcyr`: two new harnesses targeting the bug
+  class. `fuzz_tree_shape_roundtrip` (5 seeds × 8 entry counts × 9
+  levels) generates random-but-tree-shaped inputs straddling the
+  484/507/520/740/751 failing bands. `fuzz_skewed_freq_roundtrip` (6
+  seeds × 5 sizes × 6 levels) emits Fibonacci-ish literal frequency
+  distributions to drive `_huff_redistribute` past its short-circuit.
+  Adds 70 outer iterations on top of the existing 1564 — but exposes
+  the bug class that uniform-random fuzz inputs cannot reach.
+
+### Changed
+- **Toolchain pin**: `cyrius.cyml` updated to `cyrius = "5.6.34"`.
+  This is the toolchain release that bundles sankoch 2.0.2 into the
+  Cyrius stdlib as `lib/sankoch.cyr`, and the version the in-flight
+  cyrius v5.6.35 picks up to retire sit's post-commit `read_object`
+  verify mitigation.
+- Docs sweep: README, CLAUDE.md, `docs/development/cyrius-usage.md`,
+  and `.github/workflows/ci.yml` reference 5.6.34. Roadmap and
+  CHANGELOG history references to 5.5.22 are left as-is — they
+  describe the toolchain at the time of those releases.
+
+### Downstream
+- **cyrius v5.6.35** (in-flight): pins this sankoch tag in
+  `cyrius.cyml`, and adds a `tests/regression-sit-status.sh` gate
+  that runs sit's 100-commit fixture and asserts `sit fsck`
+  reports 0 bad.
+- **sit**: the post-commit `read_object` verify added as a
+  mitigation for this bug can be reverted once cyrius v5.6.35 ships
+  with sankoch 2.0.2.
+
 ## [2.0.1] — 2026-04-21
 
 **Toolchain refresh + Adler-32 streaming perf. No API or wire-format

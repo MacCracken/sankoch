@@ -1,5 +1,20 @@
 # sankoch 2.0.1 `zlib_compress` produces output that fails `zlib_decompress` for sit-tree-shaped inputs
 
+**Status:** ✅ **Resolved in sankoch 2.0.2** (2026-04-24). Root cause was
+`huff_compute_lengths` having no notion of an alphabet-specific max
+code length: it clamped each individual leaf at `HUFF_MAX_BITS=15`,
+but the code-length (meta) alphabet is capped at 7 bits per RFC 1951
+§3.2.7 (each cl_len is written in a 3-bit header field). Inputs whose
+cl symbol frequencies pushed the natural meta-tree past 7 bits had
+their over-long lengths aliased to bogus 3-bit values on the decoder,
+corrupting the entire dynamic block. Fix: new `max_bits` 5th parameter
+on `huff_compute_lengths` plus `_huff_redistribute` running zlib's
+`gen_bitlen` algorithm to keep `Σ 2^(-len_i) = 1` while capping every
+length at `max_bits`. Three call sites updated: cl tree at max_bits=7,
+litlen + dist trees at max_bits=15. Permanent regressions in
+`tests/tcyr/git_object.tcyr` and `fuzz/fuzz_deflate.fcyr`. See
+CHANGELOG `[2.0.2]` for the full write-up.
+
 **Discovered:** 2026-04-24 during cyrius v5.6.35 triage of sit's
 "symptom 2 of 2" memory anomaly at scale (sit S-33).
 **Severity:** High — silent data loss for any consumer compressing
@@ -24,19 +39,19 @@ DEFLATE stream for these specific inputs.
 
 A 751-byte minimal repro is committed at:
 
-- `docs/development/issues/repros/2026-04-24-zlib-compress-non-roundtrip.bin` —
+- `docs/development/issues/archived/repros/2026-04-24-zlib-compress-non-roundtrip.bin` —
   the exact 751-byte input
-- `docs/development/issues/repros/2026-04-24-zlib-compress-non-roundtrip.cyr` —
+- `docs/development/issues/archived/repros/2026-04-24-zlib-compress-non-roundtrip.cyr` —
   ~50-line standalone cyrius program
 
 Build + run:
 
 ```sh
 # from any cyrius checkout:
-cat docs/development/issues/repros/2026-04-24-zlib-compress-non-roundtrip.cyr \
+cat docs/development/issues/archived/repros/2026-04-24-zlib-compress-non-roundtrip.cyr \
   | build/cc5 \
   > /tmp/repro && chmod +x /tmp/repro
-/tmp/repro < docs/development/issues/repros/2026-04-24-zlib-compress-non-roundtrip.bin
+/tmp/repro < docs/development/issues/archived/repros/2026-04-24-zlib-compress-non-roundtrip.bin
 ```
 
 Expected output:
@@ -152,7 +167,7 @@ When fixed:
 - Add this 751-byte input to `tests/tcyr/zlib_compress.tcyr` (or
   whichever tcyr file covers zlib roundtrips) as a permanent
   regression case.
-- Add `docs/development/issues/repros/2026-04-24-zlib-compress-non-roundtrip.{bin,cyr}`
+- Add `docs/development/issues/archived/repros/2026-04-24-zlib-compress-non-roundtrip.{bin,cyr}`
   to the repository so the repro is preserved.
 - Move this file to `docs/development/issues/archived/` once the
   fix is verified.

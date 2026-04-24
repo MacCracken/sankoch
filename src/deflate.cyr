@@ -862,8 +862,10 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
         i = i + 1;
     }
 
-    # Build code-length Huffman tree
-    huff_compute_lengths(cl_freqs, 19, cl_lens_opt, 2);
+    # Build code-length Huffman tree. Max code length is 7 bits per
+    # RFC 1951 §3.2.7 (header writes each cl_len in a 3-bit field, so any
+    # length above 7 would alias to a different value on the decoder side).
+    huff_compute_lengths(cl_freqs, 19, cl_lens_opt, 2, 7);
 
     # Build canonical codes for the code-length alphabet
     _huff_alloc_tables();
@@ -1238,7 +1240,7 @@ fn _dyn_flush_subblock(bw, bfinal) {
     store64(_dyn_lit_freq + 256 * 8, load64(_dyn_lit_freq + 256 * 8) + 1);
 
     # Build optimal trees for this sub-block's freqs
-    huff_compute_lengths(_dyn_lit_freq, 286, _dyn_opt_lit_lens, 257);
+    huff_compute_lengths(_dyn_lit_freq, 286, _dyn_opt_lit_lens, 257, 15);
     var hlit = 286;
     while (hlit > 257 && load64(_dyn_opt_lit_lens + (hlit - 1) * 8) == 0) {
         hlit = hlit - 1;
@@ -1251,7 +1253,7 @@ fn _dyn_flush_subblock(bw, bfinal) {
         i = i + 1;
     }
     if (has_dist == 0) { store64(_dyn_dist_freq, 1); }
-    huff_compute_lengths(_dyn_dist_freq, 30, _dyn_opt_dist_lens, 1);
+    huff_compute_lengths(_dyn_dist_freq, 30, _dyn_opt_dist_lens, 1, 15);
 
     var hdist = 30;
     while (hdist > 1 && load64(_dyn_opt_dist_lens + (hdist - 1) * 8) == 0) {

@@ -99,11 +99,176 @@ fn test_git_commit_roundtrip() {
     return 0;
 }
 
+# Build a git-tree-shaped object into `buf` with `num_entries`
+# `100644 fN.txt\0<32 deterministic bytes>` entries, returning the total
+# byte count written. Filename digits widen at the f9/f10 boundary; bytes
+# in each fake hash are `(i * 31 + j * 13) & 255` so the input has the
+# same ASCII-then-binary shape as a real git tree object.
+fn _build_tree(buf, num_entries) {
+    # Compute body size (everything after the "tree N\0" header).
+    var body = 0;
+    var i = 0;
+    while (i < num_entries) {
+        var nlen = 1;                       # 'f'
+        if (i >= 10) { nlen = nlen + 2; }
+        else        { nlen = nlen + 1; }
+        nlen = nlen + 4;                    # '.txt'
+        body = body + 7 + nlen + 1 + 32;    # '100644 ' + name + NUL + 32B
+        i = i + 1;
+    }
+
+    # Header: "tree <body>\0". Render body as decimal.
+    var pos = 0;
+    store8(buf + pos, 116); pos = pos + 1;  # 't'
+    store8(buf + pos, 114); pos = pos + 1;  # 'r'
+    store8(buf + pos, 101); pos = pos + 1;  # 'e'
+    store8(buf + pos, 101); pos = pos + 1;  # 'e'
+    store8(buf + pos, 32);  pos = pos + 1;  # ' '
+    var divisor = 1;
+    var b = body;
+    while (b >= 10) { divisor = divisor * 10; b = b / 10; }
+    var rem = body;
+    while (divisor > 0) {
+        var digit = rem / divisor;
+        store8(buf + pos, 48 + digit);
+        pos = pos + 1;
+        rem = rem - digit * divisor;
+        divisor = divisor / 10;
+    }
+    store8(buf + pos, 0); pos = pos + 1;    # NUL
+
+    # Entries
+    i = 0;
+    while (i < num_entries) {
+        store8(buf + pos, 49); pos = pos + 1;   # '1'
+        store8(buf + pos, 48); pos = pos + 1;   # '0'
+        store8(buf + pos, 48); pos = pos + 1;   # '0'
+        store8(buf + pos, 54); pos = pos + 1;   # '6'
+        store8(buf + pos, 52); pos = pos + 1;   # '4'
+        store8(buf + pos, 52); pos = pos + 1;   # '4'
+        store8(buf + pos, 32); pos = pos + 1;   # ' '
+        store8(buf + pos, 102); pos = pos + 1;  # 'f'
+        if (i >= 10) {
+            store8(buf + pos, 48 + i / 10); pos = pos + 1;
+            store8(buf + pos, 48 + i % 10); pos = pos + 1;
+        } else {
+            store8(buf + pos, 48 + i); pos = pos + 1;
+        }
+        store8(buf + pos, 46); pos = pos + 1;   # '.'
+        store8(buf + pos, 116); pos = pos + 1;  # 't'
+        store8(buf + pos, 120); pos = pos + 1;  # 'x'
+        store8(buf + pos, 116); pos = pos + 1;  # 't'
+        store8(buf + pos, 0); pos = pos + 1;    # NUL
+
+        var j = 0;
+        while (j < 32) {
+            store8(buf + pos, (i * 31 + j * 13) & 255);
+            pos = pos + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return pos;
+}
+
+# Regression for the 2026-04-24 tree-shaped roundtrip bug — sankoch 2.0.1
+# (and earlier 2.0.x) emitted an oversize code-length-tree depth (>= 8)
+# for inputs whose cl symbol frequencies push the meta-tree past 7 bits.
+# Each cl_len was written as a 3-bit field, so any length above 7 aliased
+# to a different value on the decoder, corrupting the entire dynamic block.
+# Sweep entry counts spanning the original 484/751 boundary so any future
+# regression in the same area trips this test immediately.
+fn test_tree_shape_sweep_roundtrip() {
+    var src = alloc(2048);
+    var compressed = alloc(4096);
+    var decompressed = alloc(2048);
+
+    var entries = 1;
+    while (entries <= 20) {
+        var n = _build_tree(src, entries);
+
+        var clen = zlib_compress(src, n, compressed, 4096);
+        assert(clen > 0, "tree-sweep: zlib_compress > 0");
+
+        var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
+        assert(dlen == n, "tree-sweep: roundtrip length matches");
+
+        var i = 0;
+        while (i < n) {
+            assert(load8(decompressed + i) == load8(src + i),
+                   "tree-sweep: byte-for-byte match");
+            i = i + 1;
+        }
+        entries = entries + 1;
+    }
+    return 0;
+}
+
+# Regression for the exact 751-byte input from
+# docs/development/issues/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md.
+# 16 entries (f0..f15) gives a 751-byte tree (header "tree 742\0" + 742B body).
+fn test_tree_751_byte_regression() {
+    var src = alloc(2048);
+    var compressed = alloc(4096);
+    var decompressed = alloc(2048);
+
+    var n = _build_tree(src, 16);
+    assert(n == 751, "751-byte regression: input size matches issue");
+
+    var clen = zlib_compress(src, n, compressed, 4096);
+    assert(clen > 0, "751-byte regression: compress > 0");
+
+    var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
+    assert(dlen == 751, "751-byte regression: decompress recovers full input");
+
+    var i = 0;
+    while (i < 751) {
+        assert(load8(decompressed + i) == load8(src + i),
+               "751-byte regression: byte-for-byte match");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Smaller-than-the-issue regression: the bisect found n=484 was the
+# smallest failing length on the original 751-byte input. We can't
+# reproduce that exact byte boundary with our synthetic builder (filename
+# widths shift the byte positions), but we can prove every level on every
+# tree size in the sweep is now stable. This test pins the smallest
+# failure-prone size in our synthetic shape to 11 entries (~510 bytes,
+# inside the 507-520 failing band the issue documents).
+fn test_tree_513_byte_regression() {
+    var src = alloc(2048);
+    var compressed = alloc(4096);
+    var decompressed = alloc(2048);
+
+    var n = _build_tree(src, 11);
+
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, compressed, 4096, level);
+        assert(clen > 0, "513-byte: compress per level");
+        var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
+        assert(dlen == n, "513-byte: decompress per level");
+        var i = 0;
+        while (i < n) {
+            assert(load8(decompressed + i) == load8(src + i),
+                   "513-byte: byte match per level");
+            i = i + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
     test_git_blob_roundtrip();
     test_git_tree_roundtrip();
     test_git_commit_roundtrip();
+    test_tree_shape_sweep_roundtrip();
+    test_tree_751_byte_regression();
+    test_tree_513_byte_regression();
     var r = assert_summary();
     return r;
 }

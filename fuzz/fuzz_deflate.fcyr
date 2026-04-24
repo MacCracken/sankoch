@@ -251,6 +251,158 @@ fn fuzz_lz4f_stream(seed, data_len) {
     return 0;
 }
 
+# Tree-shape generator: builds inputs that mimic git tree objects, which
+# put many ~10-byte ASCII filenames adjacent to 32-byte high-entropy
+# hashes. This is the input class that triggered the 2026-04-24 bug —
+# the cl meta-tree's natural depth pushed past 7 bits because rare
+# repeat-codes co-existed with very common literal-length codes.
+# Filename digits, hash content, and entry count all derive from the
+# fuzz seed, so each invocation tests a distinct boundary alignment.
+fn fuzz_tree_shape_roundtrip(seed, num_entries) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+
+    # Body size first, so we can render the "tree N\0" header.
+    var body = 0;
+    var i = 0;
+    while (i < num_entries) {
+        var nlen = 1;
+        if      (i >= 100) { nlen = nlen + 3; }
+        elif    (i >= 10)  { nlen = nlen + 2; }
+        else               { nlen = nlen + 1; }
+        nlen = nlen + 4;
+        body = body + 7 + nlen + 1 + 32;
+        i = i + 1;
+    }
+
+    var src = _fuzz_src;
+    var pos = 0;
+    store8(src + pos, 116); pos = pos + 1;
+    store8(src + pos, 114); pos = pos + 1;
+    store8(src + pos, 101); pos = pos + 1;
+    store8(src + pos, 101); pos = pos + 1;
+    store8(src + pos, 32);  pos = pos + 1;
+    var divisor = 1;
+    var b = body;
+    while (b >= 10) { divisor = divisor * 10; b = b / 10; }
+    var rem = body;
+    while (divisor > 0) {
+        var digit = rem / divisor;
+        store8(src + pos, 48 + digit);
+        pos = pos + 1;
+        rem = rem - digit * divisor;
+        divisor = divisor / 10;
+    }
+    store8(src + pos, 0); pos = pos + 1;
+
+    i = 0;
+    while (i < num_entries) {
+        store8(src + pos, 49); pos = pos + 1;
+        store8(src + pos, 48); pos = pos + 1;
+        store8(src + pos, 48); pos = pos + 1;
+        store8(src + pos, 54); pos = pos + 1;
+        store8(src + pos, 52); pos = pos + 1;
+        store8(src + pos, 52); pos = pos + 1;
+        store8(src + pos, 32); pos = pos + 1;
+        store8(src + pos, 102); pos = pos + 1;
+        if (i >= 100) {
+            store8(src + pos, 48 + i / 100); pos = pos + 1;
+            store8(src + pos, 48 + (i / 10) % 10); pos = pos + 1;
+            store8(src + pos, 48 + i % 10); pos = pos + 1;
+        } elif (i >= 10) {
+            store8(src + pos, 48 + i / 10); pos = pos + 1;
+            store8(src + pos, 48 + i % 10); pos = pos + 1;
+        } else {
+            store8(src + pos, 48 + i); pos = pos + 1;
+        }
+        store8(src + pos, 46); pos = pos + 1;
+        store8(src + pos, 116); pos = pos + 1;
+        store8(src + pos, 120); pos = pos + 1;
+        store8(src + pos, 116); pos = pos + 1;
+        store8(src + pos, 0); pos = pos + 1;
+        var j = 0;
+        while (j < 32) {
+            store8(src + pos, _fuzz_next());
+            pos = pos + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    var n = pos;
+
+    # Cycle through every level so a level-specific encoder bug is
+    # always reachable in the fuzz harness.
+    var level = 1;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, _fuzz_c, 262144, level);
+        if (clen < 0) { assert(0 == 1, "tree-shape: compress < 0"); }
+        var dlen = zlib_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+        assert(dlen == n, "tree-shape: roundtrip size mismatch");
+        var k = 0;
+        while (k < n) {
+            assert(load8(_fuzz_d + k) == load8(src + k),
+                   "tree-shape: byte mismatch");
+            k = k + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
+# Skewed-frequency generator: builds inputs that force the Huffman
+# meta-tree past its natural depth limit by mixing one super-common byte
+# with many singletons. This exercises _huff_redistribute (the zlib-style
+# Kraft-preserving length-limit fix landed in 2.0.2) — without redistribu-
+# tion, lit/dist code lengths would silently exceed 15 bits and the
+# encoded stream would fail to decode.
+fn fuzz_skewed_freq_roundtrip(seed, n) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    if (n > 200000) { n = 200000; }
+    if (n < 16)     { n = 16; }
+
+    # ~80% of bytes are zero; the remaining 20% are spread thinly across
+    # the byte alphabet to drive Fibonacci-like literal frequencies.
+    var src = _fuzz_src;
+    var i = 0;
+    while (i < n) {
+        var r = _fuzz_next();
+        if ((r & 7) < 6) {
+            store8(src + i, 0);
+        } else {
+            # rare byte sourced from the seed so the rarity tail is
+            # still deterministic and reproducible from (seed, n)
+            store8(src + i, r);
+        }
+        i = i + 1;
+    }
+
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, _fuzz_c, 262144, level);
+        if (clen < 0) { assert(0 == 1, "skewed: compress < 0"); }
+        var dlen = zlib_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+        assert(dlen == n, "skewed: roundtrip size mismatch");
+        var k = 0;
+        while (k < n) {
+            assert(load8(_fuzz_d + k) == load8(src + k),
+                   "skewed: byte mismatch");
+            k = k + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
 fn fuzz_gzip_roundtrip(seed, data_len) {
     _fuzz_seed(seed);
     var src[2048];
@@ -400,6 +552,53 @@ fn main() {
     println("fuzz_zlib: 36 streaming round-trip tests passed");
     println("fuzz_gzip: 36 streaming round-trip tests passed");
     println("fuzz_lz4f: 12 streaming round-trip tests passed");
+
+    # Tree-shape regression: 5 seeds × 8 entry counts straddling the
+    # 484/507/520/740/751 failing bands documented in the issue, each
+    # cycled through all 9 levels = 360 sub-runs.
+    var tree_entries[8];
+    store64(&tree_entries + 0 * 8, 1);
+    store64(&tree_entries + 1 * 8, 6);
+    store64(&tree_entries + 2 * 8, 11);     # ~510B  — old failure band
+    store64(&tree_entries + 3 * 8, 12);
+    store64(&tree_entries + 4 * 8, 16);     # 751B   — original repro
+    store64(&tree_entries + 5 * 8, 24);     # ~1100B
+    store64(&tree_entries + 6 * 8, 50);     # ~2300B — multi-block territory
+    store64(&tree_entries + 7 * 8, 120);    # ~5500B — multi-block + 3-digit names
+
+    seed = 1;
+    while (seed <= 5) {
+        var ti = 0;
+        while (ti < 8) {
+            fuzz_tree_shape_roundtrip(seed * 8009 + ti,
+            load64(&tree_entries + ti * 8));
+            ti = ti + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 40 tree-shape round-trip tests passed");
+
+    # Skewed-frequency regression: 6 seeds × 5 sizes, each cycled through
+    # 6 levels = 180 sub-runs probing _huff_redistribute on Fibonacci-ish
+    # literal frequency distributions.
+    var skewed_sizes[5];
+    store64(&skewed_sizes + 0 * 8, 64);
+    store64(&skewed_sizes + 1 * 8, 512);
+    store64(&skewed_sizes + 2 * 8, 4096);
+    store64(&skewed_sizes + 3 * 8, 32768);
+    store64(&skewed_sizes + 4 * 8, 100000);
+
+    seed = 1;
+    while (seed <= 6) {
+        var sk = 0;
+        while (sk < 5) {
+            fuzz_skewed_freq_roundtrip(seed * 9011 + sk,
+            load64(&skewed_sizes + sk * 8));
+            sk = sk + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 30 skewed-freq round-trip tests passed");
 
     return 0;
 }
