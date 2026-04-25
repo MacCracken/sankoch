@@ -1,0 +1,56 @@
+# sankoch 2.0.1 zlib_compress produces non-decompressible output for
+# this specific 751-byte input from a sit tree object.
+#
+# Build: cat /tmp/sankoch_minimal_repro.cyr | build/cc5 > /tmp/repro && chmod +x /tmp/repro
+# Run:   /tmp/repro </tmp/sankoch_repro.bin
+# Expected: exit 0 ("PASS")
+# Actual:   exit 1 ("FAIL: zlib_decompress(zlib_compress(input)) fails")
+include "lib/alloc.cyr"
+include "lib/freelist.cyr"
+include "lib/syscalls.cyr"
+include "lib/io.cyr"
+include "lib/fmt.cyr"
+include "lib/string.cyr"
+include "lib/vec.cyr"
+include "lib/fnptr.cyr"
+include "lib/thread.cyr"
+
+include "/home/macro/Repos/sakshi/dist/sakshi.cyr"
+include "/home/macro/Repos/sankoch/dist/sankoch.cyr"
+
+alloc_init();
+
+var input = alloc(8192);
+var n = 0;
+while (1) {
+    var r = syscall(SYS_READ, 0, input + n, 8192 - n);
+    if (r <= 0) { break; }
+    n = n + r;
+    if (n >= 8192) { break; }
+}
+
+syscall(1, 1, "input_len=", 10); print_num(n); syscall(1, 1, "\n", 1);
+
+var compressed = alloc(16384);
+var clen = zlib_compress(input, n, compressed, 16384);
+syscall(1, 1, "clen=", 5); print_num(clen); syscall(1, 1, "\n", 1);
+if (clen <= 0) { syscall(SYS_EXIT, 1); }
+
+var decompressed = alloc(16384);
+var dlen = zlib_decompress(compressed, clen, decompressed, 16384);
+syscall(1, 1, "dlen=", 5); print_num(dlen); syscall(1, 1, "\n", 1);
+
+if (dlen != n) {
+    syscall(1, 1, "FAIL: dlen != input_len\n", 24);
+    syscall(SYS_EXIT, 1);
+}
+var i = 0;
+while (i < n) {
+    if (load8(input + i) != load8(decompressed + i)) {
+        syscall(1, 1, "FAIL: bytes differ at i=", 24); print_num(i); syscall(1, 1, "\n", 1);
+        syscall(SYS_EXIT, 1);
+    }
+    i = i + 1;
+}
+syscall(1, 1, "PASS\n", 5);
+syscall(SYS_EXIT, 0);

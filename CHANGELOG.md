@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] — 2026-04-24
+
+**Critical fix to the 2.0.2 fix: code-length redistribution loop now
+terminates on Kraft-sum, not on overflow-leaf-count.**
+
+### Fixed
+- **`zlib_compress` (and `deflate_compress` / `gzip_compress` at level
+  ≥ 4) still produced non-decodable output for inputs whose cl-tree
+  natural Huffman depth landed at `max_bits+2` or deeper.**
+  Filed in `docs/development/issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md`.
+  The 2.0.2 fix landed `_huff_redistribute` to cap code lengths at
+  `max_bits` while preserving the Kraft inequality, but used zlib's
+  `gen_bitlen` shortcut: `overflow -= 2` per iteration, looping until
+  overflow == 0. That count-based termination is correct only when
+  every overflow leaf came from depth `max_bits+1`. When the natural
+  Huffman tree had any leaf at depth `max_bits+2` or deeper (e.g. on
+  inputs with very skewed cl symbol frequencies — typical of larger
+  sit tree objects with many singleton repeat-codes interleaved with
+  one or two super-common code lengths), the loop ended one or more
+  iterations short and left the cl tree silently over-subscribed. For
+  the 1504-byte repro, post-redistribution Kraft was 33024 vs target
+  32768 — off by exactly `2^(15-7) = 256`, one missed iteration. The
+  encoder built a malformed code table from those lengths; the
+  resulting bit-stream couldn't be decoded by either sankoch's own
+  decoder (`-ERR_INVALID_HUFFMAN`) or reference Python `zlib.decompress`
+  (`Error -3 invalid code lengths set`). 51/53 sit tree objects from
+  the 100-commit fixture round-tripped on 2.0.2; 2 still failed.
+
+  Fix: `_huff_redistribute` now loops on the Kraft sum directly,
+  exiting when `kraft == 2^15`. Each iteration removes a known fixed
+  amount (`2^(15-max_bits)`), and starting from a complete natural
+  Huffman tree the post-clip Kraft is always a multiple of that
+  amount, so the loop terminates with Kraft exactly at the target —
+  unconditionally, regardless of how deep the over-long leaves were.
+  The redistribution comment block now flags zlib's `overflow -= 2`
+  shortcut as the trap and documents why Kraft-sum termination is
+  correct.
+
+  Wire-format identical for inputs that already round-tripped on
+  2.0.2 (the post-clip Kraft already hit target, redistribution loop
+  ran zero times). The 751-byte parent-issue input still produces a
+  660-byte zlib stream byte-identically; the 1504/2021-byte
+  partial-fix-issue inputs go from non-decodable to decodable at
+  1243/1634 bytes (one extra byte each vs the broken 2.0.2 output —
+  the cost of a correct cl tree).
+
+### Added
+- `tests/tcyr/git_object.tcyr`: four new regressions targeting the
+  bug class. `test_tree_1504_byte_regression` /
+  `test_tree_2021_byte_regression` use the synthetic `_build_tree`
+  helper (now upgraded with a seed parameter and a stronger LCG hash
+  generator) to cover the 32-entry / 43-entry shapes through every
+  dynamic level. `test_real_sit_tree_1504_byte_roundtrip` /
+  `test_real_sit_tree_2021_byte_roundtrip` are the load-bearing
+  tests: they read the actual sit tree-object bytes from the
+  archived issue repros via a small `_read_repro` syscall helper
+  (SYS_OPEN + SYS_READ + SYS_CLOSE) and verify roundtrip across all
+  six dynamic levels. The synthetic `_build_tree` does NOT trigger
+  the natural-depth-≥-max_bits+2 case across any seed sweep we
+  tried — only real SHA-hash-derived byte distributions push the
+  cl tree past the count-based redistribution's blind spot, so the
+  file-read tests are the regression that would actually fail on
+  pre-2.0.3 code (verified by stashing the fix and re-running:
+  every byte-match assertion in those two tests fires). Suite now
+  reports 346,583 assertions (was 13,929 on 2.0.2).
+- `tests/tcyr/git_object.tcyr` `test_tree_shape_sweep_roundtrip`
+  extended from 1..20 entries with one seed to 1..50 entries with
+  five seeds — broad coverage even though the synthetic builder
+  doesn't reach the deep-natural-depth case in the file-read tests.
+- `fuzz/fuzz_deflate.fcyr` `tree_entries` table now includes 32 and
+  43 (the 1504/2021-byte points), 75, and continues to 120 — 55
+  outer iterations × 9 levels = 495 sub-runs of the tree-shape
+  round-trip harness per fuzz invocation.
+
+### Downstream
+- **cyrius v5.6.35** can now bump its `cyrius.cyml` `[release]` pin
+  from sankoch 2.0.1 to 2.0.3 and flip
+  `tests/regression-sit-status.sh`'s `CYRIUS_V5635_SHIPPED` guard.
+- **sit**: post-commit `read_object` verify in `cmd_commit` is now
+  safe to revert; `fl_alloc` swap stays as the cyrius v5.6.34
+  alloc-grow mitigation.
+
 ## [2.0.2] — 2026-04-24
 
 **Critical fix: dynamic-block code-length-tree depth limit.**

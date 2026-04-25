@@ -100,30 +100,33 @@ fn test_git_commit_roundtrip() {
 }
 
 # Build a git-tree-shaped object into `buf` with `num_entries`
-# `100644 fN.txt\0<32 deterministic bytes>` entries, returning the total
-# byte count written. Filename digits widen at the f9/f10 boundary; bytes
-# in each fake hash are `(i * 31 + j * 13) & 255` so the input has the
-# same ASCII-then-binary shape as a real git tree object.
-fn _build_tree(buf, num_entries) {
-    # Compute body size (everything after the "tree N\0" header).
+# `100644 fN.txt\0<32 hash bytes>` entries, returning the total byte
+# count written. Filename digits widen at the f9/f10 / f99/f100 borders;
+# hash bytes are produced by a SplitMix64-style PRNG seeded from
+# `(seed, entry_idx)` so the random distribution mimics real SHA hashes
+# closely enough to push the cl-tree natural depth past max_bits+1 — the
+# regression mode that the original `(i*31+j*13) & 255` builder missed.
+fn _build_tree(buf, num_entries, seed) {
+    # Compute body size first.
     var body = 0;
     var i = 0;
     while (i < num_entries) {
-        var nlen = 1;                       # 'f'
-        if (i >= 10) { nlen = nlen + 2; }
-        else        { nlen = nlen + 1; }
-        nlen = nlen + 4;                    # '.txt'
-        body = body + 7 + nlen + 1 + 32;    # '100644 ' + name + NUL + 32B
+        var nlen = 1;
+        if      (i >= 100) { nlen = nlen + 3; }
+        elif    (i >= 10)  { nlen = nlen + 2; }
+        else               { nlen = nlen + 1; }
+        nlen = nlen + 4;
+        body = body + 7 + nlen + 1 + 32;
         i = i + 1;
     }
 
-    # Header: "tree <body>\0". Render body as decimal.
+    # Header
     var pos = 0;
-    store8(buf + pos, 116); pos = pos + 1;  # 't'
-    store8(buf + pos, 114); pos = pos + 1;  # 'r'
-    store8(buf + pos, 101); pos = pos + 1;  # 'e'
-    store8(buf + pos, 101); pos = pos + 1;  # 'e'
-    store8(buf + pos, 32);  pos = pos + 1;  # ' '
+    store8(buf + pos, 116); pos = pos + 1;
+    store8(buf + pos, 114); pos = pos + 1;
+    store8(buf + pos, 101); pos = pos + 1;
+    store8(buf + pos, 101); pos = pos + 1;
+    store8(buf + pos, 32);  pos = pos + 1;
     var divisor = 1;
     var b = body;
     while (b >= 10) { divisor = divisor * 10; b = b / 10; }
@@ -135,34 +138,45 @@ fn _build_tree(buf, num_entries) {
         rem = rem - digit * divisor;
         divisor = divisor / 10;
     }
-    store8(buf + pos, 0); pos = pos + 1;    # NUL
+    store8(buf + pos, 0); pos = pos + 1;
 
     # Entries
     i = 0;
     while (i < num_entries) {
-        store8(buf + pos, 49); pos = pos + 1;   # '1'
-        store8(buf + pos, 48); pos = pos + 1;   # '0'
-        store8(buf + pos, 48); pos = pos + 1;   # '0'
-        store8(buf + pos, 54); pos = pos + 1;   # '6'
-        store8(buf + pos, 52); pos = pos + 1;   # '4'
-        store8(buf + pos, 52); pos = pos + 1;   # '4'
-        store8(buf + pos, 32); pos = pos + 1;   # ' '
-        store8(buf + pos, 102); pos = pos + 1;  # 'f'
-        if (i >= 10) {
+        store8(buf + pos, 49); pos = pos + 1;
+        store8(buf + pos, 48); pos = pos + 1;
+        store8(buf + pos, 48); pos = pos + 1;
+        store8(buf + pos, 54); pos = pos + 1;
+        store8(buf + pos, 52); pos = pos + 1;
+        store8(buf + pos, 52); pos = pos + 1;
+        store8(buf + pos, 32); pos = pos + 1;
+        store8(buf + pos, 102); pos = pos + 1;
+        if (i >= 100) {
+            store8(buf + pos, 48 + i / 100); pos = pos + 1;
+            store8(buf + pos, 48 + (i / 10) % 10); pos = pos + 1;
+            store8(buf + pos, 48 + i % 10); pos = pos + 1;
+        } elif (i >= 10) {
             store8(buf + pos, 48 + i / 10); pos = pos + 1;
             store8(buf + pos, 48 + i % 10); pos = pos + 1;
         } else {
             store8(buf + pos, 48 + i); pos = pos + 1;
         }
-        store8(buf + pos, 46); pos = pos + 1;   # '.'
-        store8(buf + pos, 116); pos = pos + 1;  # 't'
-        store8(buf + pos, 120); pos = pos + 1;  # 'x'
-        store8(buf + pos, 116); pos = pos + 1;  # 't'
-        store8(buf + pos, 0); pos = pos + 1;    # NUL
+        store8(buf + pos, 46); pos = pos + 1;
+        store8(buf + pos, 116); pos = pos + 1;
+        store8(buf + pos, 120); pos = pos + 1;
+        store8(buf + pos, 116); pos = pos + 1;
+        store8(buf + pos, 0); pos = pos + 1;
 
+        # 32 random hash bytes via the same Knuth/PCG LCG the fuzz harness
+        # uses. Each (seed, i) pair produces a distinct ~uniform byte
+        # distribution, mimicking SHA hashes well enough to push cl-tree
+        # natural depth past max_bits+1 (the 2.0.2 partial-fix regression
+        # mode that the original `(i*31+j*13) & 255` builder missed).
+        var s = seed * 6364136223846793005 + i * 1442695040888963407;
         var j = 0;
         while (j < 32) {
-            store8(buf + pos, (i * 31 + j * 13) & 255);
+            s = s * 6364136223846793005 + 1442695040888963407;
+            store8(buf + pos, (s >> 33) & 255);
             pos = pos + 1;
             j = j + 1;
         }
@@ -171,48 +185,63 @@ fn _build_tree(buf, num_entries) {
     return pos;
 }
 
-# Regression for the 2026-04-24 tree-shaped roundtrip bug — sankoch 2.0.1
-# (and earlier 2.0.x) emitted an oversize code-length-tree depth (>= 8)
-# for inputs whose cl symbol frequencies push the meta-tree past 7 bits.
-# Each cl_len was written as a 3-bit field, so any length above 7 aliased
-# to a different value on the decoder, corrupting the entire dynamic block.
-# Sweep entry counts spanning the original 484/751 boundary so any future
-# regression in the same area trips this test immediately.
+# Regression sweep for the 2026-04-24 tree-shaped roundtrip bug class.
+# 2.0.1 (and earlier) hit it for cl_freq distributions that pushed the
+# meta-tree past 7 bits. 2.0.2 fixed the cl-depth=max_bits+1 case but
+# under-iterated the redistribution loop when natural depth was
+# max_bits+2 or deeper, leaving the cl tree silently over-subscribed
+# (Kraft 33024 > 32768). 2.0.3 switched the redistribution loop to
+# Kraft-sum-based termination, fixing both cases. Sweep covers entry
+# counts 1..50 (spans the 484/751 original-issue band, the ~1500/~2021
+# 2.0.2-partial-fix band, and beyond) across multiple PRNG seeds — each
+# (seed, count) pair produces a distinct hash-byte distribution, so any
+# future regression in the redistribution path will fail this sweep.
 fn test_tree_shape_sweep_roundtrip() {
-    var src = alloc(2048);
-    var compressed = alloc(4096);
-    var decompressed = alloc(2048);
+    var src = alloc(4096);
+    var compressed = alloc(8192);
+    var decompressed = alloc(4096);
 
-    var entries = 1;
-    while (entries <= 20) {
-        var n = _build_tree(src, entries);
+    var seeds[5];
+    store64(&seeds + 0 * 8, 1);
+    store64(&seeds + 1 * 8, 7);
+    store64(&seeds + 2 * 8, 23);
+    store64(&seeds + 3 * 8, 71);
+    store64(&seeds + 4 * 8, 9241);
 
-        var clen = zlib_compress(src, n, compressed, 4096);
-        assert(clen > 0, "tree-sweep: zlib_compress > 0");
+    var si = 0;
+    while (si < 5) {
+        var seed = load64(&seeds + si * 8);
+        var entries = 1;
+        while (entries <= 50) {
+            var n = _build_tree(src, entries, seed);
 
-        var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
-        assert(dlen == n, "tree-sweep: roundtrip length matches");
+            var clen = zlib_compress(src, n, compressed, 8192);
+            assert(clen > 0, "tree-sweep: zlib_compress > 0");
 
-        var i = 0;
-        while (i < n) {
-            assert(load8(decompressed + i) == load8(src + i),
-            "tree-sweep: byte-for-byte match");
-            i = i + 1;
+            var dlen = zlib_decompress(compressed, clen, decompressed, 4096);
+            assert(dlen == n, "tree-sweep: roundtrip length matches");
+
+            var i = 0;
+            while (i < n) {
+                assert(load8(decompressed + i) == load8(src + i),
+                "tree-sweep: byte-for-byte match");
+                i = i + 1;
+            }
+            entries = entries + 1;
         }
-        entries = entries + 1;
+        si = si + 1;
     }
     return 0;
 }
 
-# Regression for the exact 751-byte input from
-# docs/development/issues/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md.
-# 16 entries (f0..f15) gives a 751-byte tree (header "tree 742\0" + 742B body).
+# Regression for the exact 751-byte input from the parent issue
+# (docs/development/issues/archived/2026-04-24-...). 16 entries → 751B.
 fn test_tree_751_byte_regression() {
     var src = alloc(2048);
     var compressed = alloc(4096);
     var decompressed = alloc(2048);
 
-    var n = _build_tree(src, 16);
+    var n = _build_tree(src, 16, 1);
     assert(n == 751, "751-byte regression: input size matches issue");
 
     var clen = zlib_compress(src, n, compressed, 4096);
@@ -230,19 +259,151 @@ fn test_tree_751_byte_regression() {
     return 0;
 }
 
-# Smaller-than-the-issue regression: the bisect found n=484 was the
-# smallest failing length on the original 751-byte input. We can't
-# reproduce that exact byte boundary with our synthetic builder (filename
-# widths shift the byte positions), but we can prove every level on every
-# tree size in the sweep is now stable. This test pins the smallest
-# failure-prone size in our synthetic shape to 11 entries (~510 bytes,
-# inside the 507-520 failing band the issue documents).
+# Regression for the 1504-byte input from
+# docs/development/issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md.
+# 32 entries (f0..f9 + f10..f31) → 1504B. Cycles through every dynamic
+# level — pre-2.0.3 produced clen=1242 with `Error -3 invalid code lengths
+# set` because the cl tree's natural depth was max_bits+2 and the
+# redistribution loop terminated one iteration early.
+fn test_tree_1504_byte_regression() {
+    var src = alloc(2048);
+    var compressed = alloc(4096);
+    var decompressed = alloc(2048);
+
+    var n = _build_tree(src, 32, 1);
+    assert(n == 1504, "1504-byte regression: input size matches issue");
+
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, compressed, 4096, level);
+        assert(clen > 0, "1504-byte: compress per level");
+        var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
+        assert(dlen == n, "1504-byte: decompress per level");
+        var i = 0;
+        while (i < n) {
+            assert(load8(decompressed + i) == load8(src + i),
+            "1504-byte: byte match per level");
+            i = i + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
+# Regression for the 2021-byte input — the second still-failing case in
+# the 2.0.2 partial-fix issue. 43 entries (f0..f9 + f10..f42) → 2021B.
+fn test_tree_2021_byte_regression() {
+    var src = alloc(4096);
+    var compressed = alloc(8192);
+    var decompressed = alloc(4096);
+
+    var n = _build_tree(src, 43, 1);
+    assert(n == 2021, "2021-byte regression: input size matches issue");
+
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, compressed, 8192, level);
+        assert(clen > 0, "2021-byte: compress per level");
+        var dlen = zlib_decompress(compressed, clen, decompressed, 4096);
+        assert(dlen == n, "2021-byte: decompress per level");
+        var i = 0;
+        while (i < n) {
+            assert(load8(decompressed + i) == load8(src + i),
+            "2021-byte: byte match per level");
+            i = i + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
+# Read up to `max` bytes from `path` (NUL-terminated string) into `buf`.
+# Returns the byte count read, or a negative syscall error. SYS_OPEN=2
+# and SYS_READ=0 / SYS_CLOSE=3 on Linux x86_64. Used by the file-read
+# regression tests below to load the archived sit tree-object inputs
+# at runtime — embedding the 3525 raw bytes inline would bloat the
+# test file with no benefit, and the .bin files are committed at a
+# stable archived path.
+fn _read_repro(path, buf, max) {
+    var fd = syscall(2, path, 0, 0);   # SYS_OPEN, O_RDONLY
+    if (fd < 0) { return fd; }
+    var n = 0;
+    while (n < max) {
+        var r = syscall(0, fd, buf + n, max - n);  # SYS_READ
+        if (r <= 0) { break; }
+        n = n + r;
+    }
+    syscall(3, fd);                    # SYS_CLOSE
+    return n;
+}
+
+# Authoritative regression for the 2.0.2-partial-fix bug class: load the
+# real sit tree-object bytes from the archived repro and roundtrip them.
+# These inputs are the only ones we know force cl-tree natural depth to
+# max_bits+2 (verified at investigation time). The synthetic _build_tree
+# above does NOT trigger this depth profile across any seed we tried, so
+# this test is the load-bearing one for the redistribution-loop fix.
+fn test_real_sit_tree_1504_byte_roundtrip() {
+    var src = alloc(2048);
+    var compressed = alloc(4096);
+    var decompressed = alloc(2048);
+
+    var path = "docs/development/issues/archived/repros/2026-04-24-zlib-2.0.2-partial-fix-input-1504.bin";
+    var n = _read_repro(path, src, 2048);
+    assert(n == 1504, "real-sit-1504: file present and 1504 bytes");
+
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, compressed, 4096, level);
+        assert(clen > 0, "real-sit-1504: compress per level");
+        var dlen = zlib_decompress(compressed, clen, decompressed, 2048);
+        assert(dlen == n, "real-sit-1504: decompress per level");
+        var i = 0;
+        while (i < n) {
+            assert(load8(decompressed + i) == load8(src + i),
+            "real-sit-1504: byte match per level");
+            i = i + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
+fn test_real_sit_tree_2021_byte_roundtrip() {
+    var src = alloc(4096);
+    var compressed = alloc(8192);
+    var decompressed = alloc(4096);
+
+    var path = "docs/development/issues/archived/repros/2026-04-24-zlib-2.0.2-partial-fix-input-2021.bin";
+    var n = _read_repro(path, src, 4096);
+    assert(n == 2021, "real-sit-2021: file present and 2021 bytes");
+
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(src, n, compressed, 8192, level);
+        assert(clen > 0, "real-sit-2021: compress per level");
+        var dlen = zlib_decompress(compressed, clen, decompressed, 4096);
+        assert(dlen == n, "real-sit-2021: decompress per level");
+        var i = 0;
+        while (i < n) {
+            assert(load8(decompressed + i) == load8(src + i),
+            "real-sit-2021: byte match per level");
+            i = i + 1;
+        }
+        level = level + 1;
+    }
+    return 0;
+}
+
+# Smaller-than-the-issue regression: the bisect on the original 751-byte
+# input found n=484 was the smallest failing length. This test pins
+# 11 entries (~510 bytes, inside the 507-520 failing band).
 fn test_tree_513_byte_regression() {
     var src = alloc(2048);
     var compressed = alloc(4096);
     var decompressed = alloc(2048);
 
-    var n = _build_tree(src, 11);
+    var n = _build_tree(src, 11, 1);
 
     var level = 4;
     while (level <= 9) {
@@ -269,6 +430,10 @@ fn main() {
     test_tree_shape_sweep_roundtrip();
     test_tree_751_byte_regression();
     test_tree_513_byte_regression();
+    test_tree_1504_byte_regression();
+    test_tree_2021_byte_regression();
+    test_real_sit_tree_1504_byte_roundtrip();
+    test_real_sit_tree_2021_byte_roundtrip();
     var r = assert_summary();
     return r;
 }

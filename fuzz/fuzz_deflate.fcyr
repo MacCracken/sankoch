@@ -553,30 +553,34 @@ fn main() {
     println("fuzz_gzip: 36 streaming round-trip tests passed");
     println("fuzz_lz4f: 12 streaming round-trip tests passed");
 
-    # Tree-shape regression: 5 seeds × 8 entry counts straddling the
-    # 484/507/520/740/751 failing bands documented in the issue, each
-    # cycled through all 9 levels = 360 sub-runs.
-    var tree_entries[8];
+    # Tree-shape regression: 5 seeds × 11 entry counts straddling every
+    # documented failing band (484/507/520/740/751 from the parent issue
+    # and ~1500/~2021 from the 2.0.2 partial-fix issue), each cycled
+    # through all 9 levels = 495 sub-runs.
+    var tree_entries[11];
     store64(&tree_entries + 0 * 8, 1);
     store64(&tree_entries + 1 * 8, 6);
-    store64(&tree_entries + 2 * 8, 11);     # ~510B  — old failure band
+    store64(&tree_entries + 2 * 8, 11);     # ~510B  — bisect floor of parent
     store64(&tree_entries + 3 * 8, 12);
-    store64(&tree_entries + 4 * 8, 16);     # 751B   — original repro
+    store64(&tree_entries + 4 * 8, 16);     # 751B   — parent issue repro
     store64(&tree_entries + 5 * 8, 24);     # ~1100B
-    store64(&tree_entries + 6 * 8, 50);     # ~2300B — multi-block territory
-    store64(&tree_entries + 7 * 8, 120);    # ~5500B — multi-block + 3-digit names
+    store64(&tree_entries + 6 * 8, 32);     # 1504B  — 2.0.2 partial-fix repro 1
+    store64(&tree_entries + 7 * 8, 43);     # 2021B  — 2.0.2 partial-fix repro 2
+    store64(&tree_entries + 8 * 8, 50);     # ~2300B — multi-block territory
+    store64(&tree_entries + 9 * 8, 75);     # ~3500B
+    store64(&tree_entries + 10 * 8, 120);   # ~5500B — multi-block + 3-digit names
 
     seed = 1;
     while (seed <= 5) {
         var ti = 0;
-        while (ti < 8) {
+        while (ti < 11) {
             fuzz_tree_shape_roundtrip(seed * 8009 + ti,
             load64(&tree_entries + ti * 8));
             ti = ti + 1;
         }
         seed = seed + 1;
     }
-    println("fuzz_deflate: 40 tree-shape round-trip tests passed");
+    println("fuzz_deflate: 55 tree-shape round-trip tests passed");
 
     # Skewed-frequency regression: 6 seeds × 5 sizes, each cycled through
     # 6 levels = 180 sub-runs probing _huff_redistribute on Fibonacci-ish
