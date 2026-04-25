@@ -346,7 +346,7 @@ fn fuzz_tree_shape_roundtrip(seed, num_entries) {
         var k = 0;
         while (k < n) {
             assert(load8(_fuzz_d + k) == load8(src + k),
-                   "tree-shape: byte mismatch");
+            "tree-shape: byte mismatch");
             k = k + 1;
         }
         level = level + 1;
@@ -395,7 +395,7 @@ fn fuzz_skewed_freq_roundtrip(seed, n) {
         var k = 0;
         while (k < n) {
             assert(load8(_fuzz_d + k) == load8(src + k),
-                   "skewed: byte mismatch");
+            "skewed: byte mismatch");
             k = k + 1;
         }
         level = level + 1;
