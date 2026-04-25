@@ -115,10 +115,14 @@ there's a reason to prioritize it:
   (`stream_decompress_*` accumulates compressed input then batch-
   decompresses) is fine for most consumers but doesn't help when
   decompressed output is larger than memory.
-- **Ring-buffer LZ77 match-finder** — replace the window-slide +
-  `lz77_rebase` scheme (currently ~16 B/input-byte of rebase
-  overhead) with a proper circular buffer that wraps the window.
-  Zero slide cost; requires `_lz77_find_match` to handle wrap-around.
+- ~~**Ring-buffer LZ77 match-finder**~~ — **landed in the Unreleased /
+  next 2.x point release (2026-04-25)**. Hash table now stores
+  absolute stream-byte positions; `_lz77_window_base` tracks the
+  absolute offset of `window[0]` and is bumped O(1) on each slide.
+  Stale entries are rejected lazily inside `_lz77_find_match` via a
+  single `chain < base` check per chain iteration — no batch walk.
+  ~10-12% on streaming compress 128K text; SIZE lines byte-identical;
+  batch path unchanged.
 - **Preset dictionary in streaming encoders** — `<fmt>_enc_init_dict`
   variants carrying a caller-provided dict (matches existing
   `deflate_decompress_dict` / `zlib_decompress_dict` semantics).
@@ -160,10 +164,11 @@ there's a reason to prioritize it:
     lines byte-for-byte unchanged). Foundational — lowers the constant
     factor without changing algorithm shape.
   - **Still ahead** (each in its own change): `good_length` early-exit
-    in the chain walk at level ≥ 6 (zlib's strategy: stop chasing the
-    chain once the current best is already long enough); ring-buffer
-    match-finder (also listed standalone above) which removes the
-    rebase tax. PCLMULQDQ CRC-32 deferred separately on priority.
+    in the chain walk at level ≥ 6 (attempted 2026-04-25, reverted —
+    sankoch's L6 chain depth of 64 is too shallow for the cut to bite
+    on benchmarkable inputs); PCLMULQDQ CRC-32 deferred separately on
+    priority. The ring-buffer match-finder (formerly listed standalone)
+    is now landed.
 
 ---
 
@@ -251,27 +256,35 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at v2.0.0)
+## File Summary (current — Unreleased / next 2.x point release)
 
 | File | Lines | Role |
 |------|-------|------|
 | types.cyr     |   37 | Enums: formats (incl. FORMAT_LZ4F), errors, limits |
-| checksum.cyr  |  469 | Adler-32 / CRC-32 / xxHash32 — batch + incremental state APIs |
+| checksum.cyr  |  508 | Adler-32 / CRC-32 / xxHash32 — batch + incremental state APIs |
 | bitreader.cyr |   99 | LSB-first bit-stream reader |
 | bitwriter.cyr |  143 | LSB-first bit-stream writer |
-| huffman.cyr   |  499 | Huffman build/decode, fixed trees, optimal tree construction |
-| lz77.cyr      |  150 | Sliding window match-finder + `lz77_rebase` for streaming slides |
+| huffman.cyr   |  661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes (`huff_build_enc_codes`) |
+| lz77.cyr      |  161 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase` for streaming slides |
 | lz4.cyr       |  647 | LZ4 block + frame de/compress + `lz4f_enc_*` streaming |
-| deflate.cyr   | 1607 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` streaming, dict |
+| deflate.cyr   | 1600 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` streaming, dict |
 | zlib.cyr      |  169 | RFC 1950 wrapper + FDICT + `zlib_enc_*` streaming |
 | gzip.cyr      |  237 | RFC 1952 wrapper + concatenated members + `gzip_enc_*` streaming |
 | lib.cyr       |  150 | Public API, `_sankoch_mtx`, two-tier lock dispatch |
 | stream.cyr    |  162 | Streaming dispatch (`stream_compress_init/write/finish` → per-format `_enc_*`) |
-| **Total**     | **4369** | |
+| **Total**     | **4574** | |
 
-Assertions: 1028625 (sankoch.tcyr) + 134 (git_object.tcyr) = 1028759 total
-Fuzz: 1564 iterations across both harnesses (incl. 204 streaming
-round-trips covering all four `_enc_*` encoders)
+Assertions: 1,028,625 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
+1,375,208 total. The git_object suite grew massively in 2.0.2 / 2.0.3
+when the cl-tree depth-cap regression fixtures landed (134 → 13,929 →
+346,583 across the two patches).
+
+Fuzz: 1,649 iterations across 6 harnesses
+(`fuzz_lz4` 700, `fuzz_deflate` batch 340, `fuzz_zlib` 160, `fuzz_gzip`
+160, plus the four streaming variants and the 2.0.2 tree-shape /
+skewed-freq harnesses).
+
+Distlib: `dist/sankoch.cyr` at 4,597 lines.
 
 ## Dependencies
 

@@ -7,9 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**DEFLATE compress perf — two stacked wins on the throughput
-investigation surfaced by sit v0.6.4: pre-reversed dynamic Huffman codes
-+ 8-byte word-compare match extension.**
+**Toolchain refresh + DEFLATE compress perf — three stacked wins on
+the throughput investigation surfaced by sit v0.6.4: pre-reversed
+dynamic Huffman codes, 8-byte word-compare match extension, and
+ring-buffer (absolute-position) match-finder.**
+
+### Optimized — ring-buffer match-finder, O(1) slide (2026-04-25)
+- **`lz77_rebase` no longer walks the 65,536-entry hash table on every
+  window slide.** The streaming encoder used to subtract `delta` from
+  each entry in `_lz77_head` and `_lz77_prev` after sliding the window
+  buffer — ~22% of streaming compress time on 128K text.
+
+  Fix: hash table now stores ABSOLUTE stream-byte positions instead of
+  window-relative ones. `_lz77_window_base` tracks the absolute byte
+  offset of `window[0]`, advanced by O(1) on each slide. Stale entries
+  (from before the most recent slide) are rejected lazily inside
+  `_lz77_find_match` via a single extra `chain < base` check per chain
+  iteration — no batch walk. Boundary safety: the new check guarantees
+  `chain - base >= 0` before any byte access via the chain offset.
+
+  Batch compress paths (`deflate_compress_*` etc.) never advance
+  `_lz77_window_base` — `lz77_init` resets it to 0 — so abs_pos == win_pos
+  in batch mode and behavior is unchanged. SIZE lines byte-for-byte
+  identical to the previous baseline across the full bench matrix
+  (1K/4K/16K/64K/128K/256K text + zeros + rand, DEFLATE/zlib/gzip,
+  levels 1/3/6/9, batch + streaming).
+
+### Metrics — streaming compress (50 iters/op, best of 3 stable runs)
+- `stream deflate L1 text 128K`: 2,670,557 → 2,372,713 ns/op (**−11.2%**)
+- `stream deflate L6 text 128K`: 2,724,857 → 2,385,036 ns/op (**−12.5%**)
+- `stream zlib L6 text 128K`:    2,914,542 → 2,615,973 ns/op (**−10.2%**)
+- `stream gzip L6 text 128K`:    3,087,046 → 2,756,579 ns/op (**−10.7%**)
+- `deflate L6 text 4K` (batch):  157,672 → 155,884 ns/op (flat — batch
+  path keeps window_base=0, no behavior change)
+
+### Combined (all three Unreleased perf wins) vs pre-Unreleased baseline
+- `stream zlib L6 text 128K` end-to-end ~−17-20% (bit-reverse + 8-byte
+  match + ring-buffer stack)
+- `deflate c rand 4K`: −16.2% (entirely from bit-reverse — random has
+  no long matches and no window slides)
+- `deflate L6 text 4K`: −9.7% (bit-reverse + 8-byte match — batch
+  doesn't slide so ring-buffer doesn't apply)
+
+### Roadmap
+- Closes the **ring-buffer LZ77 match-finder** v2.x candidate. The
+  rebase-walk-on-slide cost is now O(1) instead of O(HASH_SIZE).
+
+**Prior wins on the same throughput investigation, still in this
+Unreleased section:** pre-reversed dynamic Huffman codes (lower in this
+section), 8-byte word-compare match extension (lower in this section).
+
+### Changed — toolchain bump to Cyrius 5.6.42 (2026-04-25)
+- **`cyrius.cyml` pin updated to `cyrius = "5.6.42"`** (was 5.6.34).
+  No source changes required — sankoch's stdlib surface (`syscalls`,
+  `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert`) has the
+  same public API across the jump. Full regression sweep on 5.6.42 is
+  green: 1,028,625 + 346,583 = 1,375,208 assertions; 1,649 fuzz
+  iterations across 6 harnesses; lint clean; `cyrius fmt --check`
+  clean across `src/`, `tests/tcyr/`, `tests/bcyr/`, `fuzz/`; distlib
+  in sync. CI reads the toolchain pin from the manifest, so no
+  workflow-yaml edits beyond the comment refresh.
+- **Toolchain version sweep**: `CLAUDE.md`, `README.md`,
+  `docs/development/cyrius-usage.md`, and `.github/workflows/ci.yml`
+  reference 5.6.42. Historical entries in CHANGELOG and archived issue
+  notes left as-is — they describe toolchain state at the time of
+  those releases.
+
+### Docs — stale-data sweep (2026-04-25)
+- **Source / test / fuzz / distlib counts updated to current truth**
+  in `CLAUDE.md` (Current State block + bench-command comments),
+  `README.md` (Architecture table + summary line + bench-command
+  comments), `docs/development/roadmap.md` (File Summary table re-headed
+  "current — Unreleased / next 2.x point release", with current line
+  counts and assertion totals), and `docs/development/cyrius-usage.md`
+  (test command comment for `git_object.tcyr`). Previous figures still
+  pointed at the v2.0.0 cut: 4,369 source lines, 1,028,759 assertions,
+  1,564 fuzz iterations, 4,351 distlib lines. Current truth post-2.0.3
+  + Unreleased perf wins: **4,574** source lines across 12 modules,
+  **1,375,208** assertions (the git_object suite grew 134 → 13,929 →
+  346,583 across the 2.0.2 / 2.0.3 cl-tree depth-cap regression
+  fixtures), **1,649** fuzz iterations across 6 harnesses,
+  **4,597**-line distlib bundle.
+- **Status / distribution lines refreshed** in `CLAUDE.md`:
+  "Status: 2.0.0 — shipping" → "Status: 2.0.3 (stable)";
+  "Distribution: 2.0.0 lands in the next Cyrius lang release" →
+  notes that 2.0.2 landed in cyrius 5.6.34, 2.0.3 in 5.6.35, and
+  the current 5.6.42 toolchain ships 2.0.3 as `lib/sankoch.cyr`.
+- **Roadmap header**: "Status: Stable (v2.0.0)" → "Status: Stable
+  (v2.0.3)" (already done in the perf-fix commit).
+- Historical CHANGELOG entries, audit reports, and archived issue
+  docs intentionally left unchanged — they describe state at the
+  time of writing and shouldn't be retconned.
 
 ### Optimized — 8-byte match extension in `_lz77_find_match` (2026-04-25)
 - **Inner match-extend loop now compares 8 bytes per iteration via

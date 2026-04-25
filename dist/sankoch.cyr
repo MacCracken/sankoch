@@ -1496,66 +1496,96 @@ enum LZ77 {
 #   9 (best)    — chain depth 256
 var _lz77_chain_depth = 64;
 
-# Hash table: maps hash → most recent position (heap-allocated, 256KB each)
+# Hash table: maps hash → most recent ABSOLUTE position (heap-allocated, 256KB each)
 var _lz77_head = 0;
-# Chain: prev[pos & WINDOW-1] = previous position with same hash
+# Chain: prev[abs_pos & WINDOW-1] = previous absolute position with same hash
 var _lz77_prev = 0;
 
-# Hash 3 bytes into a 15-bit index.
-fn _lz77_hash3(src, pos) {
-    var v = load8(src + pos);
-    v = v ^ (load8(src + pos + 1) << 5);
-    v = v ^ (load8(src + pos + 2) << 10);
+# Absolute byte offset of window[0] in the streaming input. Bumped by
+# `lz77_rebase(delta)` on each window slide. Batch compress never
+# advances this — abs_pos == win_pos in batch mode, so the hash table
+# just stores byte offsets within the source buffer (same as pre-2.x).
+#
+# Why absolute positions: streaming used to walk the entire 65,536-entry
+# hash table on every slide and subtract delta from each entry — ~22%
+# of streaming compress time. With absolute positions, slide is O(1)
+# (just bump window_base); stale entries are naturally rejected by the
+# `chain < _lz77_window_base` check inside _lz77_find_match without
+# touching the table.
+var _lz77_window_base = 0;
+
+# Hash 3 bytes into a 15-bit index. Position argument is window-relative
+# (offset into the src buffer the encoder passes in).
+fn _lz77_hash3(src, win_pos) {
+    var v = load8(src + win_pos);
+    v = v ^ (load8(src + win_pos + 1) << 5);
+    v = v ^ (load8(src + win_pos + 2) << 10);
     return v & LZ77_HASH_MASK;
 }
 
-# Insert position into hash chain.
-fn _lz77_insert(src, pos) {
-    var h = _lz77_hash3(src, pos);
+# Insert window-relative position into hash chain. The hash table stores
+# the corresponding ABSOLUTE position (win_pos + _lz77_window_base) so
+# entries survive window slides without rebasing.
+fn _lz77_insert(src, win_pos) {
+    var abs_pos = win_pos + _lz77_window_base;
+    var h = _lz77_hash3(src, win_pos);
     var prev = load64(_lz77_head + h * 8);
-    store64(_lz77_prev + (pos & LZ77_HASH_MASK) * 8, prev);
-    store64(_lz77_head + h * 8, pos);
+    store64(_lz77_prev + (abs_pos & LZ77_HASH_MASK) * 8, prev);
+    store64(_lz77_head + h * 8, abs_pos);
     return 0;
 }
 
-# Find the longest match at position pos.
+# Find the longest match at window-relative position win_pos.
+# src_len is the window-relative end-of-data offset.
 # Returns match length in low 16 bits, distance in bits 16-31.
 # Returns 0 if no match found (length < 3).
-fn _lz77_find_match(src, src_len, pos) {
-    if (pos + LZ77_MIN_MATCH > src_len) { return 0; }
+#
+# Hash table stores absolute positions; this function converts back to
+# window-relative for byte access via `_lz77_window_base`. Stale entries
+# from before the current window are rejected via two checks:
+#   (a) chain < 0       — sentinel for empty slot
+#   (b) chain < base    — entry from before the most recent slide;
+#                          chain - base would be negative, byte load UB
+# Once both pass, dist = abs_pos - chain is bounded by WINDOW.
+fn _lz77_find_match(src, src_len, win_pos) {
+    if (win_pos + LZ77_MIN_MATCH > src_len) { return 0; }
 
-    var h = _lz77_hash3(src, pos);
+    var base = _lz77_window_base;
+    var abs_pos = win_pos + base;
+
+    var h = _lz77_hash3(src, win_pos);
     var chain = load64(_lz77_head + h * 8);
 
     var best_len = 0;
     var best_dist = 0;
-    var max_len = src_len - pos;
+    var max_len = src_len - win_pos;
     if (max_len > LZ77_MAX_MATCH) { max_len = LZ77_MAX_MATCH; }
 
     var depth = 0;
     while (depth < _lz77_chain_depth) {
-        if (chain < 0) { break; }  # end of chain
-        var dist = pos - chain;
+        if (chain < 0) { break; }       # sentinel
+        if (chain < base) { break; }    # entry from before this window slide
+        var dist = abs_pos - chain;
         if (dist <= 0 || dist > LZ77_WINDOW) { break; }
 
+        var chain_off = chain - base;   # window-relative offset for byte access
+
         # Quick check: compare first and last+1 byte of best match
-        if (load8(src + chain) == load8(src + pos)) {
-            if (best_len < 3 || load8(src + chain + best_len) == load8(src + pos + best_len)) {
-                # Count full match length. 8-byte chunks via load64 — cuts
-                # the inner loop ops/byte by ~8× on long matches; tail is
-                # byte-at-a-time. Boundary safety: load64 only fires when
-                # mlen+8 <= max_len, and max_len = min(LZ77_MAX_MATCH,
-                # src_len - pos), with chain < pos < src_len, so both
-                # src+pos+mlen+7 and src+chain+mlen+7 stay in-bounds.
+        if (load8(src + chain_off) == load8(src + win_pos)) {
+            if (best_len < 3 || load8(src + chain_off + best_len) == load8(src + win_pos + best_len)) {
+                # Count full match length. 8-byte chunks via load64; tail
+                # is byte-at-a-time. Boundary safety: load64 only fires
+                # while mlen+8 <= max_len, and max_len = min(LZ77_MAX_MATCH,
+                # src_len - win_pos), with chain_off < win_pos < src_len.
                 var mlen = 0;
                 while (mlen + 8 <= max_len) {
-                    var a = load64(src + chain + mlen);
-                    var b = load64(src + pos + mlen);
+                    var a = load64(src + chain_off + mlen);
+                    var b = load64(src + win_pos + mlen);
                     if (a != b) { break; }
                     mlen = mlen + 8;
                 }
                 while (mlen < max_len) {
-                    if (load8(src + chain + mlen) != load8(src + pos + mlen)) { break; }
+                    if (load8(src + chain_off + mlen) != load8(src + win_pos + mlen)) { break; }
                     mlen = mlen + 1;
                 }
                 if (mlen >= LZ77_MIN_MATCH && mlen > best_len) {
@@ -1590,33 +1620,20 @@ fn lz77_set_level(level) {
     return 0;
 }
 
-# Subtract `delta` from every entry in _lz77_head and _lz77_prev.
-# Entries that go negative become -1 (sentinel for "no entry").
-# Used by the streaming encoder after sliding its input window: the
-# window content moved down by `delta` bytes, so every cached position
-# in the hash chains must move with it or be invalidated.
+# Advance the absolute window base by `delta`. O(1) — no table walk.
+# Called by the streaming encoder after it slides the window buffer
+# (memcpys the last DENC_SLIDE_RETAIN bytes to position 0). Hash table
+# entries pointing to absolute positions older than the new base are
+# rejected lazily inside _lz77_find_match via the `chain < base` check.
 fn lz77_rebase(delta) {
-    if (_lz77_head == 0) { return 0; }
-    var i = 0;
-    while (i < LZ77_HASH_SIZE) {
-        var h = load64(_lz77_head + i * 8);
-        if (h >= 0) {
-            h = h - delta;
-            if (h < 0) { h = 0 - 1; }
-            store64(_lz77_head + i * 8, h);
-        }
-        var p = load64(_lz77_prev + i * 8);
-        if (p >= 0) {
-            p = p - delta;
-            if (p < 0) { p = 0 - 1; }
-            store64(_lz77_prev + i * 8, p);
-        }
-        i = i + 1;
-    }
+    _lz77_window_base = _lz77_window_base + delta;
     return 0;
 }
 
-# Initialize hash tables (heap-allocate + clear to -1).
+# Initialize hash tables (heap-allocate + clear to -1) and reset the
+# absolute window base. Called at the start of every batch compress and
+# every streaming encoder init, so the window_base for batch is always 0
+# (abs_pos == win_pos in batch mode — no behavior change vs pre-2.x).
 fn lz77_init() {
     if (_lz77_head == 0) {
         _lz77_head = alloc(262144);
@@ -1628,6 +1645,7 @@ fn lz77_init() {
         store64(_lz77_prev + i * 8, 0 - 1);
         i = i + 1;
     }
+    _lz77_window_base = 0;
     return 0;
 }
 

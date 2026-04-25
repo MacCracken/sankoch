@@ -10,7 +10,7 @@ Toolchain pinned in `cyrius.cyml`:
 
 ```toml
 [package]
-cyrius = "5.6.34"
+cyrius = "5.6.42"
 ```
 
 CI reads the pin from the manifest; locally you can install that version
@@ -33,8 +33,8 @@ compile errors across the full include chain before running tests.
 ### Test
 
 ```bash
-cyrius test tests/tcyr/sankoch.tcyr      # 1028625 assertions
-cyrius test tests/tcyr/git_object.tcyr   # 134 assertions (git integration)
+cyrius test tests/tcyr/sankoch.tcyr      # 1,028,625 assertions
+cyrius test tests/tcyr/git_object.tcyr   # 346,583 assertions (git integration; grew with 2.0.2 / 2.0.3 cl-tree regression fixtures)
 ```
 
 Both tcyr files include `src/lib.cyr` (full chain) + `lib/assert.cyr`.
@@ -79,13 +79,13 @@ cyrius vet  src/lib.cyr         # audit include dependencies
 
 Sankoch is stdlib-only, so there is no `cyrius.lock` and no
 `cyrius deps --verify` gate — the stdlib snapshot is implicitly pinned
-by the toolchain version (`cyrius = "5.6.34"` in `cyrius.cyml`). Add
+by the toolchain version (`cyrius = "5.6.42"` in `cyrius.cyml`). Add
 `cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
 ever added under `[deps.*]`.
 
 All four run in CI. `fmt --check` emits the formatted source; CI diffs
 against the committed file and fails on drift. To apply the fix
-in-place (Cyrius 5.5.22+, also available on 5.6.34):
+in-place (Cyrius 5.5.22+, also available on 5.6.42):
 
 ```bash
 cyrfmt --write src/checksum.cyr    # or -w
@@ -125,7 +125,7 @@ The release workflow: runs CI → verifies `VERSION == tag` → builds
 with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates
 bundle → archives src tarball + `dist/sankoch.cyr` + SHA256SUMS →
 creates a GitHub Release. No `cyrius.lock` is shipped — sankoch is
-stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.6.34"`
+stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.6.42"`
 in `cyrius.cyml` is the lockfile.
 
 ## Gotchas

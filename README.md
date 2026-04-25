@@ -52,9 +52,9 @@ want to feed their own data streams.
 ```sh
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check
-cyrius test tests/tcyr/sankoch.tcyr      # 1028625 assertions
-cyrius test tests/tcyr/git_object.tcyr   # 134 assertions
-cyrius fuzz                              # both harnesses, 1564 iters
+cyrius test tests/tcyr/sankoch.tcyr      # 1,028,625 assertions
+cyrius test tests/tcyr/git_object.tcyr   # 346,583 assertions
+cyrius fuzz                              # all 6 harnesses, 1,649 iters
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
 cyrius distlib                           # → dist/sankoch.cyr
 ```
@@ -66,25 +66,25 @@ Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cy
 | File          | Lines | Role |
 |---------------|------:|------|
 | types.cyr     |    37 | Enums: formats, errors, limits, magic bytes |
-| checksum.cyr  |   469 | Adler-32, CRC-32, xxHash32 — batch + incremental |
+| checksum.cyr  |   508 | Adler-32, CRC-32, xxHash32 — batch + incremental |
 | bitreader.cyr |    99 | LSB-first bit-stream reader |
 | bitwriter.cyr |   143 | LSB-first bit-stream writer |
-| huffman.cyr   |   499 | Huffman build/decode, fixed + optimal trees |
-| lz77.cyr      |   150 | Sliding window match-finder, incl. rebase |
+| huffman.cyr   |   661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes |
+| lz77.cyr      |   161 | Sliding window match-finder, 8-byte word-compare match extend, rebase |
 | lz4.cyr       |   647 | LZ4 block + frame de/compress + streaming enc |
-| deflate.cyr   |  1607 | DEFLATE de/compress, adaptive blocks, streaming enc, dict |
+| deflate.cyr   |  1600 | DEFLATE de/compress, adaptive blocks, streaming enc, dict |
 | zlib.cyr      |   169 | RFC 1950 wrapper + FDICT + streaming enc |
 | gzip.cyr      |   237 | RFC 1952 wrapper + concatenated members + streaming enc |
 | stream.cyr    |   162 | Streaming dispatch |
 | lib.cyr       |   150 | Include chain + public API + thread safety |
 
-**4369 lines** of Cyrius. **1,028,759 assertions** across 2 test
-suites + **1564 fuzz iterations**. Distlib: `dist/sankoch.cyr` at
-4351 lines, zero deps.
+**4,574 lines** of Cyrius. **1,375,208 assertions** across 2 test
+suites + **1,649 fuzz iterations** across 6 harnesses. Distlib:
+`dist/sankoch.cyr` at 4,597 lines, zero deps.
 
 ## Toolchain
 
-Cyrius 5.6.34 (pinned in `cyrius.cyml`).
+Cyrius 5.6.42 (pinned in `cyrius.cyml`).
 
 ## Why
 
