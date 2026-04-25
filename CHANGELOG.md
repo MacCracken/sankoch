@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-04-25
+
 **Toolchain refresh + DEFLATE compress perf — three stacked wins on
 the throughput investigation surfaced by sit v0.6.4: pre-reversed
 dynamic Huffman codes, 8-byte word-compare match extension, and
-ring-buffer (absolute-position) match-finder.**
+ring-buffer (absolute-position) match-finder. Plus a doc staleness
+sweep aligning all live docs to current source/test/fuzz/distlib
+counts. No public API change; wire-format identical (all SIZE lines
+byte-for-byte unchanged across the bench matrix).**
 
 ### Optimized — ring-buffer match-finder, O(1) slide (2026-04-25)
 - **`lz77_rebase` no longer walks the 65,536-entry hash table on every
@@ -78,7 +83,7 @@ section), 8-byte word-compare match extension (lower in this section).
   in `CLAUDE.md` (Current State block + bench-command comments),
   `README.md` (Architecture table + summary line + bench-command
   comments), `docs/development/roadmap.md` (File Summary table re-headed
-  "current — Unreleased / next 2.x point release", with current line
+  "current — 2.1.0", with current line
   counts and assertion totals), and `docs/development/cyrius-usage.md`
   (test command comment for `git_object.tcyr`). Previous figures still
   pointed at the v2.0.0 cut: 4,369 source lines, 1,028,759 assertions,

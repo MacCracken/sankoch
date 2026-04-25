@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.0.3) | **Last Updated**: 2026-04-25
+> **Status**: Stable (v2.1.0) | **Last Updated**: 2026-04-25
 
 ---
 
@@ -115,8 +115,8 @@ there's a reason to prioritize it:
   (`stream_decompress_*` accumulates compressed input then batch-
   decompresses) is fine for most consumers but doesn't help when
   decompressed output is larger than memory.
-- ~~**Ring-buffer LZ77 match-finder**~~ — **landed in the Unreleased /
-  next 2.x point release (2026-04-25)**. Hash table now stores
+- ~~**Ring-buffer LZ77 match-finder**~~ — **landed in 2.1.0
+  (2026-04-25)**. Hash table now stores
   absolute stream-byte positions; `_lz77_window_base` tracks the
   absolute offset of `window[0]` and is bumped O(1) on each slide.
   Stale entries are rejected lazily inside `_lz77_find_match` via a
@@ -129,9 +129,9 @@ there's a reason to prioritize it:
 - **Configurable LZ4F block-max size** — today the BD byte is fixed
   to 64 KB; allow 256 KB / 1 MB / 4 MB per the spec.
 - ~~**Adler-32 16-byte unroll in `adler32_update`**~~ — **landed in
-  the Unreleased / next 2.x point release**. INFO-02 from the
-  2026-04-19-pre-2.0.0 audit is closed; streaming zlib now sits
-  ~6 % closer to streaming DEFLATE on 128 KB inputs.
+  2.0.1**. INFO-02 from the 2026-04-19-pre-2.0.0 audit is closed;
+  streaming zlib now sits ~6 % closer to streaming DEFLATE on 128 KB
+  inputs.
 - **Defensive `alloc()` failure handling** in `*_enc_init` — wrap
   alloc + unlock-on-failure helper (INFO-01 in that audit).
 - **DEFLATE compress/decompress throughput investigation** — surfaced
@@ -149,8 +149,7 @@ there's a reason to prioritize it:
   (currently 12.5× git). Pairs naturally with the deferred
   PCLMULQDQ CRC-32 work (same x86_64 inline-asm gate, same
   consumer category).
-  - **Two down-payments landed in Unreleased / next 2.x point release
-    (2026-04-25)**:
+  - **Two down-payments landed in 2.1.0 (2026-04-25)**:
     1. Pre-reverse dynamic Huffman codes at build time so the
        symbol-emit hot loop drops three per-symbol bit-reversal
        sub-loops.
@@ -256,7 +255,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (current — Unreleased / next 2.x point release)
+## File Summary (at 2.1.0)
 
 | File | Lines | Role |
 |------|-------|------|

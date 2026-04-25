@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.0.3 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.6.x toolchain releases
+- **Status**: 2.1.0 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.6.x toolchain releases
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -29,7 +29,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
   fixtures); 1,649 fuzz iterations across 6 harnesses
   (lz4 / deflate batch + 4 streaming + 2 tree-shape/skewed-freq); 45+ benchmarks
 - **Dist bundle**: `dist/sankoch.cyr` at ~4,597 lines, zero deps
-- **Stable**: 2.0.3 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.1.0 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming
@@ -39,11 +39,11 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 - **Toolchain**: Cyrius 5.6.42 (`cyrius.cyml: cyrius = "5.6.42"`)
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
-- **Distribution**: 2.0.2 landed in Cyrius 5.6.34's stdlib;
-  2.0.3 picked up in Cyrius 5.6.35; the current 5.6.42 toolchain
-  ships 2.0.3 as `lib/sankoch.cyr`. Consumers import it via
-  `include "lib/sankoch.cyr"` — no separate dependency declaration
-  needed in their `cyrius.cyml`.
+- **Distribution**: 2.0.2 landed in Cyrius 5.6.34's stdlib; 2.0.3
+  picked up in Cyrius 5.6.35; 2.1.0 ships as `lib/sankoch.cyr` in
+  the next Cyrius 5.6.x release that picks up this tag. Consumers
+  import it via `include "lib/sankoch.cyr"` — no separate dependency
+  declaration needed in their `cyrius.cyml`.
 
 ## Consumers
 
