@@ -130,6 +130,22 @@ there's a reason to prioritize it:
   ~6 % closer to streaming DEFLATE on 128 KB inputs.
 - **Defensive `alloc()` failure handling** in `*_enc_init` — wrap
   alloc + unlock-on-failure helper (INFO-01 in that audit).
+- **DEFLATE compress/decompress throughput investigation** — surfaced
+  by sit v0.6.4 perf review (2026-04-25). Sankoch's zlib path
+  measured 139µs for `zlib_compress(1024B)`, 1.26ms for
+  `zlib_compress(64KB)`, and 33µs / 339µs for the matching
+  decompress (per [sit's v0.6.4 bench snapshot](../../../sit/docs/benchmarks/2026-04-25-v0.6.4.md)).
+  These are software-only single-threaded; libdeflate-class
+  implementations on the same hardware hit ~5-10× higher
+  throughput via micro-arch tuning (better match-finder hash,
+  tighter inner loop, optional SIMD for hash + length-distance
+  encoding). Direct user-visible impact on sit: `add-1MB` is
+  208ms total, of which ~150ms is `zlib_compress(1MB)` — a 5×
+  zlib speedup would put `sit add` of a 1MB file under 100ms
+  (currently 12.5× git). Pairs naturally with the deferred
+  PCLMULQDQ CRC-32 work (same x86_64 inline-asm gate, same
+  consumer category). No commitment, but worth scoping when
+  there's bandwidth.
 
 ---
 
