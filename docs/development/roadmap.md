@@ -145,17 +145,23 @@ there's a reason to prioritize it:
   (currently 12.5× git). Pairs naturally with the deferred
   PCLMULQDQ CRC-32 work (same x86_64 inline-asm gate, same
   consumer category).
-  - **Down-payment landed in Unreleased / next 2.x point release
-    (2026-04-25)**: pre-reverse dynamic Huffman codes at build time
-    so the symbol-emit hot loop drops three per-symbol bit-reversal
-    sub-loops. `deflate c rand 4K` −19%; `zlib c text 4K` −6.6%;
-    `deflate L6 text 4K` −3.8%. Wire-format identical. Foundational —
-    lowers the constant factor without changing algorithm shape.
-  - **Still ahead** (each in its own change): 8-byte match extension
-    in `_lz77_find_match` (today's byte-at-a-time inner loop is the
-    biggest single line item left); `good_length` early-exit in the
-    chain walk at level ≥ 6 (zlib's strategy: stop chasing the chain
-    once the current best is already long enough); ring-buffer
+  - **Two down-payments landed in Unreleased / next 2.x point release
+    (2026-04-25)**:
+    1. Pre-reverse dynamic Huffman codes at build time so the
+       symbol-emit hot loop drops three per-symbol bit-reversal
+       sub-loops.
+    2. 8-byte word-compare match extension in `_lz77_find_match`
+       (replaces byte-at-a-time inner loop with `load64` + word XOR
+       on full 8-byte chunks plus a byte tail).
+
+    Combined vs the pre-Unreleased baseline: `deflate c rand 4K`
+    −16.2%, `deflate L6 text 4K` −8.7%, `zlib c text 4K` −7.7%,
+    `stream zlib L6 text 128K` ~−7%. Wire-format identical (all SIZE
+    lines byte-for-byte unchanged). Foundational — lowers the constant
+    factor without changing algorithm shape.
+  - **Still ahead** (each in its own change): `good_length` early-exit
+    in the chain walk at level ≥ 6 (zlib's strategy: stop chasing the
+    chain once the current best is already long enough); ring-buffer
     match-finder (also listed standalone above) which removes the
     rebase tax. PCLMULQDQ CRC-32 deferred separately on priority.
 

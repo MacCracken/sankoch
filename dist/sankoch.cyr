@@ -1541,8 +1541,19 @@ fn _lz77_find_match(src, src_len, pos) {
         # Quick check: compare first and last+1 byte of best match
         if (load8(src + chain) == load8(src + pos)) {
             if (best_len < 3 || load8(src + chain + best_len) == load8(src + pos + best_len)) {
-                # Count full match length
+                # Count full match length. 8-byte chunks via load64 — cuts
+                # the inner loop ops/byte by ~8× on long matches; tail is
+                # byte-at-a-time. Boundary safety: load64 only fires when
+                # mlen+8 <= max_len, and max_len = min(LZ77_MAX_MATCH,
+                # src_len - pos), with chain < pos < src_len, so both
+                # src+pos+mlen+7 and src+chain+mlen+7 stay in-bounds.
                 var mlen = 0;
+                while (mlen + 8 <= max_len) {
+                    var a = load64(src + chain + mlen);
+                    var b = load64(src + pos + mlen);
+                    if (a != b) { break; }
+                    mlen = mlen + 8;
+                }
                 while (mlen < max_len) {
                     if (load8(src + chain + mlen) != load8(src + pos + mlen)) { break; }
                     mlen = mlen + 1;

@@ -7,9 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**DEFLATE compress perf — drop per-symbol bit-reversal in dynamic
-Huffman emit (down-payment on the throughput investigation surfaced by
-sit v0.6.4).**
+**DEFLATE compress perf — two stacked wins on the throughput
+investigation surfaced by sit v0.6.4: pre-reversed dynamic Huffman codes
++ 8-byte word-compare match extension.**
+
+### Optimized — 8-byte match extension in `_lz77_find_match` (2026-04-25)
+- **Inner match-extend loop now compares 8 bytes per iteration via
+  `load64` + word XOR, falling back to byte-at-a-time for the last
+  partial chunk.** Previously every match-extension step was four ops
+  per byte (two `load8`, compare, increment); now full 8-byte chunks
+  cost the same four ops. ~8× speedup on the all-matching path; tail
+  identical to the old code so wire-format and match length are
+  unchanged. Boundary safety: the 8-byte loop only fires while
+  `mlen + 8 <= max_len`, and `max_len = min(LZ77_MAX_MATCH, src_len -
+  pos)` with `chain < pos`, so both `src + chain + mlen + 7` and
+  `src + pos + mlen + 7` stay strictly inside the input buffer.
+
+  Stacks cleanly on top of the bit-reversal fix below (independent
+  hot-path component — Huffman emit vs LZ77 match-finder).
+
+### Optimized — dynamic Huffman codes pre-reversed at build (2026-04-25)
+- **Pre-reverse dynamic Huffman codes once at build time, not on every
+  emit.** `_deflate_write_syms_dynamic` and `_deflate_write_dynamic_header`
+  previously ran a per-bit reversal loop inside the per-symbol emit
+  loop — every literal paid one, every match paid two (length code +
+  distance code), every cl-stream symbol in the header paid one. The
+  fixed-Huffman encoder already pre-reversed at build (`_deflate_build_enc_fixed`,
+  matching `_deflate_build_enc_dist`); the dynamic path inherited
+  unreversed canonical codes from `_huff_build` (which the decoder
+  slow-path comparison still needs) and reversed on the fly.
+
+  Fix: new `huff_build_enc_codes(lengths, num_symbols, out_codes_rev)`
+  in `src/huffman.cyr` produces canonical codes pre-reversed for
+  LSB-first emission. Three call sites in `src/deflate.cyr`
+  (`_deflate_write_dynamic_header` cl-codes build, `_dyn_flush_subblock`
+  litlen + dist code build) switch from `_huff_build` to the new
+  helper. The three per-symbol reverse loops in
+  `_deflate_write_syms_dynamic` and the cl-emit loop in
+  `_deflate_write_dynamic_header` are gone — emit is one `bw_write` per
+  code with a single load.
+
+  Decoder paths untouched (still call `_huff_build`, `out_codes` stays
+  unreversed for the slow-path acc-vs-code comparison in `_huff_decode`).
+
+  Wire-format identical: all SIZE lines byte-for-byte unchanged across
+  the bench matrix (1K/4K/16K/64K/128K/256K text + zeros + rand,
+  DEFLATE/zlib/gzip/LZ4/LZ4F, levels 1/3/6/9, batch + streaming).
+  Full regression suite (1,028,625 + 346,583 = 1,375,208 assertions),
+  fuzz harnesses (1,564 round-trips across both files), and reference-CLI
+  byte-equality tests stay green.
+
+### Combined metrics vs pre-Unreleased baseline (50 iters/op)
+- `deflate c rand 4K`: 511,901 → 428,786 ns/op (**−16.2%** — almost
+  entirely from the bit-reverse fix; random has near-zero long matches)
+- `deflate L6 text 4K`: 172,649 → 157,672 ns/op (**−8.7%** — both
+  fixes contribute roughly evenly)
+- `zlib c text 4K`: 179,226 → 165,366 ns/op (−7.7%)
+- `deflate c text 4K`: 170,824 → 159,415 ns/op (−6.7%)
+- `stream zlib L6 text 128K`: ~3.14 ms → ~2.91 ms (−7.1% — closest
+  bench in the matrix to sit's 1MB workload shape)
+- `stream gzip L6 text 128K`: ~3.31 ms → ~3.09 ms (−6.7%)
+- `deflate L3 text 4K`: 162,330 → 156,273 ns/op (−3.7% — fixed-Huffman
+  path benefits from the 8-byte match extend; bit-reverse fix doesn't
+  apply to fixed path which was already pre-reversed)
+- Decoder path: noise (untouched by both fixes)
+- LZ4 / LZ4F: untouched (separate match-finder); within bench noise
+
+### Roadmap
+- Two foundational items on the **DEFLATE compress/decompress
+  throughput investigation** (sit v0.6.4 perf review). Lower constant
+  factor, no algorithm-shape change, wire-format identical.
+- Still ahead, in roughly the order they're worth doing: `good_length`
+  early-exit in the level-6+ chain walk (zlib's strategy: stop chasing
+  the chain once the current best is already long enough); ring-buffer
+  match-finder (drops `lz77_rebase` cost in streaming); PCLMULQDQ
+  CRC-32 (already deferred separately).
+
+
 
 ### Optimized
 - **Pre-reverse dynamic Huffman codes once at build time, not on every
