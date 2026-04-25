@@ -953,6 +953,64 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
     return 0;
 }
 
+# Build canonical Huffman codes for ENCODING — codes are stored in
+# pre-reversed (LSB-first) bit order so the symbol-emit hot path can
+# call bw_write directly without a per-symbol bit-reversal loop.
+#
+# The decoder builds via _huff_build (above) which stores unreversed
+# canonical codes; the slow-path comparison in _huff_decode depends on
+# that. This helper is encoder-only — used by the dynamic-Huffman path
+# in deflate.cyr.
+fn huff_build_enc_codes(lengths, num_symbols, out_codes_rev) {
+    var bl_count[128];  # 128 bytes = 16 i64 entries — covers HUFF_MAX_BITS
+    var i = 0;
+    while (i < 16) {
+        store64(&bl_count + i * 8, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0 && len <= HUFF_MAX_BITS) {
+            store64(&bl_count + len * 8,
+            load64(&bl_count + len * 8) + 1);
+        }
+        i = i + 1;
+    }
+
+    var next_code[128];
+    store64(&next_code, 0);
+    store64(&next_code + 8, 0);
+    var code = 0;
+    var bits = 1;
+    while (bits <= HUFF_MAX_BITS) {
+        code = (code + load64(&bl_count + (bits - 1) * 8)) << 1;
+        store64(&next_code + bits * 8, code);
+        bits = bits + 1;
+    }
+
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0) {
+            var c = load64(&next_code + len * 8);
+            store64(&next_code + len * 8, c + 1);
+            var rev = 0;
+            var b = 0;
+            while (b < len) {
+                rev = (rev << 1) | (c & 1);
+                c = c >> 1;
+                b = b + 1;
+            }
+            store64(out_codes_rev + i * 8, rev);
+        } else {
+            store64(out_codes_rev + i * 8, 0);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 # Decode one symbol using fast table + slow fallback.
 fn _huff_decode(br, fast, lengths, codes, num_symbols) {
     var data = load64(br);
@@ -3083,9 +3141,10 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
     # length above 7 would alias to a different value on the decoder side).
     huff_compute_lengths(cl_freqs, 19, cl_lens_opt, 2, 7);
 
-    # Build canonical codes for the code-length alphabet
-    _huff_alloc_tables();
-    _huff_build(cl_lens_opt, 19, cl_codes_opt, _huff_cl_fast);
+    # Build pre-reversed encoder codes for the code-length alphabet —
+    # codes are LSB-first so the symbol-emit loop can call bw_write
+    # directly without a per-symbol reversal.
+    huff_build_enc_codes(cl_lens_opt, 19, cl_codes_opt);
 
     # Determine HCLEN: how many code-length codes to transmit
     # Order: 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
@@ -3124,18 +3183,16 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
         i = i + 1;
     }
 
-    # Write the RLE-encoded code lengths using the code-length Huffman codes
+    # Write the RLE-encoded code lengths using the code-length Huffman codes.
+    # cl_codes_opt holds pre-reversed codes (huff_build_enc_codes), so the
+    # symbol-emit hot loop is a single bw_write per symbol — no per-symbol
+    # bit reversal.
     i = 0;
     while (i < cl_count) {
         var s = load64(cl_syms + i * 8);
         var clen = load64(cl_lens_opt + s * 8);
         var code = load64(cl_codes_opt + s * 8);
-        # Reverse bits for LSB-first
-        var rev = 0;
-        var v = code;
-        var b = 0;
-        while (b < clen) { rev = (rev << 1) | (v & 1); v = v >> 1; b = b + 1; }
-        rc = bw_write(bw, rev, clen);
+        rc = bw_write(bw, code, clen);
         if (rc < 0) { return rc; }
 
         # Write extra bits if any
@@ -3152,6 +3209,8 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist) {
 
 # Encode buffered symbols using given code tables.
 fn _deflate_write_syms_dynamic(bw, lit_lens, lit_codes, dist_lens, dist_codes) {
+    # lit_codes / dist_codes hold pre-reversed (LSB-first) codes built
+    # by huff_build_enc_codes — emit is a single bw_write per code.
     var i = 0;
     while (i < _dyn_sym_count) {
         var packed = load64(_dyn_sym_buf + i * 8);
@@ -3161,22 +3220,14 @@ fn _deflate_write_syms_dynamic(bw, lit_lens, lit_codes, dist_lens, dist_codes) {
             # Literal or EOB — use litlen codes
             var clen = load64(lit_lens + sym * 8);
             var code = load64(lit_codes + sym * 8);
-            var rev = 0;
-            var v = code;
-            var b = 0;
-            while (b < clen) { rev = (rev << 1) | (v & 1); v = v >> 1; b = b + 1; }
-            var rc = bw_write(bw, rev, clen);
+            var rc = bw_write(bw, code, clen);
             if (rc < 0) { return rc; }
             i = i + 1;
         } else {
             # Length symbol (257-285) + extra, followed by distance symbol + extra
             var clen = load64(lit_lens + sym * 8);
             var code = load64(lit_codes + sym * 8);
-            var rev = 0;
-            var v = code;
-            var b = 0;
-            while (b < clen) { rev = (rev << 1) | (v & 1); v = v >> 1; b = b + 1; }
-            var rc = bw_write(bw, rev, clen);
+            var rc = bw_write(bw, code, clen);
             if (rc < 0) { return rc; }
             # Length extra bits
             var eb = _dyn_extra_bits(packed);
@@ -3191,11 +3242,7 @@ fn _deflate_write_syms_dynamic(bw, lit_lens, lit_codes, dist_lens, dist_codes) {
             var dsym = _dyn_sym(packed);
             clen = load64(dist_lens + dsym * 8);
             code = load64(dist_codes + dsym * 8);
-            rev = 0;
-            v = code;
-            b = 0;
-            while (b < clen) { rev = (rev << 1) | (v & 1); v = v >> 1; b = b + 1; }
-            rc = bw_write(bw, rev, clen);
+            rc = bw_write(bw, code, clen);
             if (rc < 0) { return rc; }
             eb = _dyn_extra_bits(packed);
             if (eb > 0) {
@@ -3476,8 +3523,10 @@ fn _dyn_flush_subblock(bw, bfinal) {
         hdist = hdist - 1;
     }
 
-    _huff_build(_dyn_opt_lit_lens, hlit, _dyn_opt_lit_codes, _dyn_lit_fast_tmp);
-    _huff_build(_dyn_opt_dist_lens, hdist, _dyn_opt_dist_codes, _dyn_dist_fast_tmp);
+    # Pre-reversed encoder codes — emit-time loop in _deflate_write_syms_dynamic
+    # is one bw_write per symbol with no per-symbol bit reversal.
+    huff_build_enc_codes(_dyn_opt_lit_lens, hlit, _dyn_opt_lit_codes);
+    huff_build_enc_codes(_dyn_opt_dist_lens, hdist, _dyn_opt_dist_codes);
 
     # Emit sub-block
     var rc = bw_write(bw, bfinal, 1);

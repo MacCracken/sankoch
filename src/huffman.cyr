@@ -146,6 +146,64 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
     return 0;
 }
 
+# Build canonical Huffman codes for ENCODING — codes are stored in
+# pre-reversed (LSB-first) bit order so the symbol-emit hot path can
+# call bw_write directly without a per-symbol bit-reversal loop.
+#
+# The decoder builds via _huff_build (above) which stores unreversed
+# canonical codes; the slow-path comparison in _huff_decode depends on
+# that. This helper is encoder-only — used by the dynamic-Huffman path
+# in deflate.cyr.
+fn huff_build_enc_codes(lengths, num_symbols, out_codes_rev) {
+    var bl_count[128];  # 128 bytes = 16 i64 entries — covers HUFF_MAX_BITS
+    var i = 0;
+    while (i < 16) {
+        store64(&bl_count + i * 8, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0 && len <= HUFF_MAX_BITS) {
+            store64(&bl_count + len * 8,
+            load64(&bl_count + len * 8) + 1);
+        }
+        i = i + 1;
+    }
+
+    var next_code[128];
+    store64(&next_code, 0);
+    store64(&next_code + 8, 0);
+    var code = 0;
+    var bits = 1;
+    while (bits <= HUFF_MAX_BITS) {
+        code = (code + load64(&bl_count + (bits - 1) * 8)) << 1;
+        store64(&next_code + bits * 8, code);
+        bits = bits + 1;
+    }
+
+    i = 0;
+    while (i < num_symbols) {
+        var len = load64(lengths + i * 8);
+        if (len > 0) {
+            var c = load64(&next_code + len * 8);
+            store64(&next_code + len * 8, c + 1);
+            var rev = 0;
+            var b = 0;
+            while (b < len) {
+                rev = (rev << 1) | (c & 1);
+                c = c >> 1;
+                b = b + 1;
+            }
+            store64(out_codes_rev + i * 8, rev);
+        } else {
+            store64(out_codes_rev + i * 8, 0);
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 # Decode one symbol using fast table + slow fallback.
 fn _huff_decode(br, fast, lengths, codes, num_symbols) {
     var data = load64(br);
