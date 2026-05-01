@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.2.2) | **Last Updated**: 2026-05-01
+> **Status**: Stable (v2.2.3) | **Last Updated**: 2026-05-01
 
 ---
 
@@ -315,6 +315,22 @@ ELFs. Release archive now ships `sankoch-<tag>-aarch64-linux`
 alongside the x86_64 artifact. Zero source changes; both bundles
 regen'd only for the version stamp bump (body byte-identical).
 
+### ✅ 2.2.3 — P(-1) closeout for the 2.2.x line — shipped 2026-05-01
+
+Audit pass over the surface touched since 2.1.3 (dict-init paths,
+defensive-alloc wrapping, aarch64 cross-build gate). Pure process
++ test-coverage release; no source changes.
+
+**Outcome (2026-05-01)**: zero HIGH/MEDIUM/LOW findings; three
+INFO observations documented (lazy-global alloc-fail still
+deferred; `*_decompress_dict` requires `dst_cap >= dict_len`;
+aarch64 LZ77 word-compare uses unaligned loads). Five new tests
+close the coverage gaps surfaced during the review: two missed
+alloc-fail paths from 2.2.1 (gzip crc32_init, lz4f xxhash32_init)
+plus three dict-boundary cases (max=32768, min-match=3,
+below-min=2). Total assertions: 1,375,864 → 1,375,921. Audit at
+`docs/audit/2026-05-01-pre-2.3.0.md`. Cleared to open 2.3.0.
+
 ### 🎯 2.3.0 — true incremental decompression
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
@@ -473,7 +489,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.2.2)
+## File Summary (at 2.2.3)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -498,9 +514,9 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **111 distinct test functions** (101 sankoch.tcyr + 10
-git_object.tcyr) producing **1,375,864 assertions** total
-(1,029,281 + 346,583). Most of the assertion count comes from
+Tests: **116 distinct test functions** (106 sankoch.tcyr + 10
+git_object.tcyr) producing **1,375,921 assertions** total
+(1,029,338 + 346,583). Most of the assertion count comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -513,8 +529,10 @@ cl-tree depth-cap regression fixtures landed (134 → 13,929 →
 346,583 across the two patches); the +4 in sankoch.tcyr at 2.1.3
 covers the four P(-1) audit-finding regressions, the +636 at
 2.2.0 covers the streaming-encoder dict round-trip + invalid-args
-matrix, and the +16 at 2.2.1 covers the eight fault-injection
-tests for INFO-01 alloc-failure handling.
+matrix, the +16 at 2.2.1 covers the eight fault-injection tests
+for INFO-01 alloc-failure handling, and the +57 at 2.2.3 covers
+the five P(-1) coverage-gap tests (two missed alloc-fail paths
+plus three dict-boundary cases).
 
 Fuzz: 1,649 iterations across 6 harnesses
 (`fuzz_lz4` 700, `fuzz_deflate` batch 340, `fuzz_zlib` 160, `fuzz_gzip`
@@ -542,4 +560,4 @@ ship with Cyrius ≥ 5.5.22).
 
 ---
 
-*Last Updated: 2026-05-01 (2.2.2 aarch64 cross-build gate)*
+*Last Updated: 2026-05-01 (2.2.3 P(-1) closeout)*

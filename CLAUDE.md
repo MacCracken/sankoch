@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.2.2 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate
+- **Status**: 2.2.3 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -23,9 +23,9 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 ## Current State
 
 - **Source**: 4635 lines across 14 domain modules (`src/*.cyr`)
-- **Tests**: **111 distinct test functions** (101 sankoch.tcyr + 10
-  git_object.tcyr) producing **1,375,864 assertions** total
-  (1,029,281 + 346,583). The assertion count is heavily inflated by
+- **Tests**: **116 distinct test functions** (106 sankoch.tcyr + 10
+  git_object.tcyr) producing **1,375,921 assertions** total
+  (1,029,338 + 346,583). The assertion count is heavily inflated by
   per-byte round-trip checks on the streaming suites (a single
   200 KB round-trip contributes 200,000 assertions through one
   `while (i < 200000) assert(load8(dst+i) == load8(src+i))` loop);
@@ -41,7 +41,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 - **Dist bundles**: `dist/sankoch.cyr` (full, ~4,662 lines) +
   `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
   Both zero deps
-- **Stable**: 2.2.2 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.2.3 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming
@@ -89,7 +89,7 @@ At a glance:
 ```bash
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check (library — binary is trivial)
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,281 assertions (most are per-byte round-trip checks; see cyrius-usage.md)
+cyrius test tests/tcyr/sankoch.tcyr      # 1,029,338 assertions (most are per-byte round-trip checks; see cyrius-usage.md)
 cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + compressed-size table
 cyrius distlib                           # → dist/sankoch.cyr

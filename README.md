@@ -59,7 +59,7 @@ want to feed their own data streams.
 ```sh
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,281 assertions
+cyrius test tests/tcyr/sankoch.tcyr      # 1,029,338 assertions
 cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
 cyrius fuzz                              # all 6 harnesses, 1,649 iters
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
@@ -85,7 +85,7 @@ Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cy
 | stream.cyr    |   162 | Streaming dispatch |
 | lib.cyr       |   150 | Include chain + public API + thread safety |
 
-**4,675 lines** of Cyrius. **111 test functions emitting 1,375,864
+**4,675 lines** of Cyrius. **116 test functions emitting 1,375,921
 assertions** across 2 test suites — most of the assertion count is
 per-byte round-trip verification on multi-KB streaming inputs, not
 distinct scenarios; see

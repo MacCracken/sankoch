@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.3] — 2026-05-01
+
+**P(-1) closeout for the 2.2.x line.** Audit pass over the surface
+touched since 2.1.3 (the previous P(-1)): dict-init paths from
+2.2.0, defensive-alloc wrapping from 2.2.1, aarch64 cross-build
+gate from 2.2.2. **Zero HIGH/MEDIUM/LOW findings**; three INFO
+observations documented; five test-coverage gaps closed. Full
+audit at `docs/audit/2026-05-01-pre-2.3.0.md`.
+
+### Tests — +57 assertions (2026-05-01)
+- `test_alloc_fail_lz4f_xxh32` — fault-inject at offset 2 (the
+  xxhash32_init alloc inside `lz4f_enc_init`, after ctx +
+  block_buf). Closes a coverage gap from 2.2.1 — the third
+  per-call helper alloc in lz4f's path was the only one without
+  an explicit fault-injection test.
+- `test_alloc_fail_gzip_crc32` — fault-inject at offset 4 (the
+  crc32_init alloc inside `gzip_enc_init_dict`, after deflate's
+  three allocs + gzip's own ctx). Same 2.2.1 coverage gap on the
+  gzip side.
+- `test_enc_dict_max_len_32768` — round-trip with the largest
+  legal dict (= `DEFLATE_WINDOW_SIZE`); hash-seed loop runs
+  32,766 iterations. The audit-driven write of this test
+  surfaced INFO-B (see audit doc): `deflate_decompress_dict`
+  requires `dst_cap >= dict_len` because the decoder stages the
+  dict prefix into dst before decoding payload — the original
+  test had `dst_cap=64` and was misreading the
+  ERR_BUFFER_TOO_SMALL return as a round-trip correctness
+  failure. Production code was always correct; test fixed to
+  use `alloc(65536)` and the constraint documented.
+- `test_enc_dict_min_match_len_3` — round-trip at exactly
+  `LZ77_MIN_MATCH`; hash-seed loop runs once (j=0).
+- `test_enc_dict_below_min_match_len_2` — round-trip at
+  `dict_len=2` (below min match); hash-seed loop never enters,
+  but dict bytes still copy to the window and round-trip works
+  via byte-level transfers.
+
+### Documented (INFO, not blocking)
+- **INFO-A**: lazy-global allocs (35 sites — Huffman tables,
+  LZ77 hash, DEFLATE workspace, etc.) still abort on first-call
+  OOM. Carried forward from 2.2.1; deferred because failure here
+  would need error propagation through many internal callers
+  and the lazy globals are init-once-per-process. Realistic OOM
+  victim is the per-call ctx alloc, which 2.2.1 hardened.
+- **INFO-B**: `_deflate_decompress_dict` and
+  `_zlib_decompress_dict` require `dst_cap >= dict_len`. Already
+  enforced at runtime via the early
+  `if (dict_len > dst_cap) return -ERR_BUFFER_TOO_SMALL` check
+  — surfaced as an audit observation that the constraint could
+  be more prominent in docstrings. Future docs-polish item.
+- **INFO-C**: aarch64 LZ77 8-byte word-compare in
+  `_lz77_find_match` uses unaligned `load64`. ARMv6+ permits
+  unaligned 8-byte access but some implementations take a
+  cycle-count penalty vs aligned. Flagged for future
+  investigation if aarch64 perf benchmarks surface this section
+  as hot. No consumer signal yet.
+
+### Process — P(-1) outputs
+- **Audit document**: `docs/audit/2026-05-01-pre-2.3.0.md`
+  (full finding writeups, INFO observations, decision log,
+  closeout checklist).
+- **Test count**: sankoch.tcyr 1,029,281 → 1,029,338 (+57).
+  git_object.tcyr unchanged at 346,583. **Total: 1,375,921
+  assertions across the two suites.**
+- **Benchmarks**: baseline captured at audit start; no source
+  changes mean post-audit numbers are identical. Hot-path code
+  unchanged from 2.2.2.
+- **Cleared to open 2.3.0** — true incremental decompression
+  (the streaming-decomp arc).
+
 ## [2.2.2] — 2026-05-01
 
 **aarch64 cross-build now a hard CI/release gate.** Pulled forward
