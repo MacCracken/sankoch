@@ -59,7 +59,7 @@ want to feed their own data streams.
 ```sh
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,265 assertions
+cyrius test tests/tcyr/sankoch.tcyr      # 1,029,281 assertions
 cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
 cyrius fuzz                              # all 6 harnesses, 1,649 iters
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
@@ -85,13 +85,13 @@ Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cy
 | stream.cyr    |   162 | Streaming dispatch |
 | lib.cyr       |   150 | Include chain + public API + thread safety |
 
-**4,635 lines** of Cyrius. **103 test functions emitting 1,375,848
+**4,675 lines** of Cyrius. **111 test functions emitting 1,375,864
 assertions** across 2 test suites — most of the assertion count is
 per-byte round-trip verification on multi-KB streaming inputs, not
 distinct scenarios; see
 [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for what the number actually measures. Plus **1,649 fuzz iterations**
-across 6 harnesses. Distlib: `dist/sankoch.cyr` at 4,753 lines (full)
+across 6 harnesses. Distlib: `dist/sankoch.cyr` at 4,824 lines (full)
 + `dist/sankoch-core.cyr` at 315 lines (kernel-safe LZ4 decompress).
 Zero deps in either profile.
 

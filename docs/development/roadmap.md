@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.2.0) | **Last Updated**: 2026-05-01
+> **Status**: Stable (v2.2.1) | **Last Updated**: 2026-05-01
 
 ---
 
@@ -104,16 +104,17 @@ revisit if a consumer actually pushes CRC-32 onto the hot path.
 
 ---
 
-## v2.x release ladder (sequenced, post-2.1.1)
+## v2.x release ladder (sequenced, post-2.2.0)
 
-Each item below is a planned release with a target version. Order is
-firm; scope per item is the working contract — adjust if a P(-1) pass
-surfaces something that has to slot in. Items further down the ladder
-can be re-ordered against new information; the dependency direction
-is roughly top → bottom (the streaming-decomp work in 2.2.1 leans on
-patterns from the kernel-safe refactor in 2.1.2; the perf retry in
-2.3.1 wants the throughput baseline to be steady, which means after
-the API surface settles).
+Each item below is a planned release with a target version. Order
+holds for now; scope per item is the working contract — adjust if a
+P(-1) pass surfaces something that has to slot in. Items further down
+the ladder can be re-ordered against new information; the dependency
+direction is roughly top → bottom (the streaming-decomp work in
+2.3.0 leans on patterns from the kernel-safe refactor in 2.1.2 and
+the lock-aware alloc handling from 2.2.1; the perf retry in 2.3.2
+wants the throughput baseline to be steady, which means after the
+API surface settles).
 
 ### ✅ 2.1.2 — multi-profile distlib (kernel-safe LZ4 decompress) — shipped 2026-05-01
 
@@ -224,14 +225,59 @@ caveat — round-trips inside the gzip wrapper via
 `deflate_decompress_dict` on the stripped DEFLATE payload.
 Tests +636 assertions. `[lib.core]` unchanged.
 
-### 🎯 2.2.1 — true incremental decompression
+### ✅ 2.2.1 — defensive `alloc()` failure handling — shipped 2026-05-01
 
-Mirrors the 1.7.0 streaming-encoder work on the decode side. Patch
-because the new APIs are additive over the streaming surface that
-already exists; the buffered `stream_decompress_*` path stays as-is
-for callers that don't need byte-streaming output. (If P(-1) surfaces
-that callers need a behavioral change to the existing path, promote
-to 2.3.0 instead.)
+INFO-01 from the 2026-04-19-pre-2.0.0 audit. Promoted ahead of
+true-incremental-decomp (2.3.0) because it's small, mechanical, and
+ships a tag the same session — momentum win with no scope risk.
+Pure internal hardening, no public API change.
+
+**Scope:**
+- Wrap every `alloc()` call in `*_enc_init` (and `*_dec_init` when
+  those land in 2.3.0) with an unlock-on-failure check so a failed
+  alloc returns 0 (no ctx) with `_sankoch_mtx` released, instead of
+  leaving the lock held + null-deref'ing on the next field access.
+- Per-call helpers invoked from those entry points (`bw_init`,
+  `adler32_init`, `crc32_init`, `xxhash32_init`) propagate alloc
+  failure as a 0 return; the entry point checks and unlocks.
+- Add a fault-injection test harness — `_sankoch_alloc(size)`
+  wrapper around the stdlib alloc with a caller-set
+  `_sankoch_alloc_fail_at` counter; tcyr tests use it to inject
+  failure at the first alloc of each `*_enc_init`, verify the
+  call returns 0, and verify the lock was released by making a
+  second public-API call succeed.
+- **Out of scope (deferred)**: lazy-global init helpers
+  (`_huff_alloc_tables`, `_lz77_init`, `_lz4_htab` init,
+  `_deflate_*_lookup`, `_dh_ws`, `_dyn_*`, `crc32_table`). Same
+  pattern, but failure here would need error propagation through
+  many internal callers — bigger surface than INFO-01 calls for.
+  Tracked as a future hardening item; the 2.2.1 audit appendix
+  notes which sites remain.
+
+**Sizing:** small. Mostly mechanical; the test harness is the
+deliberate part.
+
+**Outcome (2026-05-01)**: 6 alloc sites patched in the four
+`*_enc_init` entry points + their per-call constructors
+(`bw_init`, `adler32_init`, `crc32_init`, `xxhash32_init`). New
+`_sankoch_alloc(size)` wrapper + `_sankoch_alloc_set_fail_at(n)`
+one-shot counter in `src/lib.cyr`. 8 fault-injection tests
+(+16 assertions) covering each patched path: ctx alloc fails,
+window alloc fails, bw_init fails, zlib ctx fails (after
+inner deflate took the lock), zlib adler init fails, gzip ctx
+fails, lz4f ctx fails, lz4f block_buf fails. Each test asserts
+the entry point returned 0 AND the lock was released by
+verifying a follow-up call succeeds. Lazy-global allocs
+(35 of the 41 total sites) deferred to a future hardening
+item — they're effectively never the OOM victim and would need
+error propagation through internal callers.
+
+### 🎯 2.3.0 — true incremental decompression
+
+Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
+bump because the new APIs are additive (`<fmt>_dec_init / write /
+finish`); the existing buffered `stream_decompress_*` path stays
+as-is for callers that don't need byte-streaming output.
 
 **Scope:**
 - `<fmt>_dec_init / write / finish` for DEFLATE, zlib, gzip, LZ4F —
@@ -252,28 +298,7 @@ to 2.3.0 instead.)
 part. Treat as small bites: DEFLATE first (own bench/test suite),
 then zlib/gzip wrappers, then LZ4F.
 
-### 🎯 2.2.2 — defensive `alloc()` failure handling
-
-INFO-01 from the 2026-04-19-pre-2.0.0 audit. Pure internal hardening,
-no public API change.
-
-**Scope:**
-- Wrap every `alloc()` call in `*_enc_init` and `*_dec_init` (added
-  in 2.2.1) with an unlock-on-failure helper so a failed alloc
-  returns a proper error code with `_sankoch_mtx` released, instead
-  of leaving the lock held + null-deref'ing on the next field
-  access.
-- Audit all internal `alloc()` sites in `src/` (compress hash
-  tables, symbol buffers, Huffman tree builders) for the same
-  pattern.
-- Add a fault-injection test harness (caller-overridable
-  `_alloc_fail_at` counter) so the failure paths get coverage in
-  the tcyr suite.
-
-**Sizing:** small. Mostly mechanical; the test harness is the
-deliberate part.
-
-### 🎯 2.3.0 — configurable LZ4F block-max size
+### 🎯 2.3.1 — configurable LZ4F block-max size
 
 Adds public API → minor bump. BD byte spec (LZ4 Block Format §1.2)
 defines four block-max values: 64K (4), 256K (5), 1M (6), 4M (7).
@@ -294,7 +319,7 @@ Sankoch hardcodes 64K today.
 **Sizing:** small-medium. Encoder plumbing is well-scoped; the
 verification matrix against reference `lz4` is the bulk.
 
-### 🎯 2.3.1 — DEFLATE throughput round 2
+### 🎯 2.3.2 — DEFLATE throughput round 2
 
 Continues the throughput investigation surfaced by sit v0.6.4
 (2026-04-25). The two foundational down-payments landed in 2.1.0
@@ -326,7 +351,7 @@ double that.
 **Sizing:** medium. PCLMULQDQ is contained; the L≥6 retry is a
 think-first job.
 
-### 🎯 2.3.2 — aarch64 cross-build in CI/release
+### 🎯 2.3.3 — aarch64 cross-build in CI/release
 
 Closes the long-standing aarch64 parity gap. Yukti has shipped
 aarch64 cross-builds since 2.1.3 on cyrius 5.7.43+; we're on 5.7.48,
@@ -400,7 +425,7 @@ through `cyrius fmt` either way.
 ### 🔀 Multi-profile distlib & aarch64 cross-build — on the ladder
 
 Multi-profile distlib (kernel-safe LZ4 decompress subset) shipped in
-**2.1.2** (2026-05-01); aarch64 cross-build in CI/release is **2.3.2**.
+**2.1.2** (2026-05-01); aarch64 cross-build in CI/release is **2.3.3**.
 See the "v2.x release ladder" section above for the latter's scope.
 
 ---
@@ -430,7 +455,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.2.0)
+## File Summary (at 2.2.1)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -455,9 +480,9 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **103 distinct test functions** (93 sankoch.tcyr + 10
-git_object.tcyr) producing **1,375,848 assertions** total
-(1,029,265 + 346,583). Most of the assertion count comes from
+Tests: **111 distinct test functions** (101 sankoch.tcyr + 10
+git_object.tcyr) producing **1,375,864 assertions** total
+(1,029,281 + 346,583). Most of the assertion count comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -468,9 +493,10 @@ for the full explanation.
 The git_object suite grew massively in 2.0.2 / 2.0.3 when the
 cl-tree depth-cap regression fixtures landed (134 → 13,929 →
 346,583 across the two patches); the +4 in sankoch.tcyr at 2.1.3
-covers the four P(-1) audit-finding regressions, and the +636 at
+covers the four P(-1) audit-finding regressions, the +636 at
 2.2.0 covers the streaming-encoder dict round-trip + invalid-args
-matrix.
+matrix, and the +16 at 2.2.1 covers the eight fault-injection
+tests for INFO-01 alloc-failure handling.
 
 Fuzz: 1,649 iterations across 6 harnesses
 (`fuzz_lz4` 700, `fuzz_deflate` batch 340, `fuzz_zlib` 160, `fuzz_gzip`
@@ -498,4 +524,4 @@ ship with Cyrius ≥ 5.5.22).
 
 ---
 
-*Last Updated: 2026-05-01 (2.2.0 preset-dict streaming encoders)*
+*Last Updated: 2026-05-01 (2.2.1 defensive alloc-failure handling)*

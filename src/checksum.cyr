@@ -90,7 +90,8 @@ fn adler32(data, len) {
 #   +16: n_since_mod (bytes processed since last modulo reduction)
 
 fn adler32_init() {
-    var st = alloc(24);
+    var st = _sankoch_alloc(24);
+    if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
     store64(st, 1);        # s1 = 1
     store64(st + 8, 0);    # s2 = 0
     store64(st + 16, 0);
@@ -241,7 +242,8 @@ fn crc32(data, len) {
 
 fn crc32_init() {
     crc32_init_table();
-    var st = alloc(8);
+    var st = _sankoch_alloc(8);
+    if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
     store64(st, 4294967295);   # 0xFFFFFFFF
     return st;
 }
@@ -303,7 +305,8 @@ fn crc32_final(st) {
 
 fn xxhash32_init() {
     var m = 4294967295;
-    var st = alloc(64);
+    var st = _sankoch_alloc(64);
+    if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
     store64(st, (XXH32_PRIME1 + XXH32_PRIME2) & m);   # v1
     store64(st + 8, XXH32_PRIME2);                     # v2
     store64(st + 16, 0);                               # v3

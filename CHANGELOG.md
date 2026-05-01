@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] — 2026-05-01
+
+**Defensive `alloc()` failure handling at the streaming-encoder
+entry points (INFO-01 closeout).** Pure internal hardening; no
+public API change. Promoted ahead of true-incremental-decompression
+(now 2.3.0) because it ships in one session and unblocks the
+`*_dec_init` work to follow the same defensive pattern.
+
+### Changed — `*_enc_init` paths now release the mutex on alloc failure (2026-05-01)
+- **Every alloc inside the four streaming-encoder entry points
+  is now checked and unlocked-on-failure.** Pre-2.2.1 a failed
+  alloc would either null-deref on the next field store
+  (`store64(0, ...)`) or silently return a corrupt ctx, in either
+  case with `_sankoch_mtx` still held — wedging the entire library
+  for the calling thread. Affected functions:
+  `deflate_enc_init_dict`, `zlib_enc_init_dict`,
+  `gzip_enc_init_dict`, `lz4f_enc_init`, plus the per-call
+  helpers they invoke (`bw_init`, `adler32_init`, `crc32_init`,
+  `xxhash32_init`).
+- The patched pattern is uniform — `if (x == 0) { _sankoch_unlock(); return 0; }`
+  immediately after each `_sankoch_alloc(...)` site that runs
+  while the mutex is held. Per-call helpers (`bw_init` and the
+  three checksum-state constructors) propagate alloc failure as
+  a 0 return; entry points check + unlock + return 0. Callers
+  treat `ctx == 0` the same as before — that's the existing
+  contract — but the lock is no longer leaked.
+- For `zlib_enc_init_dict` and `gzip_enc_init_dict`, the lock is
+  taken inside the inner `deflate_enc_init_dict` call. If the
+  outer wrapper's own alloc (zlib/gzip ctx, or the
+  adler32/crc32 state) fails AFTER the inner deflate has
+  succeeded and is holding the lock, the outer wrapper releases
+  it before returning. This is the new path tested by
+  `test_alloc_fail_zlib_ctx` / `test_alloc_fail_zlib_adler` /
+  `test_alloc_fail_gzip_ctx`.
+
+### Added — `_sankoch_alloc` wrapper + fault-injection counter (2026-05-01)
+- **`_sankoch_alloc(size)`** in `src/lib.cyr` is the seam every
+  alloc-bearing constructor in the patched paths funnels through.
+  In production it forwards straight to the stdlib `alloc(size)`
+  call; the wrapper exists so the test suite can simulate OOM
+  deterministically.
+- **`_sankoch_alloc_set_fail_at(n)`** sets a one-shot counter:
+  the Nth subsequent `_sankoch_alloc` call (0-indexed) returns 0
+  once, then the counter resets to -1 (production / never fail).
+  Tests warm up the lazy globals first, then inject failure at a
+  known offset and verify the entry point returns 0 + the lock
+  was released (proven by a second public-API call succeeding).
+
+### Tests — +16 assertions (2026-05-01)
+- `test_alloc_fail_deflate_ctx` / `_deflate_window` /
+  `_deflate_bw` — fault inject at each of deflate's three allocs
+  (DENC_CTX_SIZE, DENC_WINDOW_CAP, bw_init's 40-byte ctx).
+- `test_alloc_fail_zlib_ctx` / `_zlib_adler` — zlib's own ctx
+  alloc (offset 3) and adler32_init alloc (offset 4) — the new
+  paths where a failure happens with the lock already held by
+  the inner deflate.
+- `test_alloc_fail_gzip_ctx` — same pattern as zlib for gzip.
+- `test_alloc_fail_lz4f_ctx` / `_lz4f_block_buf` — lz4f's ctx
+  and 64KB block buffer.
+- Each test asserts (a) ctx == 0 after the targeted failure and
+  (b) a second call succeeds, proving the mutex was released.
+
+### Out of scope (deferred follow-up)
+- **Lazy-global init helpers** (`_huff_alloc_tables`,
+  `lz77_init`, `_lz4_htab` init, `_deflate_*_lookup`, `_dh_ws`,
+  `_dyn_*` workspace, `crc32_table`) still abort on OOM rather
+  than propagating an error. The same defensive pattern applies
+  in principle, but failure here would need error propagation
+  through many internal callers — a bigger surface than INFO-01
+  asked for. The 41 alloc sites in `src/` break down as: 6
+  patched in 2.2.1 (the entry-point + per-call constructors
+  documented above) + 35 lazy-global / arena allocs left as-is.
+  In practice the lazy globals allocate exactly once per process
+  and are effectively never the OOM victim — the realistic
+  failure mode is the per-call ctx alloc, which is now safe.
+  Tracked as a future hardening item if a consumer surfaces a
+  case.
+
+### `[lib.core]` — unchanged
+- `_sankoch_alloc` lives in `src/lib.cyr` (full profile only).
+  `src/types.cyr`, `src/xxhash32.cyr`, `src/lz4_decode.cyr`
+  (the kernel-safe profile) are unmodified at this release.
+  `dist/sankoch-core.cyr` re-validated alloc/sys/mutex-free;
+  `programs/core_smoke.cyr` tripwire green.
+
+**Total assertions: 1,375,848 → 1,375,864** (sankoch.tcyr +16,
+git_object.tcyr unchanged).
+
 ## [2.2.0] — 2026-05-01
 
 **Preset dictionary in streaming encoders.** Three new public API

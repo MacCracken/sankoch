@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.2.0 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd
+- **Status**: 2.2.1 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -23,15 +23,16 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 ## Current State
 
 - **Source**: 4635 lines across 14 domain modules (`src/*.cyr`)
-- **Tests**: **103 distinct test functions** (93 sankoch.tcyr + 10
-  git_object.tcyr) producing **1,375,848 assertions** total
-  (1,029,265 + 346,583). The assertion count is heavily inflated by
+- **Tests**: **111 distinct test functions** (101 sankoch.tcyr + 10
+  git_object.tcyr) producing **1,375,864 assertions** total
+  (1,029,281 + 346,583). The assertion count is heavily inflated by
   per-byte round-trip checks on the streaming suites (a single
   200 KB round-trip contributes 200,000 assertions through one
   `while (i < 200000) assert(load8(dst+i) == load8(src+i))` loop);
   recent additions are the 2.0.2 / 2.0.3 cl-tree regression
-  fixtures, the 2.1.3 P(-1) audit-finding regressions, and the
-  2.2.0 dict round-trips. Read it as a coverage-DENSITY number, not
+  fixtures, the 2.1.3 P(-1) audit-finding regressions, the 2.2.0
+  dict round-trips, and the 2.2.1 alloc-fault-injection tests.
+  Read it as a coverage-DENSITY number, not
   a coverage-BREADTH number — see
   `docs/development/cyrius-usage.md` "What 'assertions' means here"
   before quoting the headline. Plus 1,649 fuzz iterations across 6
@@ -40,7 +41,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 - **Dist bundles**: `dist/sankoch.cyr` (full, ~4,662 lines) +
   `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
   Both zero deps
-- **Stable**: 2.2.0 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.2.1 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming
@@ -88,7 +89,7 @@ At a glance:
 ```bash
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check (library — binary is trivial)
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,265 assertions (most are per-byte round-trip checks; see cyrius-usage.md)
+cyrius test tests/tcyr/sankoch.tcyr      # 1,029,281 assertions (most are per-byte round-trip checks; see cyrius-usage.md)
 cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + compressed-size table
 cyrius distlib                           # → dist/sankoch.cyr

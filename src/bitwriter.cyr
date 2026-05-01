@@ -14,8 +14,10 @@
 #   +32: bit position in partial byte (0-7, from LSB)
 
 # Each bw_init allocates a fresh 40-byte context on the heap.
+# Returns 0 on alloc failure (2.2.1) — callers must check before use.
 fn bw_init(buf, cap) {
-    var bw = alloc(40);
+    var bw = _sankoch_alloc(40);
+    if (bw == 0) { return 0; }
     store64(bw, buf);
     store64(bw + 8, cap);
     store64(bw + 16, 0);

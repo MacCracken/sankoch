@@ -1416,9 +1416,20 @@ fn deflate_enc_init_dict(level, dst, dst_cap, dict, dict_len) {
     if (dict_len > 0 && dict == 0) { return 0; }
 
     _sankoch_lock();
-    var ctx = alloc(DENC_CTX_SIZE);
-    var window = alloc(DENC_WINDOW_CAP);
+    # 2.2.1: defensive alloc-failure handling (INFO-01). Each
+    # constructor below returns 0 on OOM; we release the mutex and
+    # propagate 0 upward so the caller doesn't trip on a NULL ctx
+    # while the lock is held. Lazy-global allocs reachable from
+    # `_deflate_init_tables` / `lz77_init` / `_deflate_alloc_dynamic_ws`
+    # are NOT covered here — those paths still abort on OOM. Tracked
+    # as a future hardening item; the 2.2.1 audit appendix lists the
+    # specific sites.
+    var ctx = _sankoch_alloc(DENC_CTX_SIZE);
+    if (ctx == 0) { _sankoch_unlock(); return 0; }
+    var window = _sankoch_alloc(DENC_WINDOW_CAP);
+    if (window == 0) { _sankoch_unlock(); return 0; }
     var bw = bw_init(dst, dst_cap);
+    if (bw == 0) { _sankoch_unlock(); return 0; }
 
     store64(ctx, level);
     store64(ctx + 8, DENC_STATE_INIT);

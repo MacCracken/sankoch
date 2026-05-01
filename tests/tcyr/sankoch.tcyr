@@ -1462,6 +1462,140 @@ fn test_err_gzip_bad_magic() {
 }
 
 # ================================================================
+# 2.2.1 — defensive alloc() failure handling (INFO-01 closeout).
+# Each `*_enc_init` entry point now checks every alloc's return and
+# releases `_sankoch_mtx` before propagating 0 to the caller. The
+# fault-injection harness (`_sankoch_alloc_set_fail_at(n)`) makes
+# the Nth subsequent alloc return 0 once. Tests warm up the lazy
+# globals first, then inject failure at a known offset.
+# ================================================================
+
+# Warm up lazy globals shared across all encoder paths so the
+# subsequent fault-injection counters target only the per-call
+# allocs. Idempotent; safe to call multiple times.
+fn _alloc_fail_warmup() {
+    var dst = alloc(256);
+    var c = deflate_enc_init(6, dst, 256);
+    deflate_enc_finish(c);
+    c = zlib_enc_init(6, dst, 256);
+    zlib_enc_finish(c);
+    c = gzip_enc_init(6, dst, 256);
+    gzip_enc_finish(c);
+    c = lz4f_enc_init(dst, 256);
+    lz4f_enc_finish(c);
+    return 0;
+}
+
+fn test_alloc_fail_deflate_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Fail at alloc #0 — the DENC_CTX_SIZE alloc inside deflate_enc_init_dict.
+    _sankoch_alloc_set_fail_at(0);
+    var ctx = deflate_enc_init(6, dst, 256);
+    assert(ctx == 0, "deflate enc_init returns 0 when ctx alloc fails");
+    # Lock must be released — a fresh init succeeds.
+    var ctx2 = deflate_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "deflate enc_init succeeds after prior alloc fail (lock released)");
+    deflate_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_deflate_window() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Fail at alloc #1 — the DENC_WINDOW_CAP alloc.
+    _sankoch_alloc_set_fail_at(1);
+    var ctx = deflate_enc_init(6, dst, 256);
+    assert(ctx == 0, "deflate enc_init returns 0 when window alloc fails");
+    var ctx2 = deflate_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "deflate enc_init succeeds after window-fail (lock released)");
+    deflate_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_deflate_bw() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Fail at alloc #2 — bw_init's internal alloc(40).
+    _sankoch_alloc_set_fail_at(2);
+    var ctx = deflate_enc_init(6, dst, 256);
+    assert(ctx == 0, "deflate enc_init returns 0 when bw_init alloc fails");
+    var ctx2 = deflate_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "deflate enc_init succeeds after bw-fail (lock released)");
+    deflate_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_zlib_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # zlib_enc_init's first alloc that's its own (not deflate_enc_init_dict's
+    # 3) is at offset 3 — the 32-byte zlib ctx. By this point deflate
+    # has already taken the lock and succeeded; zlib's own alloc fail
+    # must release the lock that deflate took.
+    _sankoch_alloc_set_fail_at(3);
+    var ctx = zlib_enc_init(6, dst, 256);
+    assert(ctx == 0, "zlib enc_init returns 0 when zlib ctx alloc fails");
+    var ctx2 = zlib_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "zlib enc_init succeeds after zlib-ctx-fail (lock released)");
+    zlib_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_zlib_adler() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Offset 4 — zlib's adler32_init (after deflate's 3 + zlib's ctx).
+    _sankoch_alloc_set_fail_at(4);
+    var ctx = zlib_enc_init(6, dst, 256);
+    assert(ctx == 0, "zlib enc_init returns 0 when adler32_init alloc fails");
+    var ctx2 = zlib_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "zlib enc_init succeeds after adler-fail (lock released)");
+    zlib_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_gzip_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Same offset structure as zlib — deflate's 3 first, then gzip's ctx at 3.
+    _sankoch_alloc_set_fail_at(3);
+    var ctx = gzip_enc_init(6, dst, 256);
+    assert(ctx == 0, "gzip enc_init returns 0 when gzip ctx alloc fails");
+    var ctx2 = gzip_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "gzip enc_init succeeds after gzip-ctx-fail (lock released)");
+    gzip_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_lz4f_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # lz4f_enc_init takes the lock itself and then allocs ctx, block_buf,
+    # xxhash32 state. Offset 0 = ctx.
+    _sankoch_alloc_set_fail_at(0);
+    var ctx = lz4f_enc_init(dst, 256);
+    assert(ctx == 0, "lz4f enc_init returns 0 when ctx alloc fails");
+    var ctx2 = lz4f_enc_init(dst, 256);
+    assert(ctx2 != 0, "lz4f enc_init succeeds after ctx-fail (lock released)");
+    lz4f_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_lz4f_block_buf() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Offset 1 — the LZ4F_BLOCK_MAX (64KB) block buffer alloc.
+    _sankoch_alloc_set_fail_at(1);
+    var ctx = lz4f_enc_init(dst, 256);
+    assert(ctx == 0, "lz4f enc_init returns 0 when block_buf alloc fails");
+    var ctx2 = lz4f_enc_init(dst, 256);
+    assert(ctx2 != 0, "lz4f enc_init succeeds after block_buf-fail (lock released)");
+    lz4f_enc_finish(ctx2);
+    return 0;
+}
+
+# ================================================================
 # 2.2.0 — preset dictionary in streaming encoders.
 # `*_enc_init_dict(level, dst, dst_cap, dict, dict_len)` mirrors the
 # decode-side dict semantics: encoder window is preloaded with `dict`
@@ -1876,6 +2010,16 @@ fn main() {
     test_gzip_enc_dict_roundtrip();
     test_enc_dict_invalid_args();
     test_enc_dict_zero_len_equals_no_dict();
+
+    # 2.2.1 defensive alloc() failure handling (INFO-01 closeout)
+    test_alloc_fail_deflate_ctx();
+    test_alloc_fail_deflate_window();
+    test_alloc_fail_deflate_bw();
+    test_alloc_fail_zlib_ctx();
+    test_alloc_fail_zlib_adler();
+    test_alloc_fail_gzip_ctx();
+    test_alloc_fail_lz4f_ctx();
+    test_alloc_fail_lz4f_block_buf();
 
     var r = assert_summary();
     return r;

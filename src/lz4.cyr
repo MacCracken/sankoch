@@ -424,13 +424,21 @@ fn lz4f_enc_init(dst, dst_cap) {
     var hc = (xxhash32(&hc_buf, 2) >> 8) & 255;
     store8(dst + 6, hc);
 
-    var ctx = alloc(64);
+    # 2.2.1: defensive alloc-failure handling (INFO-01). Release the
+    # mutex and return 0 if any of the three allocs OOMs, so the
+    # caller doesn't trip on a NULL ctx with the lock held.
+    var ctx = _sankoch_alloc(64);
+    if (ctx == 0) { _sankoch_unlock(); return 0; }
+    var block_buf = _sankoch_alloc(LZ4F_BLOCK_MAX);
+    if (block_buf == 0) { _sankoch_unlock(); return 0; }
+    var xxh_st = xxhash32_init();
+    if (xxh_st == 0) { _sankoch_unlock(); return 0; }
     store64(ctx, dst);
     store64(ctx + 8, dst_cap);
     store64(ctx + 16, 7);              # dp past header
-    store64(ctx + 24, alloc(LZ4F_BLOCK_MAX));
+    store64(ctx + 24, block_buf);
     store64(ctx + 32, 0);              # block_buf_len
-    store64(ctx + 40, xxhash32_init());
+    store64(ctx + 40, xxh_st);
     store64(ctx + 48, 0);
     return ctx;
 }
