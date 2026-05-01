@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.3] — 2026-05-01
+
+**P(-1) scaffold-hardening pass — closeout for the 2.1.x line, entry
+door to the 2.2.x feature ladder.** Four parser-side findings fixed
+(one HIGH, one MEDIUM, two LOW), four targeted regression tests
+added, full audit at `docs/audit/2026-05-01-pre-2.2.0.md`. No public
+API change; wire-format identical (every existing assertion passes
+byte-for-byte). The `[lib.core]` kernel-safe profile re-validated
+clean (zero alloc / sys / mutex references).
+
+### Security — HIGH-01 fixed (2026-05-01)
+- **DEFLATE stored-block raw-byte copy now bounds-checks against
+  the bitreader's source length** before walking. Pre-2.1.3, a
+  malformed input with `BFINAL=1`, `BTYPE=00`, valid `LEN^NLEN`
+  one's-complement, and `LEN > (dlen - bpos)` would copy up to
+  65,535 bytes past the source buffer. The direct-load path
+  (`var data = load64(br); var bpos = load64(br + 8); … load8(data + bpos)`)
+  bypassed `br_read`'s `bpos < dlen` check, so the existing valid-
+  input bound (`dp + len > dst_cap`) only protected the destination.
+  Adjacent process memory could leak through the decompressed
+  output, or the load could fault if the source buffer ended at
+  a page boundary. Reachable from `deflate_decompress`,
+  `zlib_decompress`, `gzip_decompress`, and the streaming
+  decompress wrapper. Fix: re-assert
+  `bpos + len <= load64(br + 24)` immediately before the copy in
+  both `_deflate_decompress_inner` and
+  `_deflate_decompress_dict_inner`. Regression test:
+  `test_err_deflate_stored_oob` — 5-byte stream, LEN=100, valid
+  NLEN, expects negative error.
+
+### Security — MEDIUM-01 fixed (2026-05-01)
+- **DEFLATE dynamic-block parser caps HLIT at 286** per RFC 1951
+  §3.2.7. The 5-bit HLIT field encodes 0..31 → count 257..288;
+  the spec marks 287 and 288 as invalid. No exploit
+  (the `all_lens[4672]` workspace has slack to absorb 320 entries),
+  but the spec-invalid stream slipping through is the kind of
+  thing that promotes a future correctness bug into a security one.
+  Fix: `if (hlit > 286) return -ERR_CORRUPT_DATA;` immediately
+  after the `+ 257` adjustment. HDIST and HCLEN don't share this
+  problem — both have full-range encodings — and the patched code
+  comments call this out so a mirror check doesn't get added by
+  mistake. Regression test: `test_err_deflate_hlit_overflow`.
+
+### Security — LOW fixes (2026-05-01)
+- **LOW-01: zlib CINFO ≤ 7 enforced.** RFC 1950 §2.2 forbids
+  CINFO > 7 (window > 32K). Pre-2.1.3 the parser checked CM but not
+  CINFO; sankoch's 32K-fixed DEFLATE silently ignored oversized
+  window claims. Fix: `if (((cmf >> 4) & 15) > 7) return -ERR_UNSUPPORTED_FORMAT;`
+  in `_zlib_decompress_dict_inner`. Regression test:
+  `test_err_zlib_cinfo_overflow`.
+- **LOW-02: gzip reserved FLG bits 5-7 rejected.** RFC 1952 §2.3.1.2:
+  "If any reserved bit is non-zero, a compliant decompressor must
+  give an error." Fix: `if ((flg & 224) != 0) return -ERR_CORRUPT_DATA;`
+  in `_gzip_decompress_member`. Regression test:
+  `test_err_gzip_reserved_flg`.
+
+### Backlogged — INFO-01
+- **gzip FHCRC value not verified** when FHCRC bit is set. RFC 1952
+  marks verification as a SHOULD; reference gunzip didn't enforce
+  until 1.5+ and several modern impls (libdeflate, miniz, Go's
+  `compress/gzip`) skip the CRC16 entirely. Implementing CRC16-IBM
+  (polynomial 0xA001) is ~30 LoC; defer until a consumer actually
+  generates FHCRC-bearing streams that mutate in transit.
+
+### Process — P(-1) outputs
+- **Audit document**: `docs/audit/2026-05-01-pre-2.2.0.md` (full
+  finding writeups, fix rationale, test coverage, decision log).
+- **Test count**: 1,028,625 → 1,028,629 (+4 audit-regression
+  tests). git_object suite unchanged at 346,583. **Total: 1,375,212
+  assertions across the two suites.**
+- **Benchmarks**: pre/post comparison shows every patched check
+  sits on a cold or error branch — hot-path deltas across the 25
+  timed cases land within ±5% run-to-run noise. No regression.
+- **`[lib.core]` re-validated**: `dist/sankoch-core.cyr` stays
+  alloc/sys/mutex-free; kernel-safe tripwire
+  (`programs/core_smoke.cyr`) green.
+
 ## [2.1.2] — 2026-05-01
 
 **Multi-profile distlib — kernel-safe LZ4 decompress.** New

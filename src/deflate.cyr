@@ -202,14 +202,22 @@ fn _deflate_read_dynamic(br) {
     var hlit = br_read(br, 5);
     if (hlit < 0) { return hlit; }
     hlit = hlit + 257;  # number of literal/length codes
+    # MED-1 fix (2.1.3): RFC 1951 §3.2.7 caps HLIT count at 286 (encoded
+    # field range 0..29). Encoded values 30..31 yield 287..288, which
+    # the spec marks invalid; reject explicitly so we don't build a
+    # 288-entry literal/length code table that the rest of the decoder
+    # never expects.
+    if (hlit > 286) { return 0 - ERR_CORRUPT_DATA; }
 
     var hdist = br_read(br, 5);
     if (hdist < 0) { return hdist; }
-    hdist = hdist + 1;  # number of distance codes
+    # Distance count = encoded + 1, so 1..32 — all 5-bit encodings valid.
+    hdist = hdist + 1;
 
     var hclen = br_read(br, 4);
     if (hclen < 0) { return hclen; }
-    hclen = hclen + 4;  # number of code length codes
+    # Code-length-code count = encoded + 4, so 4..19 — all 4-bit valid.
+    hclen = hclen + 4;
 
     # Code length alphabet order (RFC 1951 Section 3.2.7)
     # 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
@@ -370,6 +378,11 @@ fn _deflate_decompress_inner(src, src_len, dst, dst_cap) {
             # Copy raw bytes from the stream
             var data = load64(br);
             var bpos = load64(br + 8);
+            # HIGH-1 fix (2.1.3): direct buffer copy bypasses br_read's
+            # bpos<dlen check, so re-assert bounds against the bitreader's
+            # backing length here. Malformed input with len > remaining
+            # would otherwise read past src+src_len.
+            if (bpos + len > load64(br + 24)) { return 0 - ERR_CORRUPT_DATA; }
             var i = 0;
             while (i < len) {
                 store8(dst + dp, load8(data + bpos));
@@ -449,6 +462,9 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len) {
 
             var data = load64(br);
             var bpos = load64(br + 8);
+            # HIGH-1 fix (2.1.3): same bounds re-assert as the non-dict
+            # path above (see comment there).
+            if (bpos + len > load64(br + 24)) { return 0 - ERR_CORRUPT_DATA; }
             i = 0;
             while (i < len) {
                 store8(dst + dp, load8(data + bpos));

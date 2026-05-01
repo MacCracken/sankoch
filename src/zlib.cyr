@@ -46,6 +46,12 @@ fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len) {
     # CM must be 8 (deflate)
     if ((cmf & 15) != 8) { return 0 - ERR_UNSUPPORTED_FORMAT; }
 
+    # LOW-1 fix (2.1.3): RFC 1950 §2.2 — CINFO (high 4 bits of CMF) is
+    # log2(window) - 8. Values > 7 (window > 32K) are not allowed in
+    # this version of the spec; reject explicitly. We only support
+    # CINFO ≤ 7 — DEFLATE's window is fixed at 32K (DEFLATE_WINDOW_SIZE).
+    if (((cmf >> 4) & 15) > 7) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+
     var hdr_len = 2;
 
     # Handle FDICT (preset dictionary)

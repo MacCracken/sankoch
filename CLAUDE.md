@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.1.2 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd
+- **Status**: 2.1.3 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -23,15 +23,16 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 ## Current State
 
 - **Source**: 4635 lines across 14 domain modules (`src/*.cyr`)
-- **Tests**: 1,028,625 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
-  1,375,208 assertions across 2 tcyr suites (most are per-byte round-trip
+- **Tests**: 1,028,629 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
+  1,375,212 assertions across 2 tcyr suites (most are per-byte round-trip
   checks across streaming tests + the 2.0.2 / 2.0.3 cl-tree regression
-  fixtures); 1,649 fuzz iterations across 6 harnesses
-  (lz4 / deflate batch + 4 streaming + 2 tree-shape/skewed-freq); 45+ benchmarks
+  fixtures + the 2.1.3 P(-1) audit-finding regressions); 1,649 fuzz
+  iterations across 6 harnesses (lz4 / deflate batch + 4 streaming +
+  2 tree-shape/skewed-freq); 45+ benchmarks
 - **Dist bundles**: `dist/sankoch.cyr` (full, ~4,662 lines) +
   `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
   Both zero deps
-- **Stable**: 2.1.2 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.1.3 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming

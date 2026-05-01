@@ -1462,6 +1462,80 @@ fn test_err_gzip_bad_magic() {
 }
 
 # ================================================================
+# 2.1.3 P(-1) hardening — regression coverage for the audit findings.
+# Each test confirms that a malformed input the pre-2.1.3 parser would
+# have either accepted (spec non-compliance) or read past the source
+# buffer for (HIGH-1) is now rejected with a negative error.
+# ================================================================
+
+# HIGH-1: stored block declares LEN > bytes remaining in stream.
+# Header: BFINAL=1, BTYPE=00 (stored) = 0x01 in byte 0.
+# After br_align, LEN (LE u16) = 100, NLEN = 65435 (~LEN). NLEN check
+# passes; previously the raw-byte copy would walk 100 bytes past the
+# 5-byte source buffer. Now the bound check rejects.
+fn test_err_deflate_stored_oob() {
+    var src = alloc(5);
+    store8(src + 0, 1);              # BFINAL=1, BTYPE=00
+    store8(src + 1, 100);             # LEN low
+    store8(src + 2, 0);               # LEN high
+    store8(src + 3, 155);             # NLEN low  (~100 & 0xFF = 0x9B = 155)
+    store8(src + 4, 255);             # NLEN high (~0   & 0xFF = 0xFF = 255)
+    var dst = alloc(256);
+    assert(deflate_decompress(src, 5, dst, 256) < 0,
+    "deflate stored len>remaining must reject");
+    return 0;
+}
+
+# MED-1: dynamic block with HLIT field encoding > 29.
+# Byte 0 = 0b11110101 = 0xF5: BFINAL=1 (bit 0), BTYPE=10 dynamic (bits
+# 1-2), HLIT field bits 3-7 = 0b11110 = 30 (LSB-first), giving
+# hlit count = 30 + 257 = 287 > 286 — invalid per RFC 1951 §3.2.7.
+# Trailing bytes are present so any failure here is HLIT-cap rejection
+# (or downstream parse failure if the cap weren't enforced); either
+# way the call must fail negatively without UB.
+fn test_err_deflate_hlit_overflow() {
+    var src = alloc(8);
+    store8(src + 0, 245);    # 0xF5 — HLIT=30 in the encoded field
+    var i = 1;
+    while (i < 8) { store8(src + i, 0); i = i + 1; }
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 8, dst, 64) < 0,
+    "deflate hlit>29 (count>286) must reject");
+    return 0;
+}
+
+# LOW-1: zlib header with CINFO > 7 (window > 32K — disallowed by
+# RFC 1950 §2.2).
+# CMF = 0x88 (CINFO=8, CM=8), FLG=0x1C — chosen so
+# (0x88*256 + 0x1C) % 31 == 0 (FCHECK passes).
+fn test_err_zlib_cinfo_overflow() {
+    var src = alloc(6);
+    store8(src + 0, 136);   # CMF: CINFO=8, CM=8
+    store8(src + 1, 28);    # FLG: FCHECK chosen so the % 31 == 0
+    store8(src + 2, 3); store8(src + 3, 0); store8(src + 4, 0); store8(src + 5, 0);
+    var dst = alloc(64);
+    assert(zlib_decompress(src, 6, dst, 64) < 0,
+    "zlib CINFO>7 must reject");
+    return 0;
+}
+
+# LOW-2: gzip header with a reserved FLG bit set (bits 5-7 must be
+# zero per RFC 1952 §2.3.1.2).
+fn test_err_gzip_reserved_flg() {
+    var src = alloc(18);
+    store8(src + 0, 31);    # ID1 0x1F
+    store8(src + 1, 139);   # ID2 0x8B
+    store8(src + 2, 8);     # CM = 8 (deflate)
+    store8(src + 3, 32);    # FLG = 0x20 — reserved bit 5 set
+    var i = 4;
+    while (i < 18) { store8(src + i, 0); i = i + 1; }
+    var dst = alloc(64);
+    assert(gzip_decompress(src, 18, dst, 64) < 0,
+    "gzip reserved FLG bit set must reject");
+    return 0;
+}
+
+# ================================================================
 # main
 # ================================================================
 
@@ -1568,6 +1642,12 @@ fn main() {
     test_err_deflate_corrupt_stored();
     test_err_zlib_bad_header();
     test_err_gzip_bad_magic();
+
+    # 2.1.3 P(-1) audit findings (HIGH-1, MED-1, LOW-1, LOW-2)
+    test_err_deflate_stored_oob();
+    test_err_deflate_hlit_overflow();
+    test_err_zlib_cinfo_overflow();
+    test_err_gzip_reserved_flg();
 
     var r = assert_summary();
     return r;

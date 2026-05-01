@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.1.2) | **Last Updated**: 2026-05-01
+> **Status**: Stable (v2.1.3) | **Last Updated**: 2026-05-01
 
 ---
 
@@ -154,7 +154,7 @@ config block, a smoke program, and CI/release wiring. No source
 behavior change — extraction is cut/paste with the include chain
 re-ordered.
 
-### 🎯 2.1.3 — P(-1) scaffold-hardening pass
+### ✅ 2.1.3 — P(-1) scaffold-hardening pass — shipped 2026-05-01
 
 CLAUDE.md's P(-1) pre-feature checklist run before opening 2.2.0+
 work. Closeout for the 2.1.x line; entry door to the 2.2.x feature
@@ -184,6 +184,13 @@ work that follows.
 expected unless the audit surfaces something. If a finding wants a
 non-trivial fix, P(-1) calls it out and 2.1.4 picks it up before
 2.2.0 starts.
+
+**Outcome (2026-05-01)**: parser-side audit surfaced 1 HIGH (DEFLATE
+stored-block source-bounds bypass), 1 MEDIUM (HLIT spec compliance),
+2 LOW (zlib CINFO, gzip reserved FLG bits). All four fixed in 2.1.3
+with targeted regression tests; one INFO (gzip FHCRC verify)
+backlogged. Full writeup at `docs/audit/2026-05-01-pre-2.2.0.md`.
+Test count: 1,375,208 → 1,375,212. Cleared to open 2.2.0.
 
 ### 🎯 2.2.0 — preset dictionary in streaming encoders
 
@@ -413,7 +420,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.1.2)
+## File Summary (at 2.1.3)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -438,10 +445,11 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Assertions: 1,028,625 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
-1,375,208 total. The git_object suite grew massively in 2.0.2 / 2.0.3
+Assertions: 1,028,629 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
+1,375,212 total. The git_object suite grew massively in 2.0.2 / 2.0.3
 when the cl-tree depth-cap regression fixtures landed (134 → 13,929 →
-346,583 across the two patches).
+346,583 across the two patches); the +4 in sankoch.tcyr at 2.1.3
+covers the four P(-1) audit-finding regressions.
 
 Fuzz: 1,649 iterations across 6 harnesses
 (`fuzz_lz4` 700, `fuzz_deflate` batch 340, `fuzz_zlib` 160, `fuzz_gzip`
@@ -469,4 +477,4 @@ ship with Cyrius ≥ 5.5.22).
 
 ---
 
-*Last Updated: 2026-05-01*
+*Last Updated: 2026-05-01 (2.1.3 P(-1) audit closeout)*

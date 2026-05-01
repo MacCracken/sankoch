@@ -31,6 +31,11 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
     if (load8(src + 2) != 8) { return 0 - ERR_UNSUPPORTED_FORMAT; }
 
     var flg = load8(src + 3);
+    # LOW-2 fix (2.1.3): RFC 1952 §2.3.1.2 — "Reserved FLG bits ... must
+    # be zero. If any reserved bit is non-zero, a compliant decompressor
+    # must give an error." Reserved bits are 5, 6, 7 (mask 0xE0 = 224).
+    # Defined bits: FTEXT(0), FHCRC(1), FEXTRA(2), FNAME(3), FCOMMENT(4).
+    if ((flg & 224) != 0) { return 0 - ERR_CORRUPT_DATA; }
     var offset = 10;
 
     # Skip optional FEXTRA
