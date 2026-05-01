@@ -97,26 +97,65 @@ fn zlib_compress(src, src_len, dst, dst_cap) {
     return r;
 }
 
-# Streaming zlib encoder (v1.7.0). Wraps deflate_enc_* with the 2-byte
-# zlib header and a trailing big-endian Adler-32 of the uncompressed input.
+# Streaming zlib encoder (v1.7.0; preset-dictionary support v2.2.0).
+# Wraps deflate_enc_* with the 2-byte zlib header (or 6-byte
+# header + DICTID for FDICT streams) and a trailing big-endian
+# Adler-32 of the uncompressed input.
 #
-# Layout (24 bytes):
+# Layout (32 bytes):
 #   +0:  inner deflate_enc ctx pointer
 #   +8:  adler32 incremental state pointer
 #   +16: dst pointer (for appending the Adler-32 trailer)
+#   +24: header_len — 2 (no FDICT) or 6 (FDICT, includes DICTID).
+#        Determines where the trailer starts on finish.
 fn zlib_enc_init(level, dst, dst_cap) {
-    if (dst_cap < 6) { return 0; }   # 2 hdr + 4 trailer minimum
-    # CMF=0x78 (CM=8, CINFO=7 → 32K window), FLG=0x01 — (0x78*256+1) % 31 == 0.
-    store8(dst, 120);        # 0x78
-    store8(dst + 1, 1);      # 0x01
+    return zlib_enc_init_dict(level, dst, dst_cap, 0, 0);
+}
 
-    var inner = deflate_enc_init(level, dst + 2, dst_cap - 6);   # reserve 4 for trailer
+# Streaming zlib encoder with a preset dictionary. Sets FDICT in the
+# zlib header, emits the 4-byte big-endian DICTID (Adler-32 of the
+# dictionary), and preloads the underlying DEFLATE encoder's window
+# with the dict bytes. Decoder must invoke `zlib_decompress_dict`
+# with the same dictionary; DICTID mismatch is rejected with
+# ERR_CHECKSUM_MISMATCH.
+#
+# Returns 0 on dict-validation failure or alloc failure (mirrors
+# `zlib_enc_init` posture). dict_len == 0 is equivalent to the
+# non-dict path (no FDICT in the header).
+fn zlib_enc_init_dict(level, dst, dst_cap, dict, dict_len) {
+    if (dict_len < 0) { return 0; }
+    if (dict_len > DEFLATE_WINDOW_SIZE) { return 0; }
+    if (dict_len > 0 && dict == 0) { return 0; }
+
+    var hdr_len = 2;
+    if (dict_len > 0) { hdr_len = 6; }
+    if (dst_cap < hdr_len + 4) { return 0; }   # hdr + 4-byte trailer
+
+    if (dict_len > 0) {
+        # CMF=0x78 (CM=8, CINFO=7 → 32K window), FLG=0x20 (FDICT=1,
+        # FCHECK=0). Verify: (0x78*256 + 0x20) = 30752, 30752 % 31 == 0.
+        store8(dst, 120);
+        store8(dst + 1, 32);
+        # 4-byte big-endian DICTID = Adler-32 of the dictionary.
+        var did = adler32(dict, dict_len);
+        store8(dst + 2, (did >> 24) & 255);
+        store8(dst + 3, (did >> 16) & 255);
+        store8(dst + 4, (did >> 8) & 255);
+        store8(dst + 5, did & 255);
+    } else {
+        # CMF=0x78, FLG=0x01 — (0x78*256 + 1) % 31 == 0.
+        store8(dst, 120);
+        store8(dst + 1, 1);
+    }
+
+    var inner = deflate_enc_init_dict(level, dst + hdr_len, dst_cap - hdr_len - 4, dict, dict_len);
     if (inner == 0) { return 0; }
 
-    var ctx = alloc(24);
+    var ctx = alloc(32);
     store64(ctx, inner);
     store64(ctx + 8, adler32_init());
     store64(ctx + 16, dst);
+    store64(ctx + 24, hdr_len);
     return ctx;
 }
 
@@ -130,15 +169,15 @@ fn zlib_enc_finish(ctx) {
     var clen = deflate_enc_finish(load64(ctx));
     if (clen < 0) { return clen; }
 
-    # Compressed bytes occupy dst[2..2+clen). Append Adler-32 big-endian.
     var dst = load64(ctx + 16);
+    var hdr_len = load64(ctx + 24);
     var a = adler32_final(load64(ctx + 8));
-    var pos = 2 + clen;
+    var pos = hdr_len + clen;
     store8(dst + pos, (a >> 24) & 255);
     store8(dst + pos + 1, (a >> 16) & 255);
     store8(dst + pos + 2, (a >> 8) & 255);
     store8(dst + pos + 3, a & 255);
-    return pos + 4;   # 2 hdr + clen deflate + 4 adler32
+    return pos + 4;   # hdr_len + clen deflate + 4 adler32
 }
 
 # Compress data into a zlib stream with explicit compression level.

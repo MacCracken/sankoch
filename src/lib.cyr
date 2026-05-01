@@ -9,7 +9,8 @@
 #   compress_level(format, src, src_len, dst, dst_cap, l)-> len or -err
 #   decompress(format, src, src_len, dst, dst_cap)       -> len or -err
 #   detect_format(src, src_len)                          -> Format or -err
-#   plus stream_*, lz4f_*, zlib_*_dict, deflate_*_dict
+#   plus stream_*, lz4f_*, zlib_*_dict, deflate_*_dict,
+#   and {deflate,zlib,gzip}_enc_init_dict (v2.2.0+)
 
 # --- Standard library dependencies (order matters) ---
 include "lib/syscalls.cyr"

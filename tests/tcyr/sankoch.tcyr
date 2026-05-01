@@ -1462,6 +1462,225 @@ fn test_err_gzip_bad_magic() {
 }
 
 # ================================================================
+# 2.2.0 — preset dictionary in streaming encoders.
+# `*_enc_init_dict(level, dst, dst_cap, dict, dict_len)` mirrors the
+# decode-side dict semantics: encoder window is preloaded with `dict`
+# bytes, hash table seeded so back-references can reach into dict
+# territory. Decoder must apply the same dict via the matching
+# `*_decompress_dict` (or `zlib_decompress_dict` for FDICT streams).
+# ================================================================
+
+# Common dict + input — input has heavy overlap with dict so the
+# dict-warmed encoder reaches into the dict via match references.
+fn _dict_test_dict() {
+    # 45 bytes of pangram text
+    var s = "the quick brown fox jumps over the lazy dog. ";
+    return s;
+}
+
+fn _dict_test_input() {
+    # 89 bytes — repeats most of the dict content
+    var s = "the quick brown fox jumps over the lazy dog. the quick brown fox went home tonight.";
+    return s;
+}
+
+fn test_deflate_enc_dict_roundtrip() {
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var dst = alloc(512);
+    var ctx = deflate_enc_init_dict(6, dst, 512, dict, dict_len);
+    assert(ctx != 0, "deflate_enc_init_dict ctx");
+    assert(deflate_enc_write(ctx, input, input_len) == 0, "deflate_enc_write dict");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "deflate_enc_finish dict clen>0");
+
+    var out = alloc(256);
+    var dlen = deflate_decompress_dict(dst, clen, out, 256, dict, dict_len);
+    assert(dlen == input_len, "deflate dict roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "deflate dict roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_deflate_enc_dict_levels() {
+    # Same roundtrip across the level boundaries that switch fixed/
+    # dynamic encoder paths.
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var levels[4];
+    store64(&levels + 0, 1);   # fixed
+    store64(&levels + 8, 3);   # fixed
+    store64(&levels + 16, 6);  # dynamic
+    store64(&levels + 24, 9);  # dynamic / deepest chain
+
+    var li = 0;
+    while (li < 4) {
+        var level = load64(&levels + li * 8);
+        var dst = alloc(512);
+        var ctx = deflate_enc_init_dict(level, dst, 512, dict, dict_len);
+        assert(ctx != 0, "deflate dict ctx (level)");
+        assert(deflate_enc_write(ctx, input, input_len) == 0, "deflate dict write (level)");
+        var clen = deflate_enc_finish(ctx);
+        assert(clen > 0, "deflate dict clen>0 (level)");
+
+        var out = alloc(256);
+        var dlen = deflate_decompress_dict(dst, clen, out, 256, dict, dict_len);
+        assert(dlen == input_len, "deflate dict roundtrip len (level)");
+        var i = 0;
+        while (i < input_len) {
+            assert(load8(out + i) == load8(input + i), "deflate dict roundtrip byte (level)");
+            i = i + 1;
+        }
+        li = li + 1;
+    }
+    return 0;
+}
+
+fn test_zlib_enc_dict_roundtrip() {
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var dst = alloc(512);
+    var ctx = zlib_enc_init_dict(6, dst, 512, dict, dict_len);
+    assert(ctx != 0, "zlib_enc_init_dict ctx");
+    assert(zlib_enc_write(ctx, input, input_len) == 0, "zlib_enc_write dict");
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 6, "zlib dict clen > 6 (header+trailer)");
+
+    # Header: CMF=0x78, FLG=0x20 (FDICT=1)
+    assert(load8(dst) == 120, "zlib dict CMF=0x78");
+    assert(load8(dst + 1) == 32, "zlib dict FLG=0x20 (FDICT)");
+    # DICTID: 4-byte big-endian Adler-32 of dict
+    var did = adler32(dict, dict_len);
+    var stored = (load8(dst + 2) << 24) | (load8(dst + 3) << 16) |
+    (load8(dst + 4) << 8) | load8(dst + 5);
+    assert(stored == did, "zlib dict DICTID == adler32(dict)");
+
+    var out = alloc(256);
+    var dlen = zlib_decompress_dict(dst, clen, out, 256, dict, dict_len);
+    assert(dlen == input_len, "zlib dict roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "zlib dict roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zlib_enc_dict_wrong_dict_rejected() {
+    # Encode with dict A; decompress claiming dict B → DICTID mismatch.
+    var dict_a = "abcdefghijklmnop";
+    var dict_b = "ZZZZZZZZZZZZZZZZ";
+    var input = "hello world";
+    var input_len = strlen(input);
+
+    var dst = alloc(256);
+    var ctx = zlib_enc_init_dict(6, dst, 256, dict_a, 16);
+    zlib_enc_write(ctx, input, input_len);
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 0, "zlib dict_a clen>0");
+
+    var out = alloc(64);
+    var rc = zlib_decompress_dict(dst, clen, out, 64, dict_b, 16);
+    assert(rc < 0, "zlib decompress with wrong dict must reject");
+    return 0;
+}
+
+# gzip's wire format has no FDICT, so a dict-warmed gzip stream is a
+# private contract between matching encoder/decoder pairs. Sankoch's
+# `gzip_decompress` does not (currently) take a dict; for round-trip
+# coverage we strip the gzip envelope manually and feed the inner
+# DEFLATE payload to `deflate_decompress_dict`.
+fn test_gzip_enc_dict_roundtrip() {
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var dst = alloc(512);
+    var ctx = gzip_enc_init_dict(6, dst, 512, dict, dict_len);
+    assert(ctx != 0, "gzip_enc_init_dict ctx");
+    assert(gzip_enc_write(ctx, input, input_len) == 0, "gzip_enc_write dict");
+    var total = gzip_enc_finish(ctx);
+    assert(total > 18, "gzip dict total > 18 (header+trailer)");
+
+    # Magic bytes still 0x1F 0x8B regardless of dict.
+    assert(load8(dst) == 31, "gzip dict ID1");
+    assert(load8(dst + 1) == 139, "gzip dict ID2");
+    # FLG byte should still be 0 (no FDICT, no other flags).
+    assert(load8(dst + 3) == 0, "gzip dict FLG = 0");
+
+    # Strip 10-byte header + 8-byte trailer; feed inner DEFLATE to
+    # deflate_decompress_dict.
+    var deflate_len = total - 18;
+    var out = alloc(256);
+    var dlen = deflate_decompress_dict(dst + 10, deflate_len, out, 256, dict, dict_len);
+    assert(dlen == input_len, "gzip dict inner-DEFLATE roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "gzip dict inner-DEFLATE byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_enc_dict_invalid_args() {
+    var dict = "abc";
+    var dst = alloc(64);
+    # dict_len > DEFLATE_WINDOW_SIZE (32768) — reject
+    assert(deflate_enc_init_dict(6, dst, 64, dict, 32769) == 0,
+    "deflate dict_len>32768 rejected");
+    assert(zlib_enc_init_dict(6, dst, 64, dict, 32769) == 0,
+    "zlib dict_len>32768 rejected");
+    assert(gzip_enc_init_dict(6, dst, 64, dict, 32769) == 0,
+    "gzip dict_len>32768 rejected");
+    # dict_len < 0 — reject
+    assert(deflate_enc_init_dict(6, dst, 64, dict, 0 - 1) == 0,
+    "deflate dict_len<0 rejected");
+    # dict == 0 with dict_len > 0 — reject
+    assert(deflate_enc_init_dict(6, dst, 64, 0, 5) == 0,
+    "deflate null dict + nonzero len rejected");
+    return 0;
+}
+
+fn test_enc_dict_zero_len_equals_no_dict() {
+    # dict_len == 0 should behave identically to the no-dict path.
+    # We can't byte-compare against a fresh _enc_init stream because
+    # the static-data encoder state is shared and timing-sensitive,
+    # but we can confirm round-trip via the no-dict decompressor.
+    var input = "hello world";
+    var input_len = strlen(input);
+
+    var dst = alloc(256);
+    var ctx = deflate_enc_init_dict(6, dst, 256, 0, 0);
+    assert(ctx != 0, "dict_len=0 ctx (deflate)");
+    deflate_enc_write(ctx, input, input_len);
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "dict_len=0 clen>0 (deflate)");
+
+    var out = alloc(64);
+    var dlen = deflate_decompress(dst, clen, out, 64);
+    assert(dlen == input_len, "dict_len=0 roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "dict_len=0 roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
 # 2.1.3 P(-1) hardening — regression coverage for the audit findings.
 # Each test confirms that a malformed input the pre-2.1.3 parser would
 # have either accepted (spec non-compliance) or read past the source
@@ -1648,6 +1867,15 @@ fn main() {
     test_err_deflate_hlit_overflow();
     test_err_zlib_cinfo_overflow();
     test_err_gzip_reserved_flg();
+
+    # 2.2.0 preset dictionary in streaming encoders
+    test_deflate_enc_dict_roundtrip();
+    test_deflate_enc_dict_levels();
+    test_zlib_enc_dict_roundtrip();
+    test_zlib_enc_dict_wrong_dict_rejected();
+    test_gzip_enc_dict_roundtrip();
+    test_enc_dict_invalid_args();
+    test_enc_dict_zero_len_equals_no_dict();
 
     var r = assert_summary();
     return r;

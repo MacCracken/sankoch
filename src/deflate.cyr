@@ -1392,6 +1392,29 @@ fn _denc_is_dynamic(ctx)  { return load64(ctx + 72); }
 # Start a new streaming DEFLATE encoder. Takes _sankoch_mtx for the
 # encoder's lifetime; returns ctx pointer, or 0 on allocation failure.
 fn deflate_enc_init(level, dst, dst_cap) {
+    return deflate_enc_init_dict(level, dst, dst_cap, 0, 0);
+}
+
+# Start a streaming DEFLATE encoder with a preset dictionary preloaded
+# into the LZ77 sliding window. Mirrors `deflate_decompress_dict` on
+# the encode side: matches against `dict[0..dict_len)` will be emitted
+# as length/distance back-references whose distance reaches into the
+# dictionary territory. The dictionary itself is NOT emitted in the
+# stream — the decoder must apply the same dictionary via
+# `deflate_decompress_dict` (or `zlib_decompress_dict` if wrapped in a
+# zlib stream with FDICT set; the zlib path also verifies DICTID).
+#
+# Constraints (returns 0 on violation, no lock taken):
+#   - dict_len < 0                       — invalid
+#   - dict_len > DEFLATE_WINDOW_SIZE     — exceeds 32K window
+#   - dict_len > 0 && dict == 0          — null pointer with non-zero len
+#
+# dict_len == 0 is equivalent to `deflate_enc_init` (no preload).
+fn deflate_enc_init_dict(level, dst, dst_cap, dict, dict_len) {
+    if (dict_len < 0) { return 0; }
+    if (dict_len > DEFLATE_WINDOW_SIZE) { return 0; }
+    if (dict_len > 0 && dict == 0) { return 0; }
+
     _sankoch_lock();
     var ctx = alloc(DENC_CTX_SIZE);
     var window = alloc(DENC_WINDOW_CAP);
@@ -1418,6 +1441,32 @@ fn deflate_enc_init(level, dst, dst_cap) {
         _deflate_build_enc_fixed();
         _deflate_build_enc_dist();
     }
+
+    # Preload the dictionary at the start of the window. wptr and cptr
+    # both advance past `dict_len` so subsequent `enc_write` traffic
+    # only emits symbols for caller-supplied input — never for the
+    # dictionary bytes themselves. Every 3-byte position in the dict
+    # is hash-seeded so matches inside future input can reach into
+    # dictionary territory. Distances stay correct because LZ77's
+    # absolute-position bookkeeping treats the dict prefix as part of
+    # the same coordinate space; the existing `chain < base` slide
+    # check naturally evicts dict entries once they fall out of the
+    # 32K back-reference range.
+    if (dict_len > 0) {
+        var i = 0;
+        while (i < dict_len) {
+            store8(window + i, load8(dict + i));
+            i = i + 1;
+        }
+        store64(ctx + 48, dict_len);
+        store64(ctx + 56, dict_len);
+        var j = 0;
+        while (j + LZ77_MIN_MATCH <= dict_len) {
+            _lz77_insert(window, j);
+            j = j + 1;
+        }
+    }
+
     return ctx;
 }
 

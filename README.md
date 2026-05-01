@@ -27,12 +27,19 @@ decompress(format, src, src_len, dst, dst_cap)         -> bytes or -err
 detect_format(src, src_len)                             -> Format or -err
 ```
 
-### Streaming (v1.7.0+)
+### Streaming (v1.7.0+, preset-dict v2.2.0+)
 
 ```cyr
 var ctx = <fmt>_enc_init(level, dst, dst_cap)  # per format, or via stream.cyr
 <fmt>_enc_write(ctx, chunk, len)               # feed input incrementally
 var total = <fmt>_enc_finish(ctx)              # flush + close
+
+# Preset dictionary (deflate / zlib / gzip) — preloads the LZ77 window
+# so back-references can reach into dict territory. Decoder must apply
+# the same dict via `<fmt>_decompress_dict`. zlib emits an FDICT-bearing
+# header + DICTID; gzip's wire format has no FDICT, so dict-warmed
+# gzip is a private contract between matching encoder/decoder pairs.
+var ctx = <fmt>_enc_init_dict(level, dst, dst_cap, dict, dict_len)
 ```
 
 Format-agnostic wrappers in `stream.cyr`:
@@ -52,8 +59,8 @@ want to feed their own data streams.
 ```sh
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check
-cyrius test tests/tcyr/sankoch.tcyr      # 1,028,625 assertions
-cyrius test tests/tcyr/git_object.tcyr   # 346,583 assertions
+cyrius test tests/tcyr/sankoch.tcyr      # 1,029,265 assertions
+cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
 cyrius fuzz                              # all 6 harnesses, 1,649 iters
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
 cyrius distlib                           # → dist/sankoch.cyr
@@ -78,10 +85,15 @@ Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cy
 | stream.cyr    |   162 | Streaming dispatch |
 | lib.cyr       |   150 | Include chain + public API + thread safety |
 
-**4,635 lines** of Cyrius. **1,375,208 assertions** across 2 test
-suites + **1,649 fuzz iterations** across 6 harnesses. Distlib:
-`dist/sankoch.cyr` at 4,662 lines (full) + `dist/sankoch-core.cyr` at
-315 lines (kernel-safe LZ4 decompress). Zero deps in either profile.
+**4,635 lines** of Cyrius. **103 test functions emitting 1,375,848
+assertions** across 2 test suites — most of the assertion count is
+per-byte round-trip verification on multi-KB streaming inputs, not
+distinct scenarios; see
+[`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
+for what the number actually measures. Plus **1,649 fuzz iterations**
+across 6 harnesses. Distlib: `dist/sankoch.cyr` at 4,753 lines (full)
++ `dist/sankoch-core.cyr` at 315 lines (kernel-safe LZ4 decompress).
+Zero deps in either profile.
 
 ## Toolchain
 

@@ -33,18 +33,43 @@ compile errors across the full include chain before running tests.
 ### Test
 
 ```bash
-cyrius test tests/tcyr/sankoch.tcyr      # 1,028,625 assertions
-cyrius test tests/tcyr/git_object.tcyr   # 346,583 assertions (git integration; grew with 2.0.2 / 2.0.3 cl-tree regression fixtures)
+cyrius test tests/tcyr/sankoch.tcyr      # 1,029,265 assertions
+cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions (git integration; grew with 2.0.2 / 2.0.3 cl-tree regression fixtures)
 ```
 
 Both tcyr files include `src/lib.cyr` (full chain) + `lib/assert.cyr`.
 No manual stdlib imports — `src/lib.cyr` owns that.
 
-The bulk of `sankoch.tcyr` assertions come from per-byte round-trip
-checks in the streaming tests: every byte of each 65536 / 100000 /
-150000 / 200000-byte test input is asserted equal after round-trip.
-The assertion count climbs proportionally with test input size, not
-with "number of distinct test functions" — that's by design.
+#### What "assertions" means here (and why the number is so large)
+
+**Assertions ≠ test cases.** At v2.2.0 the two suites contain
+**103 distinct test functions** (93 in `sankoch.tcyr`, 10 in
+`git_object.tcyr`) — the kind of unit you'd usually count as "tests."
+Those 103 functions emit **1,375,848 individual `assert(...)` calls**
+when run, and the second number is what `cyrius test` reports as the
+"passed" count.
+
+The headline number is dominated by **per-byte round-trip
+verification**. A streaming round-trip test on a 200 KB input contains
+a `while (i < 200000) { assert(load8(dst+i) == load8(src+i), …); i++ }`
+loop — one test function, 200,000 assertions. The streaming suite
+covers 64 K / 100 K / 150 K / 200 K inputs across DEFLATE / zlib /
+gzip / LZ4F at multiple levels, plus the 2.0.2 / 2.0.3 cl-tree
+regression fixtures in `git_object.tcyr` that walk every byte of
+synthetic worst-case inputs (134 → 13,929 → 346,583 across the two
+patches). The assertion count climbs proportionally with test input
+size, not with "number of distinct test functions" — that's by
+design.
+
+Why this design (per `CLAUDE.md` "Key Principles"): wrong compression
+silently corrupts data, and the only way to catch a single-byte
+divergence in a 200 KB DEFLATE round-trip is to assert each byte
+individually. A pass/fail at "buffers are equal" hides which byte
+differed; per-byte assertions point straight at the corruption site.
+
+Read the headline as **"~1.4 M byte-level proofs of correctness across
+~100 logically distinct scenarios"** — it's a coverage-density
+number, not a coverage-breadth number.
 
 ### Benchmark
 

@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-05-01
+
+**Preset dictionary in streaming encoders.** Three new public API
+entry points — `deflate_enc_init_dict`, `zlib_enc_init_dict`,
+`gzip_enc_init_dict` — mirror the existing `*_decompress_dict` paths
+on the encode side. Minor bump (additive surface).
+
+### Added — preset dictionary streaming-encoder APIs (2026-05-01)
+- **`deflate_enc_init_dict(level, dst, dst_cap, dict, dict_len)`** —
+  starts a streaming DEFLATE encoder with `dict[0..dict_len)`
+  preloaded into the LZ77 sliding window. Hash chains are seeded for
+  every 3-byte position in the dictionary, so back-references inside
+  subsequent input can reach into dictionary territory. The
+  dictionary itself is never emitted in the stream — caller's input
+  is the only thing that produces output. Decoder must invoke
+  `deflate_decompress_dict` with the same dictionary to recover the
+  original bytes. Constraints: `dict_len ∈ [0, 32768]`, `dict != 0`
+  if `dict_len > 0`. dict_len == 0 is equivalent to `deflate_enc_init`
+  (no preload). Returns ctx pointer or 0 on error.
+- **`zlib_enc_init_dict(level, dst, dst_cap, dict, dict_len)`** —
+  same as zlib_enc_init but emits an FDICT-bearing zlib header
+  (CMF=0x78, FLG=0x20 — FCHECK=0 satisfies `(0x78*256 + 0x20) % 31 == 0`)
+  followed by a 4-byte big-endian DICTID = Adler-32(dict). Decoder
+  validates DICTID against the dict it's been handed, returning
+  `-ERR_CHECKSUM_MISMATCH` on mismatch (covered by
+  `test_zlib_enc_dict_wrong_dict_rejected`). The encoder ctx layout
+  grew from 24 to 32 bytes — `+24` now stores the header length
+  (2 without FDICT, 6 with) so `zlib_enc_finish` puts the trailer
+  at the right offset.
+- **`gzip_enc_init_dict(level, dst, dst_cap, dict, dict_len)`** —
+  preloads the inner DEFLATE encoder with the dict. **CAVEAT**:
+  RFC 1952 has no FDICT equivalent, so the on-wire gzip header is
+  byte-identical to the non-dict variant. Standard `gunzip` cannot
+  decode the resulting stream — the consumer pair must agree on
+  the dictionary out-of-band. Interoperates with zlib's
+  `deflateInit2(..., 31, ...) + deflateSetDictionary` gzip-mode
+  streams; testable in-tree by stripping the 10-byte gzip header
+  and 8-byte trailer and feeding the inner DEFLATE to
+  `deflate_decompress_dict` (see `test_gzip_enc_dict_roundtrip`).
+  CRC-32 / ISIZE in the trailer cover only caller input bytes
+  (the dict is not part of decompressed output).
+
+### Changed — internal refactor (2026-05-01)
+- **`deflate_enc_init` is now a thin shim over
+  `deflate_enc_init_dict(level, dst, dst_cap, 0, 0)`.** Same for
+  `zlib_enc_init` (calls `zlib_enc_init_dict(..., 0, 0)`) and
+  `gzip_enc_init` (calls `gzip_enc_init_dict(..., 0, 0)`). The
+  no-dict path is byte-identical to pre-2.2.0 — every existing
+  assertion passes byte-for-byte (1,028,629 → 1,029,265 only from
+  the new dict-path tests).
+- Dict-validation errors return `0` (no ctx) **before** taking
+  `_sankoch_mtx` — so a caller that passes a bogus `dict_len` no
+  longer leaks the lock. The 2.2.2-scheduled defensive alloc-failure
+  handling (INFO-01 from the 2026-04-19-pre-2.0.0 audit) still
+  applies to the post-lock alloc path; this is a partial early
+  improvement, not a substitute.
+
+### Tests — +636 assertions (2026-05-01)
+- `test_deflate_enc_dict_roundtrip` — round-trip via
+  `deflate_decompress_dict`, byte-equal output.
+- `test_deflate_enc_dict_levels` — same round-trip across levels
+  1, 3, 6, 9 (covers fixed/dynamic and shallow/deep chain paths).
+- `test_zlib_enc_dict_roundtrip` — verifies CMF/FLG/DICTID bytes
+  in the on-wire header, then full round-trip via
+  `zlib_decompress_dict`.
+- `test_zlib_enc_dict_wrong_dict_rejected` — DICTID mismatch
+  returns negative error.
+- `test_gzip_enc_dict_roundtrip` — gzip header byte-identical to
+  non-dict; inner DEFLATE round-trips via `deflate_decompress_dict`.
+- `test_enc_dict_invalid_args` — `dict_len > 32768`, negative
+  `dict_len`, null dict + non-zero len all return 0 across all
+  three encoder families.
+- `test_enc_dict_zero_len_equals_no_dict` — `dict_len == 0`
+  produces a stream that round-trips via the non-dict
+  `deflate_decompress`.
+
+**Total assertions: 1,375,212 → 1,375,848** (sankoch.tcyr +636,
+git_object.tcyr unchanged).
+
+### `[lib.core]` — unchanged
+- The kernel-safe profile bundle (`dist/sankoch-core.cyr`) is
+  untouched at this release: dict-init code lives in
+  `src/deflate.cyr` / `src/zlib.cyr` / `src/gzip.cyr`, none of
+  which are part of `[lib.core]`. The kernel-safe tripwire
+  (`programs/core_smoke.cyr`) re-validated clean.
+
 ## [2.1.3] — 2026-05-01
 
 **P(-1) scaffold-hardening pass — closeout for the 2.1.x line, entry

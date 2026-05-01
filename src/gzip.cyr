@@ -145,15 +145,37 @@ fn gzip_compress(src, src_len, dst, dst_cap) {
 #   +16: dst pointer (for appending the trailer)
 #   +24: total_in (cumulative bytes written — becomes ISIZE)
 fn gzip_enc_init(level, dst, dst_cap) {
+    return gzip_enc_init_dict(level, dst, dst_cap, 0, 0);
+}
+
+# Streaming gzip encoder with a preset dictionary preloaded into the
+# inner DEFLATE encoder's LZ77 window.
+#
+# CAVEAT — the gzip wire format (RFC 1952) has no equivalent of zlib's
+# FDICT bit. The header this writes is BYTE-FOR-BYTE identical to a
+# non-dict gzip stream, but the embedded DEFLATE back-references
+# expect the decoder's window to be pre-warmed with the same dict
+# bytes. Standard `gunzip` cannot decode such streams; the consumer
+# pair must agree out-of-band. zlib's gzip-mode (deflateInit2 with
+# windowBits=31 + deflateSetDictionary, then inflateSetDictionary
+# on the matching side) interoperates with this layout.
+#
+# CRC-32 and ISIZE in the trailer cover ONLY the caller's input
+# bytes (the dict is not part of the decompressed output). Returns 0
+# on dict-validation or alloc failure.
+fn gzip_enc_init_dict(level, dst, dst_cap, dict, dict_len) {
+    if (dict_len < 0) { return 0; }
+    if (dict_len > DEFLATE_WINDOW_SIZE) { return 0; }
+    if (dict_len > 0 && dict == 0) { return 0; }
     if (dst_cap < 18) { return 0; }   # 10 hdr + 8 trailer minimum
 
-    # 10-byte header identical to gzip_compress
+    # 10-byte header — identical regardless of dict (no FDICT in spec).
     store8(dst + 0, 31);    store8(dst + 1, 139);   store8(dst + 2, 8);
     store8(dst + 3, 0);     store8(dst + 4, 0);     store8(dst + 5, 0);
     store8(dst + 6, 0);     store8(dst + 7, 0);     store8(dst + 8, 0);
     store8(dst + 9, 255);
 
-    var inner = deflate_enc_init(level, dst + 10, dst_cap - 18);
+    var inner = deflate_enc_init_dict(level, dst + 10, dst_cap - 18, dict, dict_len);
     if (inner == 0) { return 0; }
 
     var ctx = alloc(32);

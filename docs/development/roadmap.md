@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.1.3) | **Last Updated**: 2026-05-01
+> **Status**: Stable (v2.2.0) | **Last Updated**: 2026-05-01
 
 ---
 
@@ -192,7 +192,7 @@ with targeted regression tests; one INFO (gzip FHCRC verify)
 backlogged. Full writeup at `docs/audit/2026-05-01-pre-2.2.0.md`.
 Test count: 1,375,208 → 1,375,212. Cleared to open 2.2.0.
 
-### 🎯 2.2.0 — preset dictionary in streaming encoders
+### ✅ 2.2.0 — preset dictionary in streaming encoders — shipped 2026-05-01
 
 Adds public API → minor bump. Matches existing
 `deflate_decompress_dict` / `zlib_decompress_dict` semantics on the
@@ -213,6 +213,16 @@ encode side.
 
 **Sizing:** small-medium. Encoder dict plumbing is mostly a
 window-preload + Adler-32 prelude; the test matrix is the bulk.
+
+**Outcome (2026-05-01)**: three new public API entry points
+(`deflate_enc_init_dict`, `zlib_enc_init_dict`, `gzip_enc_init_dict`).
+Existing `*_enc_init` functions refactored to thin shims calling the
+dict variant with `dict=0, dict_len=0` — no behavior change for
+existing callers. zlib ctx grew from 24 to 32 bytes (header_len
+field added). gzip support documented with the "no FDICT in spec"
+caveat — round-trips inside the gzip wrapper via
+`deflate_decompress_dict` on the stripped DEFLATE payload.
+Tests +636 assertions. `[lib.core]` unchanged.
 
 ### 🎯 2.2.1 — true incremental decompression
 
@@ -420,7 +430,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.1.3)
+## File Summary (at 2.2.0)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -445,11 +455,22 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Assertions: 1,028,629 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
-1,375,212 total. The git_object suite grew massively in 2.0.2 / 2.0.3
-when the cl-tree depth-cap regression fixtures landed (134 → 13,929 →
+Tests: **103 distinct test functions** (93 sankoch.tcyr + 10
+git_object.tcyr) producing **1,375,848 assertions** total
+(1,029,265 + 346,583). Most of the assertion count comes from
+per-byte round-trip loops on the streaming suites — a single 200 KB
+round-trip contributes 200,000 assertions through one
+`while (i < N) assert(byte_eq)` loop; the headline number measures
+coverage *density*, not coverage *breadth*. See
+[`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
+for the full explanation.
+
+The git_object suite grew massively in 2.0.2 / 2.0.3 when the
+cl-tree depth-cap regression fixtures landed (134 → 13,929 →
 346,583 across the two patches); the +4 in sankoch.tcyr at 2.1.3
-covers the four P(-1) audit-finding regressions.
+covers the four P(-1) audit-finding regressions, and the +636 at
+2.2.0 covers the streaming-encoder dict round-trip + invalid-args
+matrix.
 
 Fuzz: 1,649 iterations across 6 harnesses
 (`fuzz_lz4` 700, `fuzz_deflate` batch 340, `fuzz_zlib` 160, `fuzz_gzip`
@@ -477,4 +498,4 @@ ship with Cyrius ≥ 5.5.22).
 
 ---
 
-*Last Updated: 2026-05-01 (2.1.3 P(-1) audit closeout)*
+*Last Updated: 2026-05-01 (2.2.0 preset-dict streaming encoders)*
