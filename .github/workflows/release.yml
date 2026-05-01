@@ -40,6 +40,9 @@ jobs:
           mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
           cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
           cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
+          # cc5_aarch64 packaging: pre-5.7.48 ships under bin/, 5.7.48+
+          # at the tarball top-level. Cover both.
+          [ -f "$CYRIUS_DIR/cc5_aarch64" ] && cp "$CYRIUS_DIR/cc5_aarch64" "$HOME/.cyrius/bin/"
           chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
           echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
           echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
@@ -55,6 +58,20 @@ jobs:
 
       - name: Verify ELF
         run: xxd -l 4 build/sankoch | grep -q "7f45 4c46"
+
+      - name: Cross-build aarch64
+        # 2.2.2 made aarch64 cross-build a hard release requirement.
+        # Mirror the CI gate; a release tag can't ship without an
+        # aarch64 binary alongside x86_64.
+        run: |
+          if [ ! -x "$HOME/.cyrius/bin/cc5_aarch64" ]; then
+            echo "::error::cc5_aarch64 missing from Cyrius $CYRIUS_VERSION — aarch64 cross-build is required since 2.2.2"
+            exit 1
+          fi
+          CYRIUS_DCE=1 cyrius build --aarch64 src/lib.cyr build/sankoch-aarch64
+          file build/sankoch-aarch64 | grep -q "ARM aarch64" || {
+            echo "ERROR: build/sankoch-aarch64 is not an aarch64 ELF"; exit 1; }
+          echo "sankoch-aarch64: $(wc -c < build/sankoch-aarch64) bytes"
 
       - name: Test
         run: |
@@ -91,7 +108,15 @@ jobs:
           git archive --format=tar.gz --prefix="sankoch-${TAG}/" -o "sankoch-${TAG}-src.tar.gz" HEAD
           cp dist/sankoch.cyr      "sankoch-${TAG}.cyr"
           cp dist/sankoch-core.cyr "sankoch-${TAG}-core.cyr"
-          sha256sum sankoch-*.tar.gz sankoch-*.cyr > SHA256SUMS
+          # Ship prebuilt binaries alongside source + bundles so
+          # consumers can grab a statically-linked ELF per arch.
+          if [ -f build/sankoch ]; then
+            cp build/sankoch "sankoch-${TAG}-x86_64-linux"
+          fi
+          if [ -f build/sankoch-aarch64 ]; then
+            cp build/sankoch-aarch64 "sankoch-${TAG}-aarch64-linux"
+          fi
+          sha256sum sankoch-*.tar.gz sankoch-*.cyr sankoch-*-linux 2>/dev/null > SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
@@ -99,6 +124,7 @@ jobs:
           path: |
             sankoch-*.tar.gz
             sankoch-*.cyr
+            sankoch-*-linux
             SHA256SUMS
 
   release:
@@ -122,4 +148,5 @@ jobs:
           files: |
             sankoch-*.tar.gz
             sankoch-*.cyr
+            sankoch-*-linux
             SHA256SUMS

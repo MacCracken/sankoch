@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.2.1) | **Last Updated**: 2026-05-01
+> **Status**: Stable (v2.2.2) | **Last Updated**: 2026-05-01
 
 ---
 
@@ -112,9 +112,10 @@ P(-1) pass surfaces something that has to slot in. Items further down
 the ladder can be re-ordered against new information; the dependency
 direction is roughly top → bottom (the streaming-decomp work in
 2.3.0 leans on patterns from the kernel-safe refactor in 2.1.2 and
-the lock-aware alloc handling from 2.2.1; the perf retry in 2.3.2
-wants the throughput baseline to be steady, which means after the
-API surface settles).
+the lock-aware alloc handling from 2.2.1; the aarch64 cross-build
+gate in 2.2.2 sets the portability floor before new public surface
+lands; the perf retry in 2.3.2 wants the throughput baseline to be
+steady, which means after the API surface settles).
 
 ### ✅ 2.1.2 — multi-profile distlib (kernel-safe LZ4 decompress) — shipped 2026-05-01
 
@@ -272,6 +273,48 @@ verifying a follow-up call succeeds. Lazy-global allocs
 item — they're effectively never the OOM victim and would need
 error propagation through internal callers.
 
+### ✅ 2.2.2 — aarch64 cross-build in CI/release — shipped 2026-05-01
+
+Closes the long-standing aarch64 parity gap before the 2.3.x
+streaming-decomp arc opens, so every `*_dec_*` function added in
+2.3.0+ is aarch64-clean from day one rather than retroactively.
+Pulled forward from 2.3.3 to keep the 2.3.x line a clean
+streaming-decomp narrative.
+
+Yukti has shipped aarch64 cross-builds since 2.1.3 on cyrius
+5.7.43+; we're on 5.7.48, so the toolchain is ready and
+`cc5_aarch64` is in the bundle. Local cross-build sanity-checks
+already pass (sankoch's `src/` is syscall-free pure-compute).
+
+**Scope:**
+- Add aarch64 cross-build step to `.github/workflows/ci.yml` —
+  build `src/lib.cyr`, `programs/core_smoke.cyr`, and all fuzz
+  harnesses with `--aarch64`. Verify each output is an
+  ARM aarch64 ELF via `file`.
+- Pick up the `cc5_aarch64` packaging workaround yukti and sakshi
+  carry (covers pre-5.7.48 `bin/` layout plus 5.7.48+ tarball
+  top-level).
+- Mirror in `.github/workflows/release.yml`: cross-build
+  `src/lib.cyr`, archive alongside x86_64, ship
+  `sankoch-<tag>-aarch64-linux` next to the existing x86
+  artifact.
+- No `src/` changes expected — sankoch is pure-compute (no direct
+  syscalls; the security scan asserts this). Stdlib syscall-arity
+  warnings on the aarch64 build are cosmetic and don't fail the
+  gate.
+
+**Sizing:** small. Pure CI/release YAML work + bundle
+regeneration with the new version stamp.
+
+**Outcome (2026-05-01)**: aarch64 cross-build step added to both
+ci.yml and release.yml; cc5_aarch64 packaging workaround landed
+to cover the 5.7.48+ tarball layout. Local sweep verifies
+`src/lib.cyr` (180 KB), `programs/core_smoke.cyr` (64 KB), and
+both fuzz harnesses (~200-226 KB each) produce valid ARM aarch64
+ELFs. Release archive now ships `sankoch-<tag>-aarch64-linux`
+alongside the x86_64 artifact. Zero source changes; both bundles
+regen'd only for the version stamp bump (body byte-identical).
+
 ### 🎯 2.3.0 — true incremental decompression
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
@@ -351,31 +394,6 @@ double that.
 **Sizing:** medium. PCLMULQDQ is contained; the L≥6 retry is a
 think-first job.
 
-### 🎯 2.3.3 — aarch64 cross-build in CI/release
-
-Closes the long-standing aarch64 parity gap. Yukti has shipped
-aarch64 cross-builds since 2.1.3 on cyrius 5.7.43+; we're on 5.7.48,
-so the toolchain is ready and `cc5_aarch64` is in the bundle.
-
-**Scope:**
-- Add aarch64 cross-build step to `.github/workflows/ci.yml` —
-  build `src/lib.cyr`, all fuzz harnesses, and (if 2.1.2 landed)
-  `programs/core_smoke.cyr` with `--aarch64`. Verify each output
-  is an aarch64 ELF via `file`.
-- Pick up the cc5_aarch64 packaging workaround yukti and sakshi
-  carry (covers pre-5.7.48 `bin/` layout plus 5.7.48+ tarball
-  top-level).
-- Mirror in `.github/workflows/release.yml`: cross-build, archive
-  alongside x86_64, ship `sankoch-<tag>-aarch64-linux` next to
-  the existing x86 artifact.
-- No `src/` changes expected — sankoch is pure-compute (no direct
-  syscalls; the security scan asserts this). Confirm with a
-  one-shot cross-build before tagging.
-
-**Sizing:** small. Pure CI/release work; if a syscall leak surfaced
-under cross-build, it'd promote out of patch territory — but
-unlikely given the security gate.
-
 ---
 
 ### Landed in 2.1.0 (record, not roadmap)
@@ -425,7 +443,7 @@ through `cyrius fmt` either way.
 ### 🔀 Multi-profile distlib & aarch64 cross-build — on the ladder
 
 Multi-profile distlib (kernel-safe LZ4 decompress subset) shipped in
-**2.1.2** (2026-05-01); aarch64 cross-build in CI/release is **2.3.3**.
+**2.1.2** (2026-05-01); aarch64 cross-build in CI/release is **2.2.2**.
 See the "v2.x release ladder" section above for the latter's scope.
 
 ---
@@ -455,7 +473,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.2.1)
+## File Summary (at 2.2.2)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -524,4 +542,4 @@ ship with Cyrius ≥ 5.5.22).
 
 ---
 
-*Last Updated: 2026-05-01 (2.2.1 defensive alloc-failure handling)*
+*Last Updated: 2026-05-01 (2.2.2 aarch64 cross-build gate)*

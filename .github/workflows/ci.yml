@@ -28,6 +28,11 @@ jobs:
           mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
           cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
           cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
+          # cc5_aarch64 packaging changed across the 5.7.x line: pre-5.7.48
+          # tarballs ship it under bin/ (picked up by the bin/* copy above),
+          # 5.7.48+ moved it to the tarball top-level. Cover both. Same
+          # workaround yukti and sakshi carry.
+          [ -f "$CYRIUS_DIR/cc5_aarch64" ] && cp "$CYRIUS_DIR/cc5_aarch64" "$HOME/.cyrius/bin/"
           chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
           echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
           echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
@@ -111,6 +116,33 @@ jobs:
         run: |
           CYRIUS_DCE=1 cyrius build programs/core_smoke.cyr build/core_smoke
           ./build/core_smoke
+
+      - name: Cross-build aarch64
+        # 2.2.2 added the aarch64 cross-build gate. sankoch's src/ is
+        # syscall-free and pure-compute, so the work is verifying every
+        # entry point produces a valid ARM aarch64 ELF. Stdlib syscall-
+        # arity warnings ("warning:N: syscall arity mismatch") are
+        # cosmetic at this stage — they come from lib/syscalls.cyr's
+        # arch-divergent paths and don't fail the build.
+        # Cyrius 5.7.43+ ships cc5_aarch64; 5.7.48+ moved its tarball
+        # location (covered in the install step above).
+        run: |
+          if [ ! -x "$HOME/.cyrius/bin/cc5_aarch64" ]; then
+            echo "::error::cc5_aarch64 missing from Cyrius $CYRIUS_VERSION — aarch64 cross-build is required since 2.2.2"
+            exit 1
+          fi
+          CYRIUS_DCE=1 cyrius build --aarch64 src/lib.cyr build/sankoch-aarch64
+          CYRIUS_DCE=1 cyrius build --aarch64 programs/core_smoke.cyr build/core_smoke-aarch64
+          for f in fuzz/*.fcyr; do
+            name=$(basename "$f" .fcyr)
+            CYRIUS_DCE=1 cyrius build --aarch64 "$f" "build/${name}-aarch64"
+          done
+          for bin in build/sankoch-aarch64 build/core_smoke-aarch64 build/*-aarch64; do
+            [ -f "$bin" ] || continue
+            file "$bin" | grep -q "ARM aarch64" || {
+              echo "ERROR: $bin is not an aarch64 ELF"; file "$bin"; exit 1; }
+          done
+          echo "sankoch-aarch64: $(wc -c < build/sankoch-aarch64) bytes"
 
       - name: Test
         run: |

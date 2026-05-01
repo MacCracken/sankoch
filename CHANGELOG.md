@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.2] — 2026-05-01
+
+**aarch64 cross-build now a hard CI/release gate.** Pulled forward
+from the originally-planned 2.3.3 slot to set the portability floor
+before the 2.3.x streaming-decomp arc opens — every `*_dec_*`
+function added in 2.3.0+ will be aarch64-clean from day one rather
+than retroactively. Pure CI/release YAML work; zero source changes.
+
+### Added — aarch64 cross-build gate (2026-05-01)
+- **`.github/workflows/ci.yml`** gains a "Cross-build aarch64"
+  step after the kernel-safe tripwire. Builds `src/lib.cyr`,
+  `programs/core_smoke.cyr`, and every `fuzz/*.fcyr` harness with
+  `cyrius build --aarch64`, then verifies each output is an
+  `ARM aarch64` ELF via `file`. Hard-fails if `cc5_aarch64` is
+  missing from the toolchain or if any output is not an aarch64
+  ELF. Stdlib syscall-arity warnings (`warning:N: syscall arity
+  mismatch`) are cosmetic at this stage — they come from
+  `lib/syscalls.cyr`'s arch-divergent paths and don't fail the
+  build; sankoch's own `src/` is syscall-free pure-compute, so
+  the warnings never originate from this tree.
+- **`.github/workflows/release.yml`** gains the same cross-build
+  step and ships the resulting binary as
+  `sankoch-<tag>-aarch64-linux` alongside the existing
+  `sankoch-<tag>-x86_64-linux` artifact in the release archive.
+  SHA256SUMS now covers `sankoch-*-linux` ELFs in addition to the
+  source tarball and the two distlib bundles.
+- **cc5_aarch64 packaging workaround** in both workflows' install
+  step: pre-5.7.48 tarballs ship `cc5_aarch64` under `bin/` (the
+  existing `bin/*` copy already picks it up), 5.7.48+ moved it to
+  the tarball top-level. The new defensive `[ -f "$CYRIUS_DIR/cc5_aarch64" ] && cp ...`
+  step covers both layouts (same workaround yukti and sakshi
+  carry).
+
+### Verified — local cross-build pass
+- `src/lib.cyr` → `build/sankoch-aarch64` (~180 KB, ARM aarch64 ELF)
+- `programs/core_smoke.cyr` → `build/core_smoke-aarch64` (~64 KB)
+- `fuzz/fuzz_deflate.fcyr` → ~226 KB ELF
+- `fuzz/fuzz_lz4.fcyr` → ~204 KB ELF
+- All four pass `file` ELF-magic verification. Cross-build runs in
+  the same time order as x86 (no significant overhead).
+
+### Roadmap cascade
+- **2.2.2** = aarch64 cross-build (was 2.3.3) — keeps the 2.3.x
+  line a clean streaming-decomp arc.
+- 2.3.0 = true incremental decompression (unchanged headline).
+- 2.3.1 = configurable LZ4F block-max size (unchanged).
+- 2.3.2 = DEFLATE throughput round 2 (unchanged).
+- No 2.3.3 — aarch64 absorbed into 2.2.2.
+
+### `[lib.core]` — unchanged
+- Zero source changes. `dist/sankoch.cyr` and
+  `dist/sankoch-core.cyr` re-generated only to bump the embedded
+  version stamp (`v2.2.1` → `v2.2.2`). Body byte-for-byte
+  identical otherwise.
+
+**Total assertions: 1,375,864** (sankoch.tcyr + git_object.tcyr,
+unchanged from 2.2.1 — no test changes needed; the cross-build
+binaries are gated by ELF-magic verification, not assertion
+counts).
+
 ## [2.2.1] — 2026-05-01
 
 **Defensive `alloc()` failure handling at the streaming-encoder
