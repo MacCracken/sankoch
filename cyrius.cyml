@@ -23,17 +23,31 @@ output = "build/sankoch"
 [lib]
 modules = [
     "src/types.cyr",
+    "src/xxhash32.cyr",
     "src/checksum.cyr",
     "src/bitreader.cyr",
     "src/bitwriter.cyr",
     "src/huffman.cyr",
     "src/lz77.cyr",
+    "src/lz4_decode.cyr",
     "src/lz4.cyr",
     "src/deflate.cyr",
     "src/zlib.cyr",
     "src/gzip.cyr",
     "src/stream.cyr",
     "src/lib.cyr",
+]
+
+# `[lib.core]` is the kernel-safe profile (`cyrius distlib core` →
+# dist/sankoch-core.cyr). Pure-compute LZ4 block + frame decompress —
+# no alloc, no syscalls, no mutex. Consumed by AGNOS initrd loader.
+# Encode side, DEFLATE/zlib/gzip, and the alloc-using checksum state
+# APIs are deliberately excluded.
+[lib.core]
+modules = [
+    "src/types.cyr",
+    "src/xxhash32.cyr",
+    "src/lz4_decode.cyr",
 ]
 
 [deps]

@@ -58,21 +58,28 @@ timing totals. Throughput numbers archived in `docs/benchmarks/`.
 ### Bundle (distlib)
 
 ```bash
-cyrius distlib                           # → dist/sankoch.cyr
+cyrius distlib                           # → dist/sankoch.cyr (full)
+cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe)
 ```
 
-`cyrius distlib` reads `[lib.modules]` from `cyrius.cyml`, strips
+`cyrius distlib` reads `[lib].modules` from `cyrius.cyml`, strips
 `include` lines, and concatenates the listed files into a single
 `dist/sankoch.cyr`. Downstream consumers (and the Cyrius stdlib under
 `lib/sankoch.cyr`) use this bundle.
 
-CI regenerates the bundle and asserts it matches the committed file —
-`dist/sankoch.cyr` is a tracked artifact, not a generated ephemeral.
+`cyrius distlib core` reads `[lib.core].modules` and produces
+`dist/sankoch-core.cyr` — the kernel-safe LZ4 decompress profile
+(types + xxhash32 + lz4_decode; no alloc, no syscalls, no mutex)
+consumed by the AGNOS initrd loader as `lib/sankoch-core.cyr`.
+
+CI regenerates both bundles and asserts they match the committed
+files — `dist/sankoch.cyr` and `dist/sankoch-core.cyr` are tracked
+artifacts, not generated ephemerals.
 
 ### Quality gates
 
 ```bash
-cyrius lint src/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr
+cyrius lint src/*.cyr programs/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr
 cyrius fmt  src/*.cyr --check   # prints formatted output; compare to file
 cyrius vet  src/lib.cyr         # audit include dependencies
 ```

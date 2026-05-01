@@ -21,12 +21,21 @@ include "lib/fnptr.cyr"
 include "lib/thread.cyr"
 
 # --- Sankoch domain modules (dependency order) ---
+# `xxhash32.cyr` and `lz4_decode.cyr` are extracted siblings of
+# `checksum.cyr` and `lz4.cyr` — alloc-free, kernel-safe. They form
+# the `[lib.core]` distlib profile (sankoch-core.cyr) consumed by the
+# AGNOS initrd loader. The full `[lib]` profile (this chain) includes
+# them too — checksum.cyr's incremental xxhash32 state APIs reference
+# the helpers in xxhash32.cyr, and lz4.cyr's encode side calls
+# lz4_decompress from lz4_decode.cyr in the LZ4F frame-emit path.
 include "src/types.cyr"
+include "src/xxhash32.cyr"
 include "src/checksum.cyr"
 include "src/bitreader.cyr"
 include "src/bitwriter.cyr"
 include "src/huffman.cyr"
 include "src/lz77.cyr"
+include "src/lz4_decode.cyr"
 include "src/lz4.cyr"
 include "src/deflate.cyr"
 include "src/zlib.cyr"

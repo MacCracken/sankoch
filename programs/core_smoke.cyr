@@ -1,0 +1,115 @@
+# core_smoke.cyr — kernel-style smoke test for the sankoch [lib.core] split
+#
+# This program imports ONLY the kernel-safe subset of sankoch:
+#   - src/types.cyr        (enums: formats, errors, limits — no alloc, no syscalls)
+#   - src/xxhash32.cyr     (xxHash32 batch — no alloc, no syscalls)
+#   - src/lz4_decode.cyr   (LZ4 block + frame decompress — no alloc, no syscalls)
+#
+# It deliberately does NOT include src/lib.cyr, src/checksum.cyr,
+# src/lz4.cyr, or any deflate/zlib/gzip module. The only userland
+# concessions are:
+#   - one SYS_EXIT syscall at program end (required to terminate)
+#   - one SYS_WRITE for a PASS/FAIL banner on stderr so we can see results
+#
+# What this smoke test proves:
+#   1. types.cyr + xxhash32.cyr + lz4_decode.cyr compile with 0
+#      undefined symbols when no other sankoch module is present.
+#   2. Every sankoch function referenced from the kernel-safe subset
+#      is satisfied within those three files — no hidden dependency
+#      on alloc, _sankoch_lock/unlock, the heap-using checksum state
+#      machine, or stdlib helpers.
+#   3. lz4_decompress and xxhash32 produce correct output on known
+#      vectors — sanity check that the extraction didn't break either.
+#
+# What it does NOT prove:
+#   - Binary leanness of this smoke-test executable. `cyrius build`
+#     auto-prepends the project's [deps] stdlib before every compile,
+#     so this binary still contains stdlib code as dead code. The
+#     compiler reports them as `dead:` — that's the signal the core
+#     subset never CALLS them. True binary leanness is realised by
+#     the `dist/sankoch-core.cyr` bundle produced by
+#     `cyrius distlib core`; the AGNOS kernel consumes that bundle
+#     directly with its own minimal deps, not this smoke binary.
+#
+# Build:  cyrius build programs/core_smoke.cyr build/core_smoke
+# Run:    ./build/core_smoke ; echo exit=$?
+
+# No alloc, no str_builder, no stdlib — just the three sankoch modules.
+include "src/types.cyr"
+include "src/xxhash32.cyr"
+include "src/lz4_decode.cyr"
+
+fn _write(fd, msg, n) {
+    syscall(1, fd, msg, n);
+    return 0;
+}
+
+fn _assert(cond, label, label_len) {
+    if (cond) { return 1; }
+    _write(2, "FAIL: ", 6);
+    _write(2, label, label_len);
+    _write(2, "\n", 1);
+    syscall(60, 1);
+    return 0;
+}
+
+fn main() {
+    # --- types.cyr enum sanity ---
+    _assert(FORMAT_LZ4 == 1,           "FORMAT_LZ4", 10);
+    _assert(FORMAT_LZ4F == 5,          "FORMAT_LZ4F", 11);
+    _assert(ERR_CORRUPT_DATA == 3,     "ERR_CORRUPT_DATA", 16);
+    _assert(ERR_BUFFER_TOO_SMALL == 2, "ERR_BUFFER_TOO_SMALL", 20);
+
+    # --- xxhash32.cyr known vectors (subset of the main tcyr suite) ---
+    var hbuf[16];
+    # Empty — reference 0x02CC5D05 = 46947589
+    _assert(xxhash32(&hbuf, 0) == 46947589, "xxh32 empty", 11);
+
+    # "a" — reference 0x550D7456 = 1426945110
+    store8(&hbuf, 97);
+    _assert(xxhash32(&hbuf, 1) == 1426945110, "xxh32 'a'", 9);
+
+    # "abc" — reference 0x32D153FF = 852579327
+    store8(&hbuf, 97); store8(&hbuf + 1, 98); store8(&hbuf + 2, 99);
+    _assert(xxhash32(&hbuf, 3) == 852579327, "xxh32 'abc'", 11);
+
+    # --- lz4_decode.cyr block decompress on hand-crafted "Hello" fixture ---
+    # LZ4 block format: token byte (lit_len high nibble, match_len-4 low
+    # nibble) + literals. End-of-block sequence carries only literals;
+    # the low nibble of the token is unused.
+    #
+    # Encoded "Hello" (5 bytes literal, no match):
+    #   0x50           token: lit_len=5
+    #   0x48 0x65 0x6c 0x6c 0x6f  "Hello"
+    var src[6];
+    store8(&src + 0, 0x50);
+    store8(&src + 1, 0x48);  # H
+    store8(&src + 2, 0x65);  # e
+    store8(&src + 3, 0x6c);  # l
+    store8(&src + 4, 0x6c);  # l
+    store8(&src + 5, 0x6f);  # o
+
+    var dst[16];
+    var dlen = lz4_decompress(&src, 6, &dst, 16);
+    _assert(dlen == 5,                "lz4 decompress len", 18);
+    _assert(load8(&dst + 0) == 0x48,  "lz4 decompress[0]=H", 19);
+    _assert(load8(&dst + 1) == 0x65,  "lz4 decompress[1]=e", 19);
+    _assert(load8(&dst + 2) == 0x6c,  "lz4 decompress[2]=l", 19);
+    _assert(load8(&dst + 3) == 0x6c,  "lz4 decompress[3]=l", 19);
+    _assert(load8(&dst + 4) == 0x6f,  "lz4 decompress[4]=o", 19);
+
+    # --- LZ4 decompress error paths ---
+    # Buffer too small
+    var tiny[2];
+    _assert(lz4_decompress(&src, 6, &tiny, 2) < 0, "lz4 decompress tiny buf", 23);
+
+    # --- LZ4F enum constants visible from the kernel-safe subset ---
+    _assert(LZ4F_MAGIC == 407708164,  "LZ4F_MAGIC", 10);
+    _assert(LZ4F_VERSION == 1,        "LZ4F_VERSION", 12);
+    _assert(LZ4F_BLOCK_MAX == 65536,  "LZ4F_BLOCK_MAX", 14);
+
+    _write(1, "core_smoke: PASS (kernel-safe LZ4 decompress linked clean)\n", 60);
+    syscall(60, 0);
+}
+
+main();

@@ -282,97 +282,10 @@ fn crc32_final(st) {
     return (load64(st) ^ 4294967295) & 4294967295;
 }
 
-# ================================================================
-# xxHash32 — used by LZ4 frame format for header and content checksums
-# ================================================================
-
-enum XXH32 {
-    XXH32_PRIME1 = 2654435761;   # 0x9E3779B1
-    XXH32_PRIME2 = 2246822519;   # 0x85EBCA77
-    XXH32_PRIME3 = 3266489917;   # 0xC2B2AE3D
-    XXH32_PRIME4 = 668265263;    # 0x27D4EB2F
-    XXH32_PRIME5 = 374761393;    # 0x165667B1
-}
-
-fn _xxh32_rotl(v, n) {
-    var v32 = v & 4294967295;
-    return ((v32 << n) | (v32 >> (32 - n))) & 4294967295;
-}
-
-# One stripe-accumulator round: acc = rotl32((acc + input*PRIME2), 13) * PRIME1
-fn _xxh32_round(acc, input) {
-    var m = 4294967295;
-    acc = (acc + (input * XXH32_PRIME2) & m) & m;
-    acc = _xxh32_rotl(acc, 13);
-    acc = (acc * XXH32_PRIME1) & m;
-    return acc;
-}
-
-# Compute xxHash32 of data[0..len) with seed 0. Matches reference xxHash32:
-# https://github.com/Cyan4973/xxHash/blob/dev/doc/xxhash_spec.md
-# For inputs >= 16 bytes, uses 4 parallel stripe accumulators; shorter inputs
-# skip straight to the tail. The 4-byte tail uses PRIME4 in both paths.
-fn xxhash32(data, len) {
-    var m = 4294967295;
-    var h = 0;
-    var i = 0;
-
-    if (len >= 16) {
-        var v1 = (XXH32_PRIME1 + XXH32_PRIME2) & m;   # seed=0 + PRIME1 + PRIME2
-        var v2 = XXH32_PRIME2;                         # seed=0 + PRIME2
-        var v3 = 0;                                    # seed=0 + 0
-        var v4 = (0 - XXH32_PRIME1) & m;               # seed=0 - PRIME1 (32-bit two's complement)
-
-        var stripe_end = len - 16;
-        while (i <= stripe_end) {
-            var k1 = load8(data + i) | (load8(data + i + 1) << 8) |
-            (load8(data + i + 2) << 16) | (load8(data + i + 3) << 24);
-            var k2 = load8(data + i + 4) | (load8(data + i + 5) << 8) |
-            (load8(data + i + 6) << 16) | (load8(data + i + 7) << 24);
-            var k3 = load8(data + i + 8) | (load8(data + i + 9) << 8) |
-            (load8(data + i + 10) << 16) | (load8(data + i + 11) << 24);
-            var k4 = load8(data + i + 12) | (load8(data + i + 13) << 8) |
-            (load8(data + i + 14) << 16) | (load8(data + i + 15) << 24);
-            v1 = _xxh32_round(v1, k1 & m);
-            v2 = _xxh32_round(v2, k2 & m);
-            v3 = _xxh32_round(v3, k3 & m);
-            v4 = _xxh32_round(v4, k4 & m);
-            i = i + 16;
-        }
-
-        h = (_xxh32_rotl(v1, 1) + _xxh32_rotl(v2, 7) +
-        _xxh32_rotl(v3, 12) + _xxh32_rotl(v4, 18)) & m;
-    } else {
-        h = XXH32_PRIME5;
-    }
-
-    h = (h + len) & m;
-
-    # 4-byte tail (reference uses PRIME4 here, not PRIME2)
-    while (i + 4 <= len) {
-        var k = load8(data + i) | (load8(data + i + 1) << 8) |
-        (load8(data + i + 2) << 16) | (load8(data + i + 3) << 24);
-        k = k & m;
-        h = (h + (k * XXH32_PRIME3) & m) & m;
-        h = (_xxh32_rotl(h, 17) * XXH32_PRIME4) & m;
-        i = i + 4;
-    }
-
-    # Byte tail
-    while (i < len) {
-        h = (h + (load8(data + i) * XXH32_PRIME5) & m) & m;
-        h = (_xxh32_rotl(h, 11) * XXH32_PRIME1) & m;
-        i = i + 1;
-    }
-
-    # Avalanche
-    h = h ^ (h >> 15);
-    h = (h * XXH32_PRIME2) & m;
-    h = h ^ (h >> 13);
-    h = (h * XXH32_PRIME3) & m;
-    h = h ^ (h >> 16);
-    return h;
-}
+# xxHash32 batch + helpers (`xxhash32`, `_xxh32_round`, `_xxh32_rotl`,
+# `XXH32` enum) live in src/xxhash32.cyr — that file is part of the
+# `[lib.core]` kernel-safe distlib profile. The incremental state APIs
+# below stay here because they alloc.
 
 # Incremental xxHash32 API — used by LZ4F content-checksum streaming.
 # State layout (64 bytes):

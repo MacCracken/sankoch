@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.1.1 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases
+- **Status**: 2.1.2 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -22,14 +22,16 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
-- **Source**: 4574 lines across 12 domain modules (`src/*.cyr`)
+- **Source**: 4635 lines across 14 domain modules (`src/*.cyr`)
 - **Tests**: 1,028,625 (sankoch.tcyr) + 346,583 (git_object.tcyr) =
   1,375,208 assertions across 2 tcyr suites (most are per-byte round-trip
   checks across streaming tests + the 2.0.2 / 2.0.3 cl-tree regression
   fixtures); 1,649 fuzz iterations across 6 harnesses
   (lz4 / deflate batch + 4 streaming + 2 tree-shape/skewed-freq); 45+ benchmarks
-- **Dist bundle**: `dist/sankoch.cyr` at ~4,597 lines, zero deps
-- **Stable**: 2.1.1 — the v2.0.0 track feature set is complete:
+- **Dist bundles**: `dist/sankoch.cyr` (full, ~4,662 lines) +
+  `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
+  Both zero deps
+- **Stable**: 2.1.2 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming
@@ -40,9 +42,10 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
 - **Distribution**: 2.0.2 landed in Cyrius 5.6.34's stdlib; 2.0.3
-  picked up in Cyrius 5.6.35; 2.1.0 in the 5.6.42 era; 2.1.1 ships as
-  `lib/sankoch.cyr` in the next Cyrius 5.7.x release that picks up
-  this tag. Consumers
+  picked up in Cyrius 5.6.35; 2.1.0 in the 5.6.42 era; 2.1.1 / 2.1.2
+  ship in the Cyrius 5.7.x line. The 2.1.2 cut also publishes
+  `lib/sankoch-core.cyr` alongside `lib/sankoch.cyr` for kernel-side
+  consumers (AGNOS initrd). Consumers
   import it via `include "lib/sankoch.cyr"` — no separate dependency
   declaration needed in their `cyrius.cyml`.
 
@@ -86,24 +89,34 @@ cyrius distlib                           # → dist/sankoch.cyr
 ```
 src/
   lib.cyr          — Include chain (stdlib + domain modules) + public API + _sankoch_mtx
-  types.cyr        — Enums: formats (incl. FORMAT_LZ4F), errors, limits
-  checksum.cyr     — Adler-32 / CRC-32 / xxHash32, batch + incremental (_init/_update/_final)
+  types.cyr        — Enums: formats (incl. FORMAT_LZ4F), errors, limits        [core]
+  xxhash32.cyr     — xxHash32 batch (helpers + enum) — kernel-safe              [core]
+  checksum.cyr     — Adler-32 / CRC-32 + incremental state APIs (alloc-using)
   bitreader.cyr    — LSB-first bit-stream reader (DEFLATE)
   bitwriter.cyr    — LSB-first bit-stream writer (DEFLATE)
   huffman.cyr      — Huffman build/decode, fixed trees, optimal trees
   lz77.cyr         — Sliding window match-finder + lz77_rebase (for streaming slide)
-  lz4.cyr          — LZ4 block + frame de/compress + lz4f_enc_*
+  lz4_decode.cyr   — LZ4 block + frame decompress + LZ4F enum — kernel-safe   [core]
+  lz4.cyr          — LZ4 block + frame compress + lz4f_enc_*
   deflate.cyr      — DEFLATE de/compress, adaptive blocks, dict, deflate_enc_* streaming
   zlib.cyr         — zlib wrapper + FDICT + zlib_enc_*
   gzip.cyr         — gzip wrapper + concatenated members + gzip_enc_*
   stream.cyr       — Streaming dispatch (stream_compress_init / write / finish → *_enc_*)
+programs/
+  core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules, asserts
+                     decompress + xxhash32 still produce correct output
 tests/tcyr/        — test suites (sankoch.tcyr, git_object.tcyr)
 tests/bcyr/        — benchmarks (sankoch.bcyr)
 fuzz/              — fuzz harnesses (lz4, deflate — both wired into CI)
 dist/
-  sankoch.cyr      — distlib bundle (`cyrius distlib`); ships as lib/sankoch.cyr in Cyrius stdlib
-cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] modules)
+  sankoch.cyr      — full distlib bundle (`cyrius distlib`); ships as lib/sankoch.cyr in Cyrius stdlib
+  sankoch-core.cyr — kernel-safe profile (`cyrius distlib core`); ships as lib/sankoch-core.cyr alongside
+cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] modules)
 ```
+
+Modules tagged `[core]` are members of `[lib.core]` — the kernel-safe
+profile consumed by the AGNOS initrd loader. They contain no `alloc()`,
+no syscalls, and no mutex usage.
 
 **Include order matters.** `src/lib.cyr` declares the full chain:
 stdlib first, then domain modules in dependency order. Stdlib includes

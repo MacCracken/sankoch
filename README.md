@@ -78,9 +78,10 @@ Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cy
 | stream.cyr    |   162 | Streaming dispatch |
 | lib.cyr       |   150 | Include chain + public API + thread safety |
 
-**4,574 lines** of Cyrius. **1,375,208 assertions** across 2 test
+**4,635 lines** of Cyrius. **1,375,208 assertions** across 2 test
 suites + **1,649 fuzz iterations** across 6 harnesses. Distlib:
-`dist/sankoch.cyr` at 4,597 lines, zero deps.
+`dist/sankoch.cyr` at 4,662 lines (full) + `dist/sankoch-core.cyr` at
+315 lines (kernel-safe LZ4 decompress). Zero deps in either profile.
 
 ## Toolchain
 

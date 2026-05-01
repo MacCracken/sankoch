@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] — 2026-05-01
+
+**Multi-profile distlib — kernel-safe LZ4 decompress.** New
+`[lib.core]` profile produces `dist/sankoch-core.cyr` (~300 lines,
+10 KB) for AGNOS initrd consumption. Pure-compute LZ4 block + frame
+decompress with zero alloc, zero syscalls, zero mutex. No public
+API change in the full-`[lib]` profile; the extraction is file-level
+only and source behavior is identical (1,375,208 assertions byte-
+for-byte unchanged across the regression sweep).
+
+### Added — kernel-safe distlib profile (2026-05-01)
+- **`[lib.core]` profile in `cyrius.cyml`** lists three modules:
+  `src/types.cyr`, `src/xxhash32.cyr`, `src/lz4_decode.cyr`.
+  Mirrors yukti's `[lib.core]` pattern. Bundle ships as
+  `dist/sankoch-core.cyr` (300 lines vs the full bundle's 4,615)
+  and contains zero `alloc()`, `_sankoch_lock/unlock`, or `sys_*`
+  references — verified by `grep -nE 'alloc\(|sys_|_sankoch_lock|mutex_'`
+  on the bundle.
+- **`src/xxhash32.cyr`** (new file, ~95 lines) — extracted batch
+  xxHash32 (`xxhash32`, `_xxh32_round`, `_xxh32_rotl`, `XXH32`
+  enum) from `src/checksum.cyr`. Alloc-using incremental state
+  APIs (`xxhash32_init`/`_update`/`_final`) stay in checksum.cyr.
+- **`src/lz4_decode.cyr`** (new file, ~165 lines) — extracted
+  `lz4_decompress` and `lz4f_decompress` from `src/lz4.cyr`. The
+  `LZ4F` enum (LZ4F_MAGIC, LZ4F_VERSION, LZ4F_BLOCK_MAX) moved
+  here too so both halves see the constants through the include
+  chain ordering.
+- **`programs/core_smoke.cyr`** (new file, ~110 lines) — link-only
+  invariant check. Includes ONLY the three kernel-safe modules,
+  exercises `xxhash32` on three known vectors and `lz4_decompress`
+  on a hand-crafted "Hello" fixture. Builds + runs in CI as the
+  "Kernel-safe tripwire" gate; non-zero exit = something
+  alloc/syscall-using leaked into the core subset.
+
+### Changed — CI/release gates
+- **`.github/workflows/ci.yml`** regenerates both bundles
+  (`cyrius distlib && cyrius distlib core`) and fails on drift
+  for either. Lint + `fmt --check` sweeps now include
+  `programs/*.cyr`. New "Kernel-safe tripwire" step builds and
+  runs `programs/core_smoke.cyr` after the main build.
+- **`.github/workflows/release.yml`** regenerates both bundles,
+  runs the kernel-safe tripwire, and ships
+  `sankoch-<tag>-core.cyr` alongside `sankoch-<tag>.cyr` in the
+  release archive (the existing `sankoch-*.cyr` upload glob
+  matches both).
+
+### Deferred — kernel-safe LZ4 *compress*
+- The encoder's match-finder hash table is heap-allocated
+  (`_lz4_htab = alloc(32768)`) and would need a caller-provided
+  workspace refactor to be kernel-safe. AGNOS initrd is built
+  userland-side (the kernel only decompresses), so the heap-using
+  encoder stays in the full-`[lib]` profile. Revisit when a
+  kernel-side compressor consumer appears — see the v2.x ladder
+  in `docs/development/roadmap.md`.
+
 ## [2.1.1] — 2026-05-01
 
 **Toolchain bump to Cyrius 5.7.48 (was 5.6.42).** Patch release —

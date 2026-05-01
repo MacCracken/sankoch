@@ -70,8 +70,17 @@ jobs:
             echo "  $name: ok"
           done
 
-      - name: Regenerate bundle
-        run: cyrius distlib
+      - name: Regenerate bundles (full + core)
+        run: |
+          cyrius distlib
+          cyrius distlib core
+
+      - name: Kernel-safe tripwire
+        # Mirror the CI gate so a release tag can never ship a
+        # broken or alloc-tainted dist/sankoch-core.cyr.
+        run: |
+          CYRIUS_DCE=1 cyrius build programs/core_smoke.cyr build/core_smoke
+          ./build/core_smoke
 
       - name: Clean toolchain artifacts
         run: rm -f cyrius-*.tar.gz
@@ -80,7 +89,8 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           git archive --format=tar.gz --prefix="sankoch-${TAG}/" -o "sankoch-${TAG}-src.tar.gz" HEAD
-          cp dist/sankoch.cyr "sankoch-${TAG}.cyr"
+          cp dist/sankoch.cyr      "sankoch-${TAG}.cyr"
+          cp dist/sankoch-core.cyr "sankoch-${TAG}-core.cyr"
           sha256sum sankoch-*.tar.gz sankoch-*.cyr > SHA256SUMS
 
       - uses: actions/upload-artifact@v4
