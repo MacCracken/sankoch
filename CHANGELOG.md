@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-05-01
+
+**Toolchain bump to Cyrius 5.7.48 (was 5.6.42).** Patch release —
+zero source changes, wire-format identical, public API unchanged.
+
+### Changed — toolchain pin to Cyrius 5.7.48 (2026-05-01)
+- **`cyrius.cyml` pin updated to `cyrius = "5.7.48"`** (was 5.6.42).
+  Skips the 5.7.0 stdlib refresh that introduced `sandhi` (HTTP /
+  service-boundary stdlib) — sankoch's stdlib surface (`syscalls`,
+  `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert`) is
+  unchanged across the jump and the modules involved did not gain
+  any breaking API in the 5.6.x → 5.7.x transition. Full regression
+  sweep on 5.7.48 is green: 1,028,625 + 346,583 = 1,375,208
+  assertions; 1,649 fuzz iterations across 6 harnesses; lint clean;
+  `cyrius fmt --check` clean across `src/`, `tests/tcyr/`,
+  `tests/bcyr/`, `fuzz/`; distlib in sync (4574 lines, header
+  bumped to v2.1.1). CI reads the toolchain pin from the manifest,
+  so no workflow-yaml edits beyond the comment refresh.
+- **Toolchain version sweep**: `CLAUDE.md`, `README.md`,
+  `docs/development/cyrius-usage.md`, `docs/development/roadmap.md`,
+  and `.github/workflows/ci.yml` reference 5.7.48. Historical entries
+  in CHANGELOG and archived issue notes left as-is — they describe
+  toolchain state at the time of those releases.
+
+### Notes — yukti / sakshi CI parity
+- The 5.7.x line shipped a packaging change at 5.7.48 that moved
+  `cc5_aarch64` from `bin/` to the tarball top-level. Yukti's and
+  sakshi's CI workflows added a defensive `[ -f "$CYRIUS_DIR/cc5_aarch64" ]`
+  copy step to cover both layouts. Sankoch CI does **not** invoke
+  `cc5_aarch64` — the library is built x86_64-only in CI and is
+  arch-portable by virtue of being pure compression with no syscalls
+  in `src/` (the security scan asserts this). No CI change required;
+  if a future release adds an aarch64 cross-build lane, port the
+  yukti pattern verbatim.
+- Release tag policy unchanged: bare semver only (`2.1.1`, not
+  `v2.1.1`). Yukti/vidya accept both shapes; sankoch does not — see
+  CLAUDE.md "Do not add `v` prefix to version tags".
+
 ## [2.1.0] — 2026-04-25
 
 **Toolchain refresh + DEFLATE compress perf — three stacked wins on

@@ -84,7 +84,7 @@ suites + **1,649 fuzz iterations** across 6 harnesses. Distlib:
 
 ## Toolchain
 
-Cyrius 5.6.42 (pinned in `cyrius.cyml`).
+Cyrius 5.7.48 (pinned in `cyrius.cyml`).
 
 ## Why
 

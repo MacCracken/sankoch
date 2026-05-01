@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.1.0) | **Last Updated**: 2026-04-25
+> **Status**: Stable (v2.1.1) | **Last Updated**: 2026-05-01
 
 ---
 
@@ -255,7 +255,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.1.0)
+## File Summary (at 2.1.1)
 
 | File | Lines | Role |
 |------|-------|------|

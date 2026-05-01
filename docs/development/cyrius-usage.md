@@ -10,7 +10,7 @@ Toolchain pinned in `cyrius.cyml`:
 
 ```toml
 [package]
-cyrius = "5.6.42"
+cyrius = "5.7.48"
 ```
 
 CI reads the pin from the manifest; locally you can install that version
@@ -79,13 +79,13 @@ cyrius vet  src/lib.cyr         # audit include dependencies
 
 Sankoch is stdlib-only, so there is no `cyrius.lock` and no
 `cyrius deps --verify` gate — the stdlib snapshot is implicitly pinned
-by the toolchain version (`cyrius = "5.6.42"` in `cyrius.cyml`). Add
+by the toolchain version (`cyrius = "5.7.48"` in `cyrius.cyml`). Add
 `cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
 ever added under `[deps.*]`.
 
 All four run in CI. `fmt --check` emits the formatted source; CI diffs
 against the committed file and fails on drift. To apply the fix
-in-place (Cyrius 5.5.22+, also available on 5.6.42):
+in-place (Cyrius 5.5.22+, also available on 5.7.48):
 
 ```bash
 cyrfmt --write src/checksum.cyr    # or -w
@@ -113,11 +113,11 @@ fails the build.
 ## Release flow
 
 ```bash
-./scripts/version-bump.sh 2.1.0          # updates VERSION
-# edit CHANGELOG.md — add [2.1.0] section with release date
+./scripts/version-bump.sh 2.1.1          # updates VERSION
+# edit CHANGELOG.md — add [2.1.1] section with release date
 cyrius distlib                           # regenerate bundle with new version header
-git commit -am "release 2.1.0"
-git tag 2.1.0                            # bare semver, no v prefix
+git commit -am "release 2.1.1"
+git tag 2.1.1                            # bare semver, no v prefix
 git push --tags                          # triggers .github/workflows/release.yml
 ```
 
@@ -125,7 +125,7 @@ The release workflow: runs CI → verifies `VERSION == tag` → builds
 with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates
 bundle → archives src tarball + `dist/sankoch.cyr` + SHA256SUMS →
 creates a GitHub Release. No `cyrius.lock` is shipped — sankoch is
-stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.6.42"`
+stdlib-only (zero git deps), so the stdlib pin via `cyrius = "5.7.48"`
 in `cyrius.cyml` is the lockfile.
 
 ## Gotchas

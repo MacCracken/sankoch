@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.1.0 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.6.x toolchain releases
+- **Status**: 2.1.1 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -29,19 +29,20 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
   fixtures); 1,649 fuzz iterations across 6 harnesses
   (lz4 / deflate batch + 4 streaming + 2 tree-shape/skewed-freq); 45+ benchmarks
 - **Dist bundle**: `dist/sankoch.cyr` at ~4,597 lines, zero deps
-- **Stable**: 2.1.0 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.1.1 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming
   across all four formats (DEFLATE, zlib, gzip, LZ4F) via
   `*_enc_init/write/finish` APIs; public-API thread safety via the
   two-tier mutex split
-- **Toolchain**: Cyrius 5.6.42 (`cyrius.cyml: cyrius = "5.6.42"`)
+- **Toolchain**: Cyrius 5.7.48 (`cyrius.cyml: cyrius = "5.7.48"`)
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
 - **Distribution**: 2.0.2 landed in Cyrius 5.6.34's stdlib; 2.0.3
-  picked up in Cyrius 5.6.35; 2.1.0 ships as `lib/sankoch.cyr` in
-  the next Cyrius 5.6.x release that picks up this tag. Consumers
+  picked up in Cyrius 5.6.35; 2.1.0 in the 5.6.42 era; 2.1.1 ships as
+  `lib/sankoch.cyr` in the next Cyrius 5.7.x release that picks up
+  this tag. Consumers
   import it via `include "lib/sankoch.cyr"` — no separate dependency
   declaration needed in their `cyrius.cyml`.
 
@@ -58,7 +59,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 ## Dependencies
 
 - **Cyrius stdlib** — `syscalls`, `string`, `alloc`, `fmt`, `vec`,
-  `fnptr`, `thread`, `assert` (ships with Cyrius >= 5.6.42)
+  `fnptr`, `thread`, `assert` (ships with Cyrius >= 5.7.48)
 
 No external deps. No FFI. No libc. Checksums (Adler-32, CRC-32,
 xxHash32) are inline — no sigil dependency for 30-line primitives that
@@ -199,7 +200,7 @@ bundle.
 
 ## CI / Release
 
-- **Toolchain pin**: `cyrius = "5.6.42"` in `cyrius.cyml`. CI and
+- **Toolchain pin**: `cyrius = "5.7.48"` in `cyrius.cyml`. CI and
   release both read from the manifest
 - **Tag filter**: release workflow triggers on bare semver tags
   (`2.0.0`, not `v2.0.0`)
@@ -210,7 +211,7 @@ bundle.
 - **Format gate**: CI runs `cyrius fmt --check`; drift fails the build
 - **No lock gate**: sankoch is stdlib-only (zero git deps), so there is
   no `cyrius.lock` to verify against. The stdlib pin comes from the
-  toolchain version itself (`cyrius = "5.6.42"` in `cyrius.cyml`)
+  toolchain version itself (`cyrius = "5.7.48"` in `cyrius.cyml`)
 - **Dist gate**: CI regenerates `dist/sankoch.cyr` via
   `cyrius distlib` and fails on drift
 - **Concurrency**: CI uses `cancel-in-progress: true` keyed on
