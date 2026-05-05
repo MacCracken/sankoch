@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.4] — 2026-05-05
+
+### Changed
+
+- `cyrius` pin bumped 5.7.48 → 5.8.64 ahead of the cyrius v5.8.65
+  stdlib foldin. Sankoch is on the foldin manifest; this patch is
+  the prerequisite for cyrius's `[deps].sankoch.tag` to point at
+  2.2.4 in the foldin slot.
+- `cyrius fmt` pass applied across `src/`, `programs/`, `tests/`,
+  `fuzz/` to clear pre-existing fmt drift carried since the prior
+  cyrius-fmt-update.
+
+### Verified
+
+- `cyrius test`: **1,029,338 / 1,029,338** asserts pass against
+  cyrius 5.8.64 (full deflate/gzip fixture suite).
+- `cyrius fmt --check`: clean across all 20 files.
+- `dist/sankoch.cyr` rebuilt: 167,378 bytes (4824 lines).
+
 ## [2.2.3] — 2026-05-01
 
 **P(-1) closeout for the 2.2.x line.** Audit pass over the surface
