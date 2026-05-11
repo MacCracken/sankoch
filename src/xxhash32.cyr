@@ -13,13 +13,13 @@ enum XXH32 {
     XXH32_PRIME5 = 374761393;    # 0x165667B1
 }
 
-fn _xxh32_rotl(v, n) {
+fn _xxh32_rotl(v, n): i64 {
     var v32 = v & 4294967295;
     return ((v32 << n) | (v32 >> (32 - n))) & 4294967295;
 }
 
 # One stripe-accumulator round: acc = rotl32((acc + input*PRIME2), 13) * PRIME1
-fn _xxh32_round(acc, input) {
+fn _xxh32_round(acc, input): i64 {
     var m = 4294967295;
     acc = (acc + (input * XXH32_PRIME2) & m) & m;
     acc = _xxh32_rotl(acc, 13);
@@ -31,7 +31,7 @@ fn _xxh32_round(acc, input) {
 # https://github.com/Cyan4973/xxHash/blob/dev/doc/xxhash_spec.md
 # For inputs >= 16 bytes, uses 4 parallel stripe accumulators; shorter inputs
 # skip straight to the tail. The 4-byte tail uses PRIME4 in both paths.
-fn xxhash32(data, len) {
+fn xxhash32(data, len): i64 {
     var m = 4294967295;
     var h = 0;
     var i = 0;

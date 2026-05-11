@@ -19,7 +19,7 @@
 # Sets _gzip_member_end to the byte offset past this member's trailer.
 var _gzip_member_end = 0;
 
-fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
+fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
     if (src_len < 18) { return 0 - ERR_INVALID_INPUT; }
 
     # Verify magic bytes
@@ -100,7 +100,7 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap) {
 }
 
 # Decompress a gzip stream (supports concatenated members per RFC 1952).
-fn gzip_decompress(src, src_len, dst, dst_cap) {
+fn gzip_decompress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
     var r = _gzip_decompress_inner(src, src_len, dst, dst_cap);
     _sankoch_unlock();
@@ -108,7 +108,7 @@ fn gzip_decompress(src, src_len, dst, dst_cap) {
 }
 
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
-fn _gzip_decompress_inner(src, src_len, dst, dst_cap) {
+fn _gzip_decompress_inner(src, src_len, dst, dst_cap): i64 {
     var total = 0;
     var pos = 0;
 
@@ -129,7 +129,7 @@ fn _gzip_decompress_inner(src, src_len, dst, dst_cap) {
 }
 
 # Compress data into a gzip stream.
-fn gzip_compress(src, src_len, dst, dst_cap) {
+fn gzip_compress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
     var r = _gzip_compress_level_inner(src, src_len, dst, dst_cap, 6);
     _sankoch_unlock();
@@ -144,7 +144,7 @@ fn gzip_compress(src, src_len, dst, dst_cap) {
 #   +8:  crc32 incremental state pointer
 #   +16: dst pointer (for appending the trailer)
 #   +24: total_in (cumulative bytes written — becomes ISIZE)
-fn gzip_enc_init(level, dst, dst_cap) {
+fn gzip_enc_init(level, dst, dst_cap): i64 {
     return gzip_enc_init_dict(level, dst, dst_cap, 0, 0);
 }
 
@@ -163,7 +163,7 @@ fn gzip_enc_init(level, dst, dst_cap) {
 # CRC-32 and ISIZE in the trailer cover ONLY the caller's input
 # bytes (the dict is not part of the decompressed output). Returns 0
 # on dict-validation or alloc failure.
-fn gzip_enc_init_dict(level, dst, dst_cap, dict, dict_len) {
+fn gzip_enc_init_dict(level, dst, dst_cap, dict, dict_len): i64 {
     if (dict_len < 0) { return 0; }
     if (dict_len > DEFLATE_WINDOW_SIZE) { return 0; }
     if (dict_len > 0 && dict == 0) { return 0; }
@@ -192,14 +192,14 @@ fn gzip_enc_init_dict(level, dst, dst_cap, dict, dict_len) {
     return ctx;
 }
 
-fn gzip_enc_write(ctx, input, in_len) {
+fn gzip_enc_write(ctx, input, in_len): i64 {
     if (in_len <= 0) { return 0; }
     crc32_update(load64(ctx + 8), input, in_len);
     store64(ctx + 24, load64(ctx + 24) + in_len);
     return deflate_enc_write(load64(ctx), input, in_len);
 }
 
-fn gzip_enc_finish(ctx) {
+fn gzip_enc_finish(ctx): i64 {
     var clen = deflate_enc_finish(load64(ctx));
     if (clen < 0) { return clen; }
 
@@ -223,7 +223,7 @@ fn gzip_enc_finish(ctx) {
 }
 
 # Compress data into a gzip stream with explicit compression level.
-fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
+fn gzip_compress_level(src, src_len, dst, dst_cap, level): i64 {
     _sankoch_lock();
     var r = _gzip_compress_level_inner(src, src_len, dst, dst_cap, level);
     _sankoch_unlock();
@@ -231,7 +231,7 @@ fn gzip_compress_level(src, src_len, dst, dst_cap, level) {
 }
 
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
-fn _gzip_compress_level_inner(src, src_len, dst, dst_cap, level) {
+fn _gzip_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
     # Need: 10-byte header + DEFLATE + 8-byte trailer
     if (dst_cap < 18) { return 0 - ERR_BUFFER_TOO_SMALL; }
 

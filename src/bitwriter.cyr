@@ -15,7 +15,7 @@
 
 # Each bw_init allocates a fresh 40-byte context on the heap.
 # Returns 0 on alloc failure (2.2.1) — callers must check before use.
-fn bw_init(buf, cap) {
+fn bw_init(buf, cap): i64 {
     var bw = _sankoch_alloc(40);
     if (bw == 0) { return 0; }
     store64(bw, buf);
@@ -28,7 +28,7 @@ fn bw_init(buf, cap) {
 
 # Write n bits LSB-first. value's low n bits are written.
 # Returns 0 on success, negative error on overflow.
-fn bw_write(bw, value, n) {
+fn bw_write(bw, value, n): i64 {
     if (n == 0) { return 0; }
     if (n > 32) { return 0 - ERR_INVALID_INPUT; }
     var buf = load64(bw);
@@ -68,13 +68,13 @@ fn bw_write(bw, value, n) {
 }
 
 # Write a single bit.
-fn bw_write_bit(bw, b) {
+fn bw_write_bit(bw, b): i64 {
     return bw_write(bw, b, 1);
 }
 
 # Write n bits MSB-first (needed for Huffman codes in DEFLATE).
 # The code is stored with bit 0 being the first transmitted bit (MSB of the code).
-fn bw_write_bits_msb(bw, value, n) {
+fn bw_write_bits_msb(bw, value, n): i64 {
     # Reverse bits then write LSB-first
     var rev = 0;
     var v = value;
@@ -88,7 +88,7 @@ fn bw_write_bits_msb(bw, value, n) {
 }
 
 # Align to byte boundary, padding with zero bits.
-fn bw_align(bw) {
+fn bw_align(bw): i64 {
     var bpos = load64(bw + 32);
     if (bpos > 0) {
         var buf = load64(bw);
@@ -105,18 +105,18 @@ fn bw_align(bw) {
 }
 
 # Flush partial byte and return total bytes written.
-fn bw_finish(bw) {
+fn bw_finish(bw): i64 {
     bw_align(bw);
     return load64(bw + 16);
 }
 
 # Return bytes written so far (not counting partial byte).
-fn bw_len(bw) {
+fn bw_len(bw): i64 {
     return load64(bw + 16);
 }
 
 # Write a raw byte directly (must be byte-aligned).
-fn bw_write_byte(bw, byte) {
+fn bw_write_byte(bw, byte): i64 {
     var buf = load64(bw);
     var cap = load64(bw + 8);
     var blen = load64(bw + 16);
@@ -127,14 +127,14 @@ fn bw_write_byte(bw, byte) {
 }
 
 # Write a 16-bit value little-endian (must be byte-aligned).
-fn bw_write_u16le(bw, val) {
+fn bw_write_u16le(bw, val): i64 {
     var rc = bw_write_byte(bw, val & 255);
     if (rc < 0) { return rc; }
     return bw_write_byte(bw, (val >> 8) & 255);
 }
 
 # Write a 32-bit value little-endian (must be byte-aligned).
-fn bw_write_u32le(bw, val) {
+fn bw_write_u32le(bw, val): i64 {
     var rc = bw_write_byte(bw, val & 255);
     if (rc < 0) { return rc; }
     rc = bw_write_byte(bw, (val >> 8) & 255);

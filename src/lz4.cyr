@@ -19,7 +19,7 @@ enum LZ4 {
 }
 
 # Hash 4 bytes at ptr into a 12-bit index.
-fn _lz4_hash4(src, pos) {
+fn _lz4_hash4(src, pos): i64 {
     var v = load8(src + pos);
     v = v + (load8(src + pos + 1) * 256);
     v = v + (load8(src + pos + 2) * 65536);
@@ -31,7 +31,7 @@ fn _lz4_hash4(src, pos) {
 
 # Count how many bytes match starting at positions a and b in src,
 # up to max_len bytes.
-fn _lz4_match_len(src, a, b, max_len) {
+fn _lz4_match_len(src, a, b, max_len): i64 {
     var i = 0;
     while (i < max_len) {
         if (load8(src + a + i) != load8(src + b + i)) {
@@ -44,7 +44,7 @@ fn _lz4_match_len(src, a, b, max_len) {
 
 # Write an extended length (the part beyond 15) to dst.
 # Returns new dp, or negative error.
-fn _lz4_write_ext_len(dst, dp, dst_cap, length) {
+fn _lz4_write_ext_len(dst, dp, dst_cap, length): i64 {
     var rem = length;
     while (rem >= 255) {
         if (dp >= dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
@@ -62,7 +62,7 @@ fn _lz4_write_ext_len(dst, dp, dst_cap, length) {
 # followed by a match (offset, match_len) to dst.
 # If match_len == 0, this is the final sequence (no match part).
 # Returns new dp, or negative error.
-fn _lz4_emit(src, dst, dp, dst_cap, lit_start, lit_len, offset, match_len) {
+fn _lz4_emit(src, dst, dp, dst_cap, lit_start, lit_len, offset, match_len): i64 {
     # Token byte
     var lit_nibble = lit_len;
     if (lit_nibble > 15) { lit_nibble = 15; }
@@ -117,7 +117,7 @@ fn _lz4_emit(src, dst, dp, dst_cap, lit_start, lit_len, offset, match_len) {
 # Compress data in LZ4 block format.
 # Uses a hash table on 4-byte sequences to find matches.
 # Greedy: takes the first match found (no optimal parsing).
-fn lz4_compress(src, src_len, dst, dst_cap) {
+fn lz4_compress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
     var r = _lz4_compress_inner(src, src_len, dst, dst_cap);
     _sankoch_unlock();
@@ -125,7 +125,7 @@ fn lz4_compress(src, src_len, dst, dst_cap) {
 }
 
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
-fn _lz4_compress_inner(src, src_len, dst, dst_cap) {
+fn _lz4_compress_inner(src, src_len, dst, dst_cap): i64 {
     if (src_len == 0) {
         return 0;
     }
@@ -233,7 +233,7 @@ fn _lz4_compress_inner(src, src_len, dst, dst_cap) {
 # chain.
 
 # Compress data into an LZ4 frame.
-fn lz4f_compress(src, src_len, dst, dst_cap) {
+fn lz4f_compress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
     var r = _lz4f_compress_inner(src, src_len, dst, dst_cap);
     _sankoch_unlock();
@@ -241,7 +241,7 @@ fn lz4f_compress(src, src_len, dst, dst_cap) {
 }
 
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
-fn _lz4f_compress_inner(src, src_len, dst, dst_cap) {
+fn _lz4f_compress_inner(src, src_len, dst, dst_cap): i64 {
     # Frame overhead: 7 (header) + 4 (block size) + 4 (end mark) + 4 (content checksum) = 19
     if (dst_cap < 19) { return 0 - ERR_BUFFER_TOO_SMALL; }
 
@@ -356,12 +356,12 @@ fn _lz4f_compress_inner(src, src_len, dst, dst_cap) {
 #   +48: err (sticky; negative poisons the encoder)
 #   +56: (reserved)
 
-fn _lz4f_enc_err(ctx) { return load64(ctx + 48); }
+fn _lz4f_enc_err(ctx): i64 { return load64(ctx + 48); }
 
 # Compress ctx.block_buf[0..block_buf_len] as one LZ4 block into dst,
 # writing the 4-byte size header + payload. Updates dp. Returns 0 or
 # negative error (stored into ctx.err and returned).
-fn _lz4f_enc_emit_block(ctx) {
+fn _lz4f_enc_emit_block(ctx): i64 {
     var dst = load64(ctx);
     var dst_cap = load64(ctx + 8);
     var dp = load64(ctx + 16);
@@ -411,7 +411,7 @@ fn _lz4f_enc_emit_block(ctx) {
     return 0;
 }
 
-fn lz4f_enc_init(dst, dst_cap) {
+fn lz4f_enc_init(dst, dst_cap): i64 {
     if (dst_cap < 19) { return 0; }   # 7 hdr + 4 end + 4 cc + 4 min block
     _sankoch_lock();
 
@@ -443,7 +443,7 @@ fn lz4f_enc_init(dst, dst_cap) {
     return ctx;
 }
 
-fn lz4f_enc_write(ctx, input, in_len) {
+fn lz4f_enc_write(ctx, input, in_len): i64 {
     if (_lz4f_enc_err(ctx) < 0) { return _lz4f_enc_err(ctx); }
     if (in_len <= 0) { return 0; }
 
@@ -474,7 +474,7 @@ fn lz4f_enc_write(ctx, input, in_len) {
     return 0;
 }
 
-fn lz4f_enc_finish(ctx) {
+fn lz4f_enc_finish(ctx): i64 {
     if (_lz4f_enc_err(ctx) < 0) {
         _sankoch_unlock();
         return _lz4f_enc_err(ctx);

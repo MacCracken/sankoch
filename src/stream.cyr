@@ -41,7 +41,7 @@ enum Stream {
 # Initialize a streaming compressor. `dst`/`dst_cap` receive compressed
 # output as each stream_write chunk is processed. FORMAT_LZ4 (raw block
 # format) has no streaming path — use FORMAT_LZ4F instead.
-fn stream_compress_init(format, level, dst, dst_cap) {
+fn stream_compress_init(format, level, dst, dst_cap): i64 {
     var inner = 0;
     if (format == FORMAT_DEFLATE) {
         inner = deflate_enc_init(level, dst, dst_cap);
@@ -66,7 +66,7 @@ fn stream_compress_init(format, level, dst, dst_cap) {
 
 # --- Decompression (buffered — pre-1.7.0 model) ---
 
-fn _stream_grow(ctx) {
+fn _stream_grow(ctx): i64 {
     var buf = load64(ctx + 24);
     var cap = load64(ctx + 32);
     var new_cap = cap * 2;
@@ -82,7 +82,7 @@ fn _stream_grow(ctx) {
     return 0;
 }
 
-fn stream_decompress_init(format) {
+fn stream_decompress_init(format): i64 {
     var ctx = alloc(48);
     store64(ctx, format);
     store64(ctx + 8, 0);
@@ -95,7 +95,7 @@ fn stream_decompress_init(format) {
 
 # --- Shared write dispatch ---
 
-fn stream_write(ctx, data, len) {
+fn stream_write(ctx, data, len): i64 {
     if (len <= 0) { return 0; }
     var mode = load64(ctx + 16);
     if (mode == STREAM_COMPRESS) {
@@ -127,7 +127,7 @@ fn stream_write(ctx, data, len) {
 
 # Finish streaming compression. Returns total bytes written to dst,
 # or negative error. Releases any mutex taken by the inner encoder.
-fn stream_compress_finish(ctx) {
+fn stream_compress_finish(ctx): i64 {
     if (load64(ctx + 16) != STREAM_COMPRESS) { return 0 - ERR_INVALID_INPUT; }
     var format = load64(ctx);
     var inner = load64(ctx + 24);
@@ -139,7 +139,7 @@ fn stream_compress_finish(ctx) {
 }
 
 # Finish streaming decompression: decompress all buffered input into dst.
-fn stream_decompress_finish(ctx, dst, dst_cap) {
+fn stream_decompress_finish(ctx, dst, dst_cap): i64 {
     if (load64(ctx + 16) != STREAM_DECOMPRESS) { return 0 - ERR_INVALID_INPUT; }
     var format = load64(ctx);
     var buf = load64(ctx + 24);
@@ -149,14 +149,14 @@ fn stream_decompress_finish(ctx, dst, dst_cap) {
 
 # Return the number of bytes currently buffered (decompress only;
 # compress-side ctx has no input buffer — returns 0).
-fn stream_buffered(ctx) {
+fn stream_buffered(ctx): i64 {
     if (load64(ctx + 16) == STREAM_DECOMPRESS) { return load64(ctx + 40); }
     return 0;
 }
 
 # Reset the decompress-side input buffer. No-op on compress contexts
 # (compressor state is append-only and cannot be rewound).
-fn stream_reset(ctx) {
+fn stream_reset(ctx): i64 {
     if (load64(ctx + 16) == STREAM_DECOMPRESS) { store64(ctx + 40, 0); }
     return 0;
 }

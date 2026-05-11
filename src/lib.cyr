@@ -52,7 +52,7 @@ include "src/stream.cyr"
 
 var _sankoch_mtx = 0;
 
-fn _sankoch_lock() {
+fn _sankoch_lock(): i64 {
     if (_sankoch_mtx == 0) {
         _sankoch_mtx = mutex_new();
     }
@@ -60,7 +60,7 @@ fn _sankoch_lock() {
     return 0;
 }
 
-fn _sankoch_unlock() {
+fn _sankoch_unlock(): i64 {
     mutex_unlock(_sankoch_mtx);
     return 0;
 }
@@ -79,7 +79,7 @@ fn _sankoch_unlock() {
 # clear the fault before the targeted call fires.
 var _sankoch_alloc_fail_at = 0 - 1;
 
-fn _sankoch_alloc(size) {
+fn _sankoch_alloc(size): i64 {
     if (_sankoch_alloc_fail_at >= 0) {
         if (_sankoch_alloc_fail_at == 0) {
             _sankoch_alloc_fail_at = 0 - 1;
@@ -93,19 +93,19 @@ fn _sankoch_alloc(size) {
 # Test-only setter for the fault-injection counter. Public-facing
 # (`_` prefix is convention for "internal but exported") because
 # tests live outside src/ and need to reach in.
-fn _sankoch_alloc_set_fail_at(n) {
+fn _sankoch_alloc_set_fail_at(n): i64 {
     _sankoch_alloc_fail_at = n;
     return 0;
 }
 
 # Compress data using the specified format at default level (6).
-fn compress(format, src, src_len, dst, dst_cap) {
+fn compress(format, src, src_len, dst, dst_cap): i64 {
     return compress_level(format, src, src_len, dst, dst_cap, 6);
 }
 
 # Compress with explicit level (1=fast, 6=default, 9=best).
 # Level only affects DEFLATE-based formats. LZ4 ignores the level.
-fn compress_level(format, src, src_len, dst, dst_cap, level) {
+fn compress_level(format, src, src_len, dst, dst_cap, level): i64 {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
     var result = _compress_inner(format, src, src_len, dst, dst_cap, level);
@@ -113,7 +113,7 @@ fn compress_level(format, src, src_len, dst, dst_cap, level) {
     return result;
 }
 
-fn _compress_inner(format, src, src_len, dst, dst_cap, level) {
+fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
     # We already hold _sankoch_mtx here (taken in compress_level). Dispatch
     # to the unlocked inner entries to avoid re-locking.
     if (format == FORMAT_LZ4) {
@@ -135,7 +135,7 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level) {
 }
 
 # Decompress data using the specified format.
-fn decompress(format, src, src_len, dst, dst_cap) {
+fn decompress(format, src, src_len, dst, dst_cap): i64 {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
     var result = _decompress_inner(format, src, src_len, dst, dst_cap);
@@ -143,7 +143,7 @@ fn decompress(format, src, src_len, dst, dst_cap) {
     return result;
 }
 
-fn _decompress_inner(format, src, src_len, dst, dst_cap) {
+fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
     # We already hold _sankoch_mtx here. lz4_decompress and lz4f_decompress
     # touch no shared state (no lock needed). DEFLATE-based formats dispatch
     # to their unlocked inners.
@@ -167,7 +167,7 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap) {
 
 # Detect compression format from magic bytes.
 # Returns FORMAT_* or negative error. LZ4 + raw DEFLATE have no magic.
-fn detect_format(src, src_len) {
+fn detect_format(src, src_len): i64 {
     if (src_len < 2) {
         return 0 - ERR_INVALID_INPUT;
     }

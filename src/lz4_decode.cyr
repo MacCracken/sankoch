@@ -23,7 +23,7 @@ enum LZ4F {
 # dst: pointer to output buffer
 # dst_cap: capacity of output buffer
 # Returns: decompressed length, or negative error code
-fn lz4_decompress(src, src_len, dst, dst_cap) {
+fn lz4_decompress(src, src_len, dst, dst_cap): i64 {
     var sp = 0;   # source position
     var dp = 0;   # destination position
 
@@ -99,7 +99,7 @@ fn lz4_decompress(src, src_len, dst, dst_cap) {
 }
 
 # Decompress an LZ4 frame.
-fn lz4f_decompress(src, src_len, dst, dst_cap) {
+fn lz4f_decompress(src, src_len, dst, dst_cap): i64 {
     if (src_len < 11) { return 0 - ERR_INVALID_INPUT; }
 
     var sp = 0;

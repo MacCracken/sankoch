@@ -23,7 +23,7 @@ enum Checksum {
 # Optimization: defer the expensive modulo operation.
 # Within a block of NMAX bytes, s1 stays < 65521 + 255*5552 < 2^32
 # and s2 stays < 65521*5553 + ... < 2^32, so no overflow in 64-bit.
-fn adler32(data, len) {
+fn adler32(data, len): i64 {
     var s1 = 1;
     var s2 = 0;
     var off = 0;
@@ -89,7 +89,7 @@ fn adler32(data, len) {
 #   +8:  s2 (running, modulo deferred within NMAX window)
 #   +16: n_since_mod (bytes processed since last modulo reduction)
 
-fn adler32_init() {
+fn adler32_init(): i64 {
     var st = _sankoch_alloc(24);
     if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
     store64(st, 1);        # s1 = 1
@@ -98,7 +98,7 @@ fn adler32_init() {
     return st;
 }
 
-fn adler32_update(st, data, len) {
+fn adler32_update(st, data, len): i64 {
     if (len <= 0) { return 0; }
     var s1 = load64(st);
     var s2 = load64(st + 8);
@@ -161,7 +161,7 @@ fn adler32_update(st, data, len) {
     return 0;
 }
 
-fn adler32_final(st) {
+fn adler32_final(st): i64 {
     var s1 = load64(st) % ADLER_MOD;
     var s2 = load64(st + 8) % ADLER_MOD;
     return (s2 * 65536) + s1;
@@ -173,7 +173,7 @@ fn adler32_final(st) {
 var crc32_table = 0;  # heap-allocated: 256 entries * 8 bytes
 
 # Initialize the CRC-32 lookup table (must be called before crc32).
-fn crc32_init_table() {
+fn crc32_init_table(): i64 {
     if (crc32_table == 0) { crc32_table = alloc(2048); }
     var i = 0;
     while (i < 256) {
@@ -195,7 +195,7 @@ fn crc32_init_table() {
 }
 
 # Compute CRC-32 of data[0..len). Call crc32_init_table() first.
-fn crc32(data, len) {
+fn crc32(data, len): i64 {
     # CRC starts inverted
     var crc = 4294967295;  # 0xFFFFFFFF
     var i = 0;
@@ -240,7 +240,7 @@ fn crc32(data, len) {
 # Layout (8 bytes):
 #   +0: running CRC (pre-inversion)
 
-fn crc32_init() {
+fn crc32_init(): i64 {
     crc32_init_table();
     var st = _sankoch_alloc(8);
     if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
@@ -248,7 +248,7 @@ fn crc32_init() {
     return st;
 }
 
-fn crc32_update(st, data, len) {
+fn crc32_update(st, data, len): i64 {
     if (len <= 0) { return 0; }
     var crc = load64(st);
     var i = 0;
@@ -280,7 +280,7 @@ fn crc32_update(st, data, len) {
     return 0;
 }
 
-fn crc32_final(st) {
+fn crc32_final(st): i64 {
     return (load64(st) ^ 4294967295) & 4294967295;
 }
 
@@ -303,7 +303,7 @@ fn crc32_final(st) {
 # Final distinguishes short path (total_len < 16) from long path by
 # checking total_len itself.
 
-fn xxhash32_init() {
+fn xxhash32_init(): i64 {
     var m = 4294967295;
     var st = _sankoch_alloc(64);
     if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
@@ -317,7 +317,7 @@ fn xxhash32_init() {
 }
 
 # Process one 16-byte stripe at data_ptr into the state's v1..v4.
-fn _xxh32_stripe_into(st, data_ptr) {
+fn _xxh32_stripe_into(st, data_ptr): i64 {
     var m = 4294967295;
     var k1 = load8(data_ptr) | (load8(data_ptr + 1) << 8) |
     (load8(data_ptr + 2) << 16) | (load8(data_ptr + 3) << 24);
@@ -334,7 +334,7 @@ fn _xxh32_stripe_into(st, data_ptr) {
     return 0;
 }
 
-fn xxhash32_update(st, data, len) {
+fn xxhash32_update(st, data, len): i64 {
     if (len <= 0) { return 0; }
     store64(st + 56, load64(st + 56) + len);
     var buf = st + 32;
@@ -379,7 +379,7 @@ fn xxhash32_update(st, data, len) {
     return 0;
 }
 
-fn xxhash32_final(st) {
+fn xxhash32_final(st): i64 {
     var m = 4294967295;
     var total = load64(st + 56);
     var buf_len = load64(st + 48);

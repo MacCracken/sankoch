@@ -42,7 +42,7 @@ var _huff_cl_count = 0;
 
 var _huff_tables_allocd = 0;
 
-fn _huff_alloc_tables() {
+fn _huff_alloc_tables(): i64 {
     if (_huff_tables_allocd == 1) { return 0; }
     _huff_litlen_fast = alloc(4096);
     _huff_litlen_lens = alloc(2304);   # 288 * 8
@@ -58,7 +58,7 @@ fn _huff_alloc_tables() {
 }
 
 # Build canonical Huffman codes from an array of code lengths.
-fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
+fn _huff_build(lengths, num_symbols, out_codes, out_fast): i64 {
     # Step 1: Count codes of each length
     var bl_count[128];  # 16 entries * 8 bytes
     var i = 0;
@@ -154,7 +154,7 @@ fn _huff_build(lengths, num_symbols, out_codes, out_fast) {
 # canonical codes; the slow-path comparison in _huff_decode depends on
 # that. This helper is encoder-only — used by the dynamic-Huffman path
 # in deflate.cyr.
-fn huff_build_enc_codes(lengths, num_symbols, out_codes_rev) {
+fn huff_build_enc_codes(lengths, num_symbols, out_codes_rev): i64 {
     var bl_count[128];  # 128 bytes = 16 i64 entries — covers HUFF_MAX_BITS
     var i = 0;
     while (i < 16) {
@@ -205,7 +205,7 @@ fn huff_build_enc_codes(lengths, num_symbols, out_codes_rev) {
 }
 
 # Decode one symbol using fast table + slow fallback.
-fn _huff_decode(br, fast, lengths, codes, num_symbols) {
+fn _huff_decode(br, fast, lengths, codes, num_symbols): i64 {
     var data = load64(br);
     var bpos = load64(br + 8);
     var bbit = load64(br + 16);
@@ -262,25 +262,25 @@ fn _huff_decode(br, fast, lengths, codes, num_symbols) {
 }
 
 # Decode one literal/length symbol from the bitstream.
-fn huff_decode_litlen(br) {
+fn huff_decode_litlen(br): i64 {
     return _huff_decode(br, _huff_litlen_fast, _huff_litlen_lens,
     _huff_litlen_codes, _huff_litlen_count);
 }
 
 # Decode one distance symbol from the bitstream.
-fn huff_decode_dist(br) {
+fn huff_decode_dist(br): i64 {
     return _huff_decode(br, _huff_dist_fast, _huff_dist_lens,
     _huff_dist_codes, _huff_dist_count);
 }
 
 # Decode one code-length symbol from the bitstream.
-fn huff_decode_cl(br) {
+fn huff_decode_cl(br): i64 {
     return _huff_decode(br, _huff_cl_fast, _huff_cl_lens,
     _huff_cl_codes, _huff_cl_count);
 }
 
 # Build the literal/length Huffman table from code lengths.
-fn huff_build_litlen(lengths, count) {
+fn huff_build_litlen(lengths, count): i64 {
     _huff_alloc_tables();
     _huff_litlen_count = count;
     # Dynamic tables overwrite fixed — force rebuild on next huff_build_fixed()
@@ -296,7 +296,7 @@ fn huff_build_litlen(lengths, count) {
 }
 
 # Build the distance Huffman table from code lengths.
-fn huff_build_dist(lengths, count) {
+fn huff_build_dist(lengths, count): i64 {
     _huff_alloc_tables();
     _huff_dist_count = count;
     var i = 0;
@@ -310,7 +310,7 @@ fn huff_build_dist(lengths, count) {
 }
 
 # Build the code-length Huffman table from code lengths.
-fn huff_build_cl(lengths, count) {
+fn huff_build_cl(lengths, count): i64 {
     _huff_alloc_tables();
     _huff_cl_count = count;
     var i = 0;
@@ -331,7 +331,7 @@ var _huff_fixed_built = 0;
 var _huff_fixed_litlen_lens = 0;
 
 # Build the fixed Huffman tables defined in RFC 1951 Section 3.2.6.
-fn huff_build_fixed() {
+fn huff_build_fixed(): i64 {
     if (_huff_fixed_built == 1) { return 0; }
     if (_huff_fixed_litlen_lens == 0) {
         _huff_fixed_litlen_lens = alloc(2304);
@@ -383,7 +383,7 @@ var _hcl_ws = 0;
 # Σ 2^(-len_i) = 1. Symbol-to-length assignment is then redone in
 # descending frequency order so the most frequent symbols get the shortest
 # codes — preserving optimality up to the cap.
-fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes, max_bits) {
+fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes, max_bits): i64 {
     var count = 0;
     var i = 0;
     while (i < num_symbols) {
@@ -585,7 +585,7 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes, max_bits) {
 # Final symbol→length assignment walks the frequency-sorted symbol list
 # (most frequent first), placing each symbol at the shortest still-
 # available bit length so optimality up to the cap is preserved.
-fn _huff_redistribute(out_lens, num_symbols, sorted_sym, n, max_bits) {
+fn _huff_redistribute(out_lens, num_symbols, sorted_sym, n, max_bits): i64 {
     # bl_count covers natural depths 0..31 (DFS clamp ceiling).
     var bl_count[256];
     var L = 0;

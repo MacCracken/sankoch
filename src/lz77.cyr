@@ -45,7 +45,7 @@ var _lz77_window_base = 0;
 
 # Hash 3 bytes into a 15-bit index. Position argument is window-relative
 # (offset into the src buffer the encoder passes in).
-fn _lz77_hash3(src, win_pos) {
+fn _lz77_hash3(src, win_pos): i64 {
     var v = load8(src + win_pos);
     v = v ^ (load8(src + win_pos + 1) << 5);
     v = v ^ (load8(src + win_pos + 2) << 10);
@@ -55,7 +55,7 @@ fn _lz77_hash3(src, win_pos) {
 # Insert window-relative position into hash chain. The hash table stores
 # the corresponding ABSOLUTE position (win_pos + _lz77_window_base) so
 # entries survive window slides without rebasing.
-fn _lz77_insert(src, win_pos) {
+fn _lz77_insert(src, win_pos): i64 {
     var abs_pos = win_pos + _lz77_window_base;
     var h = _lz77_hash3(src, win_pos);
     var prev = load64(_lz77_head + h * 8);
@@ -76,7 +76,7 @@ fn _lz77_insert(src, win_pos) {
 #   (b) chain < base    — entry from before the most recent slide;
 #                          chain - base would be negative, byte load UB
 # Once both pass, dist = abs_pos - chain is bounded by WINDOW.
-fn _lz77_find_match(src, src_len, win_pos) {
+fn _lz77_find_match(src, src_len, win_pos): i64 {
     if (win_pos + LZ77_MIN_MATCH > src_len) { return 0; }
 
     var base = _lz77_window_base;
@@ -134,7 +134,7 @@ fn _lz77_find_match(src, src_len, win_pos) {
 }
 
 # Set compression level (1=fast, 6=default, 9=best).
-fn lz77_set_level(level) {
+fn lz77_set_level(level): i64 {
     if (level <= 1) {
         _lz77_chain_depth = 4;
     } elif (level <= 3) {
@@ -154,7 +154,7 @@ fn lz77_set_level(level) {
 # (memcpys the last DENC_SLIDE_RETAIN bytes to position 0). Hash table
 # entries pointing to absolute positions older than the new base are
 # rejected lazily inside _lz77_find_match via the `chain < base` check.
-fn lz77_rebase(delta) {
+fn lz77_rebase(delta): i64 {
     _lz77_window_base = _lz77_window_base + delta;
     return 0;
 }
@@ -163,7 +163,7 @@ fn lz77_rebase(delta) {
 # absolute window base. Called at the start of every batch compress and
 # every streaming encoder init, so the window_base for batch is always 0
 # (abs_pos == win_pos in batch mode — no behavior change vs pre-2.x).
-fn lz77_init() {
+fn lz77_init(): i64 {
     if (_lz77_head == 0) {
         _lz77_head = alloc(262144);
         _lz77_prev = alloc(262144);

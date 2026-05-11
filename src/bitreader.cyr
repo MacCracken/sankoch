@@ -12,7 +12,7 @@
 
 # Each br_init allocates a fresh 32-byte context on the heap.
 # No shared static state — safe for repeat and nested calls.
-fn br_init(data, len) {
+fn br_init(data, len): i64 {
     var br = alloc(32);
     store64(br, data);
     store64(br + 8, 0);
@@ -23,7 +23,7 @@ fn br_init(data, len) {
 
 # Read n bits LSB-first. Returns the value, or negative error.
 # Bits are consumed from the least significant bit of each byte upward.
-fn br_read(br, n) {
+fn br_read(br, n): i64 {
     if (n == 0) { return 0; }
     if (n > 32) { return 0 - ERR_INVALID_INPUT; }
     var data = load64(br);
@@ -60,12 +60,12 @@ fn br_read(br, n) {
 }
 
 # Read a single bit.
-fn br_read_bit(br) {
+fn br_read_bit(br): i64 {
     return br_read(br, 1);
 }
 
 # Align to the next byte boundary (skip remaining bits in current byte).
-fn br_align(br) {
+fn br_align(br): i64 {
     var bbit = load64(br + 16);
     if (bbit > 0) {
         store64(br + 16, 0);
@@ -75,12 +75,12 @@ fn br_align(br) {
 }
 
 # Return current byte position.
-fn br_byte_pos(br) {
+fn br_byte_pos(br): i64 {
     return load64(br + 8);
 }
 
 # Return how many bytes remain.
-fn br_remaining(br) {
+fn br_remaining(br): i64 {
     var dlen = load64(br + 24);
     var bpos = load64(br + 8);
     var bbit = load64(br + 16);
@@ -91,7 +91,7 @@ fn br_remaining(br) {
 }
 
 # Return total bytes consumed (rounds up to include any partial byte).
-fn br_bytes_consumed(br) {
+fn br_bytes_consumed(br): i64 {
     var bpos = load64(br + 8);
     var bbit = load64(br + 16);
     if (bbit > 0) { return bpos + 1; }
