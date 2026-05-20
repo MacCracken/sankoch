@@ -97,7 +97,7 @@ Zero deps in either profile.
 
 ## Toolchain
 
-Cyrius 5.7.48 (pinned in `cyrius.cyml`).
+Cyrius 6.0.1 (pinned in `cyrius.cyml`).
 
 ## Why
 

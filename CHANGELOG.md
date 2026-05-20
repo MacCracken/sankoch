@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `cyrius` pin bumped 5.11.4 → 6.0.1. Build, both tcyr suites
+  (1,029,338 + 346,583 = 1,375,921 assertions), `cyrius lint`,
+  `cyrius vet`, and the CI fmt sweep all clean against 6.0.1 —
+  pin-drift warning gone. Stale `5.7.48` references in `README.md`,
+  `docs/development/cyrius-usage.md`, and `CLAUDE.md` (carried since
+  the 2.2.4 / 2.2.5 bumps) refreshed at the same time.
+
 ## [2.2.5] — 2026-05-11
 
 ### Changed
