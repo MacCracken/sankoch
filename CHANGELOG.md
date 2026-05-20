@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.6] — 2026-05-20
+
 ### Changed
 
 - `cyrius` pin bumped 5.11.4 → 6.0.1. Build, both tcyr suites
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and erroring out (`cc5_aarch64 missing from Cyrius`). Local
   `cyrius build --aarch64 src/lib.cyr` confirmed clean against the
   renamed binary (`ARM aarch64` ELF emitted).
+- `dist/sankoch.cyr` regenerated via `cyrius distlib` at v2.2.6.
 
 ## [2.2.5] — 2026-05-11
 
