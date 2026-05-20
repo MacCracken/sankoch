@@ -28,11 +28,11 @@ jobs:
           mkdir -p "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin" "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib"
           cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/" 2>/dev/null || true
           cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib/" 2>/dev/null || true
-          # cc5_aarch64 packaging changed across the 5.7.x line: pre-5.7.48
-          # tarballs ship it under bin/ (picked up by the bin/* copy above),
-          # 5.7.48+ moved it to the tarball top-level. Cover both. Same
-          # workaround yukti and sakshi carry.
-          [ -f "$CYRIUS_DIR/cc5_aarch64" ] && cp "$CYRIUS_DIR/cc5_aarch64" "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/"
+          # cycc_aarch64 (renamed from cc5_aarch64 in Cyrius 6.0) may
+          # ship under bin/ (picked up by the bin/* copy above) or at
+          # the tarball top-level depending on the release. Cover both.
+          # Same workaround yukti and sakshi carry.
+          [ -f "$CYRIUS_DIR/cycc_aarch64" ] && cp "$CYRIUS_DIR/cycc_aarch64" "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/"
           chmod +x "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/"* 2>/dev/null || true
           ln -sfn "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin" "$HOME/.cyrius/bin"
           ln -sfn "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" "$HOME/.cyrius/lib"
@@ -43,7 +43,7 @@ jobs:
       - name: Resolve dependencies
         # Stdlib-only (zero git deps), so no cyrius.lock is committed
         # and `cyrius deps --verify` has nothing to check against. The
-        # stdlib itself is pinned by the cyrius = "5.7.48" toolchain line
+        # stdlib itself is pinned by the cyrius = "6.0.1" toolchain line
         # in cyrius.cyml — every CI run pulls the same stdlib snapshot.
         run: cyrius deps
 
@@ -130,11 +130,11 @@ jobs:
         # arity warnings ("warning:N: syscall arity mismatch") are
         # cosmetic at this stage — they come from lib/syscalls.cyr's
         # arch-divergent paths and don't fail the build.
-        # Cyrius 5.7.43+ ships cc5_aarch64; 5.7.48+ moved its tarball
-        # location (covered in the install step above).
+        # Cyrius 6.0+ ships cycc_aarch64 (renamed from cc5_aarch64);
+        # tarball location is covered in the install step above.
         run: |
-          if [ ! -x "$HOME/.cyrius/bin/cc5_aarch64" ]; then
-            echo "::error::cc5_aarch64 missing from Cyrius $CYRIUS_VERSION — aarch64 cross-build is required since 2.2.2"
+          if [ ! -x "$HOME/.cyrius/bin/cycc_aarch64" ]; then
+            echo "::error::cycc_aarch64 missing from Cyrius $CYRIUS_VERSION — aarch64 cross-build is required since 2.2.2"
             exit 1
           fi
           CYRIUS_DCE=1 cyrius build --aarch64 src/lib.cyr build/sankoch-aarch64

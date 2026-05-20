@@ -40,9 +40,10 @@ jobs:
           mkdir -p "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin" "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib"
           cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/" 2>/dev/null || true
           cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib/" 2>/dev/null || true
-          # cc5_aarch64 packaging: pre-5.7.48 ships under bin/, 5.7.48+
-          # at the tarball top-level. Cover both.
-          [ -f "$CYRIUS_DIR/cc5_aarch64" ] && cp "$CYRIUS_DIR/cc5_aarch64" "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/"
+          # cycc_aarch64 (renamed from cc5_aarch64 in Cyrius 6.0) may
+          # ship under bin/ or at the tarball top-level depending on
+          # the release. Cover both.
+          [ -f "$CYRIUS_DIR/cycc_aarch64" ] && cp "$CYRIUS_DIR/cycc_aarch64" "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/"
           chmod +x "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin/"* 2>/dev/null || true
           ln -sfn "$HOME/.cyrius/versions/$CYRIUS_VERSION/bin" "$HOME/.cyrius/bin"
           ln -sfn "$HOME/.cyrius/versions/$CYRIUS_VERSION/lib" "$HOME/.cyrius/lib"
@@ -67,8 +68,8 @@ jobs:
         # Mirror the CI gate; a release tag can't ship without an
         # aarch64 binary alongside x86_64.
         run: |
-          if [ ! -x "$HOME/.cyrius/bin/cc5_aarch64" ]; then
-            echo "::error::cc5_aarch64 missing from Cyrius $CYRIUS_VERSION — aarch64 cross-build is required since 2.2.2"
+          if [ ! -x "$HOME/.cyrius/bin/cycc_aarch64" ]; then
+            echo "::error::cycc_aarch64 missing from Cyrius $CYRIUS_VERSION — aarch64 cross-build is required since 2.2.2"
             exit 1
           fi
           CYRIUS_DCE=1 cyrius build --aarch64 src/lib.cyr build/sankoch-aarch64

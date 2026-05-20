@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pin-drift warning gone. Stale `5.7.48` references in `README.md`,
   `docs/development/cyrius-usage.md`, and `CLAUDE.md` (carried since
   the 2.2.4 / 2.2.5 bumps) refreshed at the same time.
+- **CI/release `cc5_aarch64` → `cycc_aarch64`**: Cyrius 6.0 renamed
+  the cross-compiler binary; the existing aarch64 gate in
+  `.github/workflows/{ci,release}.yml` was looking for the old name
+  and erroring out (`cc5_aarch64 missing from Cyrius`). Local
+  `cyrius build --aarch64 src/lib.cyr` confirmed clean against the
+  renamed binary (`ARM aarch64` ELF emitted).
 
 ## [2.2.5] — 2026-05-11
 
