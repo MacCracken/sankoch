@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.2.3 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate
+- **Status**: 2.2.7 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x / 5.8.x / 5.11.x / 6.0.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -22,7 +22,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
-- **Source**: 4635 lines across 14 domain modules (`src/*.cyr`)
+- **Source**: 4844 lines across 14 domain modules (`src/*.cyr`)
 - **Tests**: **116 distinct test functions** (106 sankoch.tcyr + 10
   git_object.tcyr) producing **1,375,921 assertions** total
   (1,029,338 + 346,583). The assertion count is heavily inflated by
@@ -38,10 +38,10 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
   before quoting the headline. Plus 1,649 fuzz iterations across 6
   harnesses (lz4 / deflate batch + 4 streaming +
   2 tree-shape/skewed-freq); 45+ benchmarks
-- **Dist bundles**: `dist/sankoch.cyr` (full, ~4,662 lines) +
+- **Dist bundles**: `dist/sankoch.cyr` (full, ~4,871 lines) +
   `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
   Both zero deps
-- **Stable**: 2.2.3 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.2.7 — the v2.0.0 track feature set is complete:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming

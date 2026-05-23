@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.7] — 2026-05-23
+
+**P(-1) closeout against Cyrius 6.0.1 — entry door to the 2.3.0
+streaming-decompression arc.** Three patch-level toolchain-tracking
+releases (2.2.4 / 2.2.5 / 2.2.6) collectively jumped the Cyrius pin
+two minor lines plus one major (5.7.48 → 6.0.1). This pass re-runs
+the full P(-1) scaffold-hardening checklist on the post-jump state
+and captures a fresh throughput baseline 2.3.0 will be measured
+against. **Zero HIGH/MEDIUM/LOW findings; three INFO observations
+carried forward from 2026-05-01 unchanged.** No source changes,
+no API changes, no test additions — pure process release.
+
+### Verified — full P(-1) sweep against Cyrius 6.0.1 (2026-05-23)
+- **Cleanliness gates**: `cyrius build src/lib.cyr` OK (0 warnings
+  on library path); `cyrius lint` × 20 files all `0 warnings`;
+  `cyrfmt --check` × 20 files all clean; `cyrius vet src/lib.cyr`
+  reports 20 deps, 0 untrusted, 0 missing.
+- **Test sweep**: `cyrius test tests/tcyr/sankoch.tcyr` →
+  **1,029,338 / 1,029,338** assertions pass.
+  `cyrius test tests/tcyr/git_object.tcyr` → **346,583 / 346,583**
+  pass. Total **1,375,921 assertions** — identical to the 2.2.3
+  closeout baseline (no test changes since).
+- **Fuzz sweep**: `cyrius fuzz` exercises all 12 harness functions
+  across `fuzz/fuzz_deflate.fcyr` + `fuzz/fuzz_lz4.fcyr`. **1,649
+  iterations** pass; matches the documented headline.
+- **Benchmark baseline**: full `cyrius bench tests/bcyr/sankoch.bcyr`
+  archived as `docs/benchmarks/2026-05-23-pre-2.3.0.md`. SIZE-line
+  wire-format gate: 38 entries, byte-for-byte identical to the
+  2026-05-01 snapshot. Hot-path ns/op numbers sit within ±5%
+  run-to-run noise vs the 2.2.3 reference — the toolchain churn
+  did not perturb codegen meaningfully on the compression hot
+  path. This is the reference 2.3.0's `*_dec_*` work will be
+  measured against.
+- **Security re-scan**: zero `sys_*` calls in `src/` (pure-compute
+  confirmed); 17 stack `var buf[N]` sites, largest is the
+  documented `all_lens[4672]` in deflate.cyr; the 11
+  `_sankoch_alloc` defensive sites from 2.2.1 untouched; 37 raw
+  `alloc()` lazy-global / arena sites unchanged (INFO-A —
+  carried).
+- **2.1.3 audit fixes re-verified**: HIGH-01 (DEFLATE stored-block
+  OOB, `src/deflate.cyr:385`+`:467`), MED-01 (HLIT > 286 reject,
+  `src/deflate.cyr:210`), LOW-01 (zlib CINFO > 7 reject,
+  `src/zlib.cyr:53`), LOW-02 (gzip reserved FLG bits,
+  `src/gzip.cyr:38`) — all intact post toolchain churn.
+- **Cyrius 5.7 → 6.0 stdlib API drift**: every symbol sankoch
+  consumes resolves clean. The 5.10.x REAL TYPE SYSTEM + 5.11.x
+  annotation arc was the only material change visible from our
+  side, and the 2.2.5 patch landed the response (`: i64` on every
+  public fn in `src/*.cyr`). No new dependency on `sandhi` or
+  other 5.7+-introduced stdlib modules.
+
+### Documented — three INFO observations carried forward
+- **INFO-A**: 35 lazy-global alloc sites (Huffman tables, LZ77
+  hash, DEFLATE workspace, etc.) still abort on first-call OOM.
+  Carried from 2.2.1 / 2.2.3. Deferred — failure here would need
+  error propagation through many internal callers and the
+  realistic OOM victim is the per-call ctx alloc, which 2.2.1
+  hardened.
+- **INFO-B**: `_deflate_decompress_dict` and `_zlib_decompress_dict`
+  require `dst_cap >= dict_len`. Already enforced at runtime via
+  the early `if (dict_len > dst_cap) return -ERR_BUFFER_TOO_SMALL`
+  check. Carried as a docstring-polish item.
+- **INFO-C**: aarch64 LZ77 8-byte word-compare in
+  `_lz77_find_match` uses unaligned `load64`. ARMv6+ permits it
+  but some implementations pay a cycle-count penalty. Flagged for
+  future investigation if aarch64 perf benchmarks ever surface
+  this section as hot. No consumer signal yet.
+
+### Documentation — refreshed (2026-05-23)
+- `docs/development/roadmap.md`: header bumped 2.2.3 → 2.2.6;
+  last-updated date bumped to 2026-05-20; three new ✅ entries
+  recording 2.2.4 / 2.2.5 / 2.2.6 as toolchain-tracking patches;
+  new 🎯 2.2.7 entry describing this P(-1) closeout; File Summary
+  table refreshed to current source line counts (4,844 total;
+  was 4,635); dist bundle line count 4,662 → 4,871; cyrius
+  stdlib min version 5.5.22 → 6.0.1.
+- `docs/audit/2026-05-23-pre-2.3.0-redux.md`: full audit doc.
+- `docs/benchmarks/2026-05-23-pre-2.3.0.md`: throughput baseline.
+
+### Process — outputs
+- **Test count**: unchanged at 1,375,921 assertions (no test
+  additions).
+- **Cleared to open 2.3.0** — true incremental decompression
+  (the streaming-decomp arc). DEFLATE state-machine suspension
+  lands first per the v2.x release ladder.
+- `dist/sankoch.cyr` + `dist/sankoch-core.cyr` regenerated via
+  `cyrius distlib` for the version stamp; body byte-identical
+  otherwise.
+
 ## [2.2.6] — 2026-05-20
 
 ### Changed

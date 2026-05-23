@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.2.3) | **Last Updated**: 2026-05-01
+> **Status**: Stable (v2.2.6) | **Last Updated**: 2026-05-20
 
 ---
 
@@ -331,6 +331,79 @@ plus three dict-boundary cases (max=32768, min-match=3,
 below-min=2). Total assertions: 1,375,864 → 1,375,921. Audit at
 `docs/audit/2026-05-01-pre-2.3.0.md`. Cleared to open 2.3.0.
 
+### ✅ 2.2.4 — Cyrius 5.8.64 toolchain bump — shipped 2026-05-05
+
+Patch release. Pin bumped 5.7.48 → 5.8.64 ahead of the cyrius
+v5.8.65 stdlib foldin slot (sankoch is on the foldin manifest;
+this patch is the prerequisite for cyrius's `[deps].sankoch.tag`
+to point at 2.2.4 in the foldin slot). Pre-existing `cyrius fmt`
+drift cleared across `src/`, `programs/`, `tests/`, `fuzz/`. Zero
+behavior change — full regression sweep green on 5.8.64
+(1,029,338 / 1,029,338 in sankoch.tcyr; fmt clean across all 20
+files). `dist/sankoch.cyr` regenerated.
+
+### ✅ 2.2.5 — stdlib `: i64` annotation pass — shipped 2026-05-11
+
+Patch release. Cyrius 5.10.x landed the REAL TYPE SYSTEM and the
+5.11.x annotation arc required every public fn in stdlib-tracked
+trees to carry an explicit `: i64` return-type annotation. Pure
+mechanical pass across `src/*.cyr` — parse-only, zero runtime /
+codegen change. Pin bumped 5.8.64 → 5.11.4 (required for the new
+syntax). `dist/sankoch.cyr` regenerated at 4824 lines.
+
+### ✅ 2.2.6 — Cyrius 6.0.1 + `cycc_aarch64` rename — shipped 2026-05-20
+
+Patch release. Pin bumped 5.11.4 → **6.0.1** — Cyrius's first
+major-version cut. Build, both tcyr suites (1,029,338 + 346,583
+= 1,375,921 assertions), `cyrius lint`, `cyrius vet`, and the CI
+fmt sweep all clean against 6.0.1 — the pin-drift warning is
+gone. Stale `5.7.48` references in `README.md`,
+`docs/development/cyrius-usage.md`, and `CLAUDE.md` (carried since
+the 2.2.4 / 2.2.5 bumps) refreshed at the same time. CI/release
+gate updated: Cyrius 6.0 renamed the aarch64 cross-compiler binary
+from `cc5_aarch64` to `cycc_aarch64`; both workflows were looking
+for the old name and erroring out (`cc5_aarch64 missing from
+Cyrius`). Local `cyrius build --aarch64 src/lib.cyr` confirmed
+clean against the renamed binary. `dist/sankoch.cyr` regenerated.
+
+### 🎯 2.2.7 — P(-1) closeout against cyrius 6.0.1
+
+Re-runs the P(-1) scaffold-hardening checklist after three
+patch-level toolchain-tracking releases (2.2.4 / 2.2.5 / 2.2.6)
+collectively jumped the Cyrius pin two minor lines and one major
+(5.7.48 → 6.0.1). Pure process; expected outcome is zero source
+changes. Locks in a fresh throughput baseline immediately before
+2.3.0's `*_dec_*` streaming-decomp arc lands new hot-path code.
+
+**Scope (per CLAUDE.md "P(-1): Scaffold Hardening"):**
+- Cleanliness gates against cyrius 6.0.1: `cyrius build` 0
+  warnings on the library path, `cyrius lint` 0 warnings,
+  `cyrius fmt --check` clean, `cyrius vet src/lib.cyr` clean.
+- Test sweep: both tcyr suites green at 1,375,921 assertions.
+  All six fuzz harnesses green.
+- Benchmark baseline: full `cyrius bench tests/bcyr/sankoch.bcyr`
+  archived as `docs/benchmarks/2026-MM-DD-pre-2.3.0.csv` — the
+  reference 2.3.0 will defend against.
+- Internal deep review — anything the cyrius 6.0.x type-system
+  + annotation refresh perturbed in `src/`.
+- External research — cyrius 5.7 → 6.0 stdlib API drift sweep
+  (syscalls / string / alloc / fmt / vec / fnptr / thread /
+  assert) for surface sankoch depends on.
+- Security audit — `docs/audit/2026-MM-DD-pre-2.3.0-redux.md`,
+  fresh sweep of stack-buffer sizes, sys_ usage in src/, dead
+  public-API list. Follow-up on the three INFO observations
+  carried from 2026-05-01 (lazy-global alloc-fail, dict
+  `dst_cap >= dict_len` docstring polish, aarch64 unaligned
+  word-compare).
+- Additional tests / benchmarks from findings, if any.
+- Documentation audit — CLAUDE.md, roadmap, CHANGELOG, README,
+  cyrius-usage.md.
+
+**Sizing:** medium. Mostly process; no API or source change
+expected unless the audit surfaces something. If a finding wants
+a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
+before 2.3.0 starts.
+
 ### 🎯 2.3.0 — true incremental decompression
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
@@ -489,25 +562,25 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.2.3)
+## File Summary (at 2.2.6)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
 | types.cyr        |   37 | Enums: formats (incl. FORMAT_LZ4F), errors, limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
-| checksum.cyr     |  421 | Adler-32 / CRC-32 + incremental state APIs (alloc-using) | full |
+| checksum.cyr     |  424 | Adler-32 / CRC-32 + incremental state APIs (alloc-using) | full |
 | bitreader.cyr    |   99 | LSB-first bit-stream reader | full |
-| bitwriter.cyr    |  143 | LSB-first bit-stream writer | full |
+| bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes | full |
 | lz77.cyr         |  179 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  169 | LZ4 block + frame decompress + LZ4F enum (kernel-safe) | core |
-| lz4.cyr          |  505 | LZ4 block + frame compress + `lz4f_enc_*` streaming | full |
-| deflate.cyr      | 1600 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` streaming, dict | full |
-| zlib.cyr         |  169 | RFC 1950 wrapper + FDICT + `zlib_enc_*` streaming | full |
-| gzip.cyr         |  237 | RFC 1952 wrapper + concatenated members + `gzip_enc_*` streaming | full |
-| lib.cyr          |  159 | Public API, `_sankoch_mtx`, two-tier lock dispatch | full |
+| lz4.cyr          |  513 | LZ4 block + frame compress + `lz4f_enc_*` streaming | full |
+| deflate.cyr      | 1676 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` streaming, dict | full |
+| zlib.cyr         |  222 | RFC 1950 wrapper + FDICT + `zlib_enc_*` streaming | full |
+| gzip.cyr         |  270 | RFC 1952 wrapper + concatenated members + `gzip_enc_*` streaming | full |
+| lib.cyr          |  193 | Public API, `_sankoch_mtx`, two-tier lock dispatch | full |
 | stream.cyr       |  162 | Streaming dispatch (`stream_compress_init/write/finish` → per-format `_enc_*`) | full |
-| **Total**        | **4635** | | |
+| **Total**        | **4844** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 300 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -539,7 +612,7 @@ Fuzz: 1,649 iterations across 6 harnesses
 160, plus the four streaming variants and the 2.0.2 tree-shape /
 skewed-freq harnesses).
 
-Distlib: `dist/sankoch.cyr` at 4,662 lines (full) +
+Distlib: `dist/sankoch.cyr` at 4,871 lines (full) +
 `dist/sankoch-core.cyr` at 315 lines (kernel-safe).
 
 ## Dependencies
@@ -547,7 +620,7 @@ Distlib: `dist/sankoch.cyr` at 4,662 lines (full) +
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 5.5.22).
+ship with Cyrius ≥ 6.0.1, which is the current pin).
 
 ## Key References
 
@@ -560,4 +633,4 @@ ship with Cyrius ≥ 5.5.22).
 
 ---
 
-*Last Updated: 2026-05-01 (2.2.3 P(-1) closeout)*
+*Last Updated: 2026-05-20 (2.2.6 toolchain bump to Cyrius 6.0.1)*
