@@ -503,6 +503,249 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len): i
 }
 
 # ================================================================
+# DEFLATE streaming decompression (2.3.0 — bite 1: stored blocks)
+# ================================================================
+#
+# Public API mirrors the encoder side: `deflate_dec_init(dst, dst_cap)`
+# returns a ctx; `deflate_dec_write(ctx, input, in_len)` feeds compressed
+# bytes incrementally; `deflate_dec_finish(ctx)` returns total emitted
+# bytes (matches `deflate_decompress`'s return). Mutex held from
+# dec_init to dec_finish — single-threaded contract identical to
+# enc_init/finish.
+#
+# Chunk-boundary suspension uses a hold/bits accumulator (the zlib /
+# libdeflate / miniz pattern). Bytes from each `write` chunk feed into
+# a 64-bit `hold` register one at a time as needed. When the chunk
+# runs out before enough bits are available for the current state-
+# machine step, the decoder saves its position and returns 0; the next
+# `write` resumes from the same point.
+#
+# Bite 1 supports BTYPE=00 (stored) blocks only. BTYPE=01 (fixed
+# Huffman) and BTYPE=10 (dynamic Huffman) return ERR_UNSUPPORTED_FORMAT
+# and land in bites 2 and 3 of the 2.3.0 arc.
+
+enum DeflateDec {
+    DDEC_CTX_SIZE = 88;            # 11 i64 slots
+
+    # State-machine cursor (stored in ctx + 24).
+    DDEC_STATE_HEADER = 0;         # need BFINAL (1) + BTYPE (2)
+    DDEC_STATE_STORED_LEN = 1;     # byte-aligned; need LEN (16)
+    DDEC_STATE_STORED_NLEN = 2;    # need NLEN (16) + XOR validate
+    DDEC_STATE_STORED_DATA = 3;    # raw byte copy from chunk to dst
+    DDEC_STATE_DONE = 4;           # BFINAL=1 block completed
+}
+
+# ctx layout (all 8-byte slots):
+#   +0   dst                 — output buffer pointer (caller-owned)
+#   +8   dp                  — bytes emitted so far
+#   +16  dst_cap             — output buffer capacity
+#   +24  state               — DDEC_STATE_*
+#   +32  hold                — bit accumulator (LSB-first)
+#   +40  bits                — valid bits in hold (0..64)
+#   +48  bfinal              — set on current block's BFINAL bit
+#   +56  btype               — current block's BTYPE
+#   +64  stored_len          — parsed LEN (retained for NLEN check)
+#   +72  stored_remaining    — bytes left to copy in current stored block
+#   +80  err                 — sticky error; 0 = no error
+
+fn _ddec_state(ctx): i64 { return load64(ctx + 24); }
+fn _ddec_err(ctx): i64 { return load64(ctx + 80); }
+fn _ddec_dp(ctx): i64 { return load64(ctx + 8); }
+
+# Poison ctx with a sticky error. State-machine drivers call this then
+# return; subsequent dec_write calls short-circuit.
+fn _ddec_poison(ctx, code): i64 {
+    store64(ctx + 80, code);
+    return code;
+}
+
+# Pull bytes from chunk[cp..end) into ctx.hold one at a time until
+# ctx.bits >= n or the chunk is exhausted. Returns the updated cp;
+# caller must re-check ctx.bits >= n to know whether the fill
+# succeeded (false = chunk exhausted, wait for next write).
+fn _ddec_fill(ctx, chunk, cp, end, n): i64 {
+    while (load64(ctx + 40) < n) {
+        if (cp >= end) { return cp; }
+        var b = load8(chunk + cp);
+        var hold = load64(ctx + 32);
+        var bits = load64(ctx + 40);
+        store64(ctx + 32, hold | (b << bits));
+        store64(ctx + 40, bits + 8);
+        cp = cp + 1;
+    }
+    return cp;
+}
+
+# Consume n bits from hold. Caller MUST ensure ctx.bits >= n via
+# _ddec_fill first. Returns the consumed value.
+fn _ddec_consume_bits(ctx, n): i64 {
+    var hold = load64(ctx + 32);
+    var bits = load64(ctx + 40);
+    var mask = (1 << n) - 1;
+    var v = hold & mask;
+    store64(ctx + 32, hold >> n);
+    store64(ctx + 40, bits - n);
+    return v;
+}
+
+# Byte-align the accumulator (drop unused bits of the current byte).
+# Called after the 3-bit block header before reading byte-aligned
+# fields like the stored-block LEN.
+fn _ddec_align(ctx): i64 {
+    var bits = load64(ctx + 40);
+    var drop = bits & 7;
+    if (drop > 0) {
+        var hold = load64(ctx + 32);
+        store64(ctx + 32, hold >> drop);
+        store64(ctx + 40, bits - drop);
+    }
+    return 0;
+}
+
+# Start a streaming DEFLATE decoder writing into dst[0..dst_cap).
+# Returns a ctx pointer or 0 on alloc failure / invalid args.
+# Takes _sankoch_mtx; released only on dec_finish or init alloc-fail.
+fn deflate_dec_init(dst, dst_cap): i64 {
+    if (dst_cap < 0) { return 0; }
+    if (dst_cap > 0 && dst == 0) { return 0; }
+    _sankoch_lock();
+    var ctx = _sankoch_alloc(DDEC_CTX_SIZE);
+    if (ctx == 0) { _sankoch_unlock(); return 0; }
+
+    store64(ctx + 0, dst);
+    store64(ctx + 8, 0);
+    store64(ctx + 16, dst_cap);
+    store64(ctx + 24, DDEC_STATE_HEADER);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, 0);
+    store64(ctx + 48, 0);
+    store64(ctx + 56, 0);
+    store64(ctx + 64, 0);
+    store64(ctx + 72, 0);
+    store64(ctx + 80, 0);
+
+    _deflate_init_tables();
+    return ctx;
+}
+
+# Feed `in_len` compressed bytes from input. Drives the state machine
+# forward as far as the chunk allows; emits decoded bytes into the
+# caller's dst buffer as they become available. Returns 0 on success
+# (chunk consumed or stream completed); negative error on malformed
+# input. Errors are sticky on the ctx — further calls short-circuit.
+fn deflate_dec_write(ctx, input, in_len): i64 {
+    if (_ddec_err(ctx) < 0) { return _ddec_err(ctx); }
+    if (in_len < 0) { return _ddec_poison(ctx, 0 - ERR_INVALID_INPUT); }
+    if (in_len == 0) { return 0; }
+    if (in_len > 0 && input == 0) {
+        return _ddec_poison(ctx, 0 - ERR_INVALID_INPUT);
+    }
+
+    var cp = 0;
+    var end = in_len;
+
+    while (1) {
+        var state = _ddec_state(ctx);
+
+        if (state == DDEC_STATE_DONE) { return 0; }
+
+        if (state == DDEC_STATE_HEADER) {
+            cp = _ddec_fill(ctx, input, cp, end, 3);
+            if (load64(ctx + 40) < 3) { return 0; }
+            var hdr = _ddec_consume_bits(ctx, 3);
+            store64(ctx + 48, hdr & 1);
+            var btype = (hdr >> 1) & 3;
+            store64(ctx + 56, btype);
+            if (btype == 0) {
+                _ddec_align(ctx);
+                store64(ctx + 24, DDEC_STATE_STORED_LEN);
+            } elif (btype == 1) {
+                return _ddec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            } elif (btype == 2) {
+                return _ddec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            } else {
+                return _ddec_poison(ctx, 0 - ERR_INVALID_BLOCK_TYPE);
+            }
+        } elif (state == DDEC_STATE_STORED_LEN) {
+            cp = _ddec_fill(ctx, input, cp, end, 16);
+            if (load64(ctx + 40) < 16) { return 0; }
+            var len_val = _ddec_consume_bits(ctx, 16);
+            store64(ctx + 64, len_val);
+            store64(ctx + 72, len_val);
+            store64(ctx + 24, DDEC_STATE_STORED_NLEN);
+        } elif (state == DDEC_STATE_STORED_NLEN) {
+            cp = _ddec_fill(ctx, input, cp, end, 16);
+            if (load64(ctx + 40) < 16) { return 0; }
+            var nlen = _ddec_consume_bits(ctx, 16);
+            var stored = load64(ctx + 64);
+            if ((stored ^ nlen) != 65535) {
+                return _ddec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+            }
+            var dp_now = load64(ctx + 8);
+            if (dp_now + stored > load64(ctx + 16)) {
+                return _ddec_poison(ctx, 0 - ERR_BUFFER_TOO_SMALL);
+            }
+            if (dp_now + stored > DECOMPRESS_MAX_OUTPUT) {
+                return _ddec_poison(ctx, 0 - ERR_OUTPUT_LIMIT);
+            }
+            store64(ctx + 24, DDEC_STATE_STORED_DATA);
+        } elif (state == DDEC_STATE_STORED_DATA) {
+            # Stored blocks are byte-aligned after the 3-bit header was
+            # aligned in STATE_HEADER; the two 16-bit LEN/NLEN reads
+            # consume full bytes, so ctx.bits == 0 here and we copy
+            # bytes directly from chunk to dst.
+            var remaining = load64(ctx + 72);
+            var avail = end - cp;
+            var take = remaining;
+            if (take > avail) { take = avail; }
+            if (take > 0) {
+                var dst_p = load64(ctx + 0);
+                var dp_w = load64(ctx + 8);
+                var i = 0;
+                while (i < take) {
+                    store8(dst_p + dp_w + i, load8(input + cp + i));
+                    i = i + 1;
+                }
+                cp = cp + take;
+                store64(ctx + 8, dp_w + take);
+                store64(ctx + 72, remaining - take);
+            }
+            if (load64(ctx + 72) == 0) {
+                if (load64(ctx + 48) == 1) {
+                    store64(ctx + 24, DDEC_STATE_DONE);
+                    return 0;
+                } else {
+                    store64(ctx + 24, DDEC_STATE_HEADER);
+                }
+            } else {
+                return 0;
+            }
+        } else {
+            return _ddec_poison(ctx, 0 - ERR_INVALID_INPUT);
+        }
+    }
+
+    return 0;
+}
+
+# Finalize the streaming decoder. Returns total bytes emitted into dst
+# on success, or negative error. Releases _sankoch_mtx unconditionally.
+# If the stream wasn't completed (BFINAL=1 block not yet reached),
+# returns -ERR_CORRUPT_DATA (caller fed an incomplete stream).
+fn deflate_dec_finish(ctx): i64 {
+    var rc = 0;
+    if (_ddec_err(ctx) < 0) {
+        rc = _ddec_err(ctx);
+    } elif (_ddec_state(ctx) != DDEC_STATE_DONE) {
+        rc = 0 - ERR_CORRUPT_DATA;
+    } else {
+        rc = _ddec_dp(ctx);
+    }
+    _sankoch_unlock();
+    return rc;
+}
+
+# ================================================================
 # DEFLATE compression (Phase 3)
 # ================================================================
 #

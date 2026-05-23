@@ -2003,6 +2003,259 @@ fn test_err_gzip_reserved_flg() {
 }
 
 # ================================================================
+# 2.3.0 bite-1: streaming DEFLATE decoder — stored blocks only
+# ================================================================
+#
+# Stored-block wire format (RFC 1951 §3.2.4):
+#   header byte  = (BTYPE << 1) | BFINAL  in low 3 bits, rest padding
+#   LEN  (2 bytes LE) — payload byte count
+#   NLEN (2 bytes LE) — one's complement of LEN (validate via XOR)
+#   payload (LEN bytes verbatim)
+#
+# Bite-1 hand-crafts the wire bytes because the batch compressor never
+# emits pure stored output. The empty-stream test below is the one
+# tight round-trip against `deflate_enc_*` (the encoder's empty path
+# emits exactly a BFINAL=1 stored LEN=0 trailer).
+
+fn test_dec_stream_empty_bfinal_stored() {
+    # 5-byte stream: BFINAL=1, BTYPE=00, LEN=0, NLEN=0xFFFF.
+    var src = alloc(5);
+    store8(src + 0, 1);          # 0b00000001
+    store8(src + 1, 0); store8(src + 2, 0);    # LEN=0
+    store8(src + 3, 255); store8(src + 4, 255);# NLEN=0xFFFF
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "dec_init returns ctx");
+    assert(deflate_dec_write(ctx, src, 5) == 0, "dec_write empty stored");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 0, "dec_finish returns 0 for empty stored");
+    return 0;
+}
+
+fn test_dec_stream_single_stored_block() {
+    # BFINAL=1, BTYPE=00, LEN=5, NLEN=0xFFFA, then "Hello".
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 250); store8(src + 4, 255);
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(16);
+    var ctx = deflate_dec_init(dst, 16);
+    assert(ctx != 0, "single stored init");
+    assert(deflate_dec_write(ctx, src, 10) == 0, "single stored write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "single stored finish len");
+    assert(load8(dst + 0) == 72 && load8(dst + 4) == 111, "single stored content");
+    return 0;
+}
+
+fn test_dec_stream_byte_at_a_time() {
+    # Same 10-byte stream as above, fed one byte per dec_write call.
+    # Exercises state-machine suspension at every possible point
+    # (header straddles, LEN straddles, NLEN straddles, data straddles).
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 250); store8(src + 4, 255);
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(16);
+    var ctx = deflate_dec_init(dst, 16);
+    assert(ctx != 0, "byte-at-a-time init");
+    var i = 0;
+    while (i < 10) {
+        assert(deflate_dec_write(ctx, src + i, 1) == 0, "byte-at-a-time write");
+        i = i + 1;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "byte-at-a-time len");
+    i = 0;
+    while (i < 5) {
+        assert(load8(dst + i) == load8(src + 5 + i), "byte-at-a-time content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_multi_block_stored() {
+    # Block 1: BFINAL=0, BTYPE=00, LEN=2, NLEN=0xFFFD, "AB".
+    # Block 2: BFINAL=1, BTYPE=00, LEN=2, NLEN=0xFFFD, "CD".
+    var src = alloc(14);
+    store8(src +  0, 0);                              # BFINAL=0 BTYPE=00
+    store8(src +  1, 2); store8(src +  2, 0);
+    store8(src +  3, 253); store8(src +  4, 255);
+    store8(src +  5, 65); store8(src +  6, 66);       # "AB"
+    store8(src +  7, 1);                              # BFINAL=1 BTYPE=00
+    store8(src +  8, 2); store8(src +  9, 0);
+    store8(src + 10, 253); store8(src + 11, 255);
+    store8(src + 12, 67); store8(src + 13, 68);       # "CD"
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "multi-block init");
+    assert(deflate_dec_write(ctx, src, 14) == 0, "multi-block write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 4, "multi-block len");
+    assert(load8(dst + 0) == 65 && load8(dst + 1) == 66
+        && load8(dst + 2) == 67 && load8(dst + 3) == 68, "multi-block content");
+    return 0;
+}
+
+fn test_dec_stream_nlen_mismatch() {
+    # Same as single_stored but NLEN=0x0000 (not the complement of LEN=5).
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 0); store8(src + 4, 0);   # NLEN wrong
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(16);
+    var ctx = deflate_dec_init(dst, 16);
+    assert(ctx != 0, "nlen mismatch init");
+    var rc = deflate_dec_write(ctx, src, 10);
+    assert(rc < 0, "nlen mismatch rejected");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "finish propagates error");
+    return 0;
+}
+
+fn test_dec_stream_fixed_unsupported() {
+    # BTYPE=01 (fixed Huffman) returns ERR_UNSUPPORTED_FORMAT in bite-1.
+    var src = alloc(1);
+    store8(src + 0, 3);   # BFINAL=1, BTYPE=01
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "fixed unsupported init");
+    var rc = deflate_dec_write(ctx, src, 1);
+    assert(rc < 0, "fixed-Huffman rejected (bite-1)");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "fixed finish error");
+    return 0;
+}
+
+fn test_dec_stream_dynamic_unsupported() {
+    # BTYPE=10 (dynamic Huffman) returns ERR_UNSUPPORTED_FORMAT.
+    var src = alloc(1);
+    store8(src + 0, 5);   # BFINAL=1, BTYPE=10
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "dynamic unsupported init");
+    var rc = deflate_dec_write(ctx, src, 1);
+    assert(rc < 0, "dynamic-Huffman rejected (bite-1)");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "dynamic finish error");
+    return 0;
+}
+
+fn test_dec_stream_reserved_block_type() {
+    # BTYPE=11 (reserved) is invalid even after Huffman support lands.
+    var src = alloc(1);
+    store8(src + 0, 7);   # BFINAL=1, BTYPE=11
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "reserved btype init");
+    var rc = deflate_dec_write(ctx, src, 1);
+    assert(rc < 0, "BTYPE=11 rejected");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "reserved finish error");
+    return 0;
+}
+
+fn test_dec_stream_incomplete_stream() {
+    # Header byte only — never a BFINAL=1 EOB seen. finish must error.
+    var src = alloc(1);
+    store8(src + 0, 0);   # BFINAL=0
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "incomplete init");
+    assert(deflate_dec_write(ctx, src, 1) == 0, "incomplete partial write");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "incomplete stream rejected at finish");
+    return 0;
+}
+
+fn test_dec_stream_buffer_too_small() {
+    # 5-byte payload into a 3-byte dst — must error at NLEN read.
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 250); store8(src + 4, 255);
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(3);
+    var ctx = deflate_dec_init(dst, 3);
+    assert(ctx != 0, "too-small dst init");
+    var rc = deflate_dec_write(ctx, src, 10);
+    assert(rc < 0, "too-small dst rejected");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "too-small finish error");
+    return 0;
+}
+
+fn test_dec_stream_post_done_writes_noop() {
+    # After BFINAL=1 EOB seen, further writes return 0 with no error.
+    var src = alloc(5);
+    store8(src + 0, 1);
+    store8(src + 1, 0); store8(src + 2, 0);
+    store8(src + 3, 255); store8(src + 4, 255);
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "post-done init");
+    assert(deflate_dec_write(ctx, src, 5) == 0, "complete stream");
+    var trailing = alloc(3);
+    store8(trailing + 0, 99); store8(trailing + 1, 99); store8(trailing + 2, 99);
+    assert(deflate_dec_write(ctx, trailing, 3) == 0, "post-done writes no-op");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 0, "post-done finish");
+    return 0;
+}
+
+fn test_dec_stream_finish_releases_lock() {
+    # After dec_finish, an unrelated public API call must succeed
+    # (proves the mutex was released).
+    var src = alloc(5);
+    store8(src + 0, 1);
+    store8(src + 1, 0); store8(src + 2, 0);
+    store8(src + 3, 255); store8(src + 4, 255);
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "lock-release init");
+    deflate_dec_write(ctx, src, 5);
+    deflate_dec_finish(ctx);
+
+    # If the mutex were still held, this batch call would deadlock.
+    # `_sankoch_lock` is non-reentrant in the single-threaded contract,
+    # but a follow-up call from the same thread MUST succeed because
+    # finish released the lock.
+    var src2 = alloc(2);
+    store8(src2 + 0, 65); store8(src2 + 1, 66);
+    var c2 = alloc(32);
+    var n = deflate_compress(src2, 2, c2, 32);
+    assert(n > 0, "follow-up compress succeeds (lock was released)");
+    return 0;
+}
+
+fn test_dec_stream_encoder_empty_roundtrip() {
+    # End-to-end check: deflate_enc_* at level 1 (fixed path) with zero
+    # writes emits a single BFINAL=1 stored-LEN=0 block — the one
+    # codec-emitted shape bite-1 supports. (Level >= 4 emits a dynamic
+    # block instead, which lands in bite-3.)
+    var c = alloc(16);
+    var enc = deflate_enc_init(1, c, 16);
+    assert(enc != 0, "empty rt enc_init");
+    var clen = deflate_enc_finish(enc);
+    assert(clen > 0, "empty rt enc_finish");
+
+    var d = alloc(8);
+    var dec = deflate_dec_init(d, 8);
+    assert(dec != 0, "empty rt dec_init");
+    assert(deflate_dec_write(dec, c, clen) == 0, "empty rt dec_write");
+    var n = deflate_dec_finish(dec);
+    assert(n == 0, "empty rt dec_finish returns 0");
+    return 0;
+}
+
+# ================================================================
 # main
 # ================================================================
 
@@ -2141,6 +2394,21 @@ fn main() {
     test_enc_dict_max_len_32768();
     test_enc_dict_min_match_len_3();
     test_enc_dict_below_min_match_len_2();
+
+    # 2.3.0 bite-1 — streaming DEFLATE decoder, stored blocks only
+    test_dec_stream_empty_bfinal_stored();
+    test_dec_stream_single_stored_block();
+    test_dec_stream_byte_at_a_time();
+    test_dec_stream_multi_block_stored();
+    test_dec_stream_nlen_mismatch();
+    test_dec_stream_fixed_unsupported();
+    test_dec_stream_dynamic_unsupported();
+    test_dec_stream_reserved_block_type();
+    test_dec_stream_incomplete_stream();
+    test_dec_stream_buffer_too_small();
+    test_dec_stream_post_done_writes_noop();
+    test_dec_stream_finish_releases_lock();
+    test_dec_stream_encoder_empty_roundtrip();
 
     var r = assert_summary();
     return r;

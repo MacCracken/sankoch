@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🎯 2.3.0 — true incremental decompression
+### 🚧 2.3.0 — true incremental decompression (bite 1 of 6 done)
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -427,8 +427,29 @@ as-is for callers that don't need byte-streaming output.
   `stream_decompress_init` is called in incremental mode.
 
 **Sizing:** large — DEFLATE state-machine suspension is the hard
-part. Treat as small bites: DEFLATE first (own bench/test suite),
-then zlib/gzip wrappers, then LZ4F.
+part. Broken into 6 small bites; each ships verified before the next
+opens.
+
+**Bite ladder:**
+- ✅ **Bite 1 (2026-05-23)** — `deflate_dec_init / write / finish` API
+  surface + 88-byte ctx + hold/bits bit accumulator + state machine
+  for **stored blocks only** (BTYPE=00). BTYPE=01/10 return
+  `-ERR_UNSUPPORTED_FORMAT` until bites 2 & 3. 13 new hand-crafted
+  tests (+57 assertions, total 1,375,978); wire format byte-identical
+  to 2.2.7. Mutex held `dec_init` → `dec_finish` mirroring encoder.
+- 🎯 **Bite 2** — fixed-Huffman block decode. Huffman-symbol state
+  machine on top of bite-1's hold/bits accumulator: literal emit,
+  length code + extra bits, distance code + extra bits, match-copy
+  from output window. First bite that round-trips against the batch
+  compressor (level 1-3 emit fixed-Huffman blocks).
+- 🎯 **Bite 3** — dynamic-Huffman blocks. The big one:
+  `_read_dynamic` state-machine'd (HLIT / HDIST / HCLEN, cl-tree
+  build, all_lens loop). Re-uses bite-2's per-symbol machinery.
+- 🎯 **Bite 4** — zlib + gzip wrappers. Incremental Adler-32 /
+  CRC-32; header + trailer parse that may straddle chunks.
+- 🎯 **Bite 5** — LZ4F multi-block frame; per-block emit.
+- 🎯 **Bite 6** — `stream.cyr` dispatch routes `stream_decompress_init`
+  to the appropriate `*_dec_*` for incremental-mode callers.
 
 ### 🎯 2.3.1 — configurable LZ4F block-max size
 

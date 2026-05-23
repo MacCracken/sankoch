@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2.3.0 bite-1 — streaming DEFLATE decoder (stored blocks)
+
+Opens the 2.3.0 true-incremental-decompression arc. Bite 1 of 6:
+public API surface + hold/bits accumulator + state machine for
+stored blocks (BTYPE=00) only. Fixed-Huffman (bite 2) and
+dynamic-Huffman (bite 3) blocks return `-ERR_UNSUPPORTED_FORMAT`
+until those bites land. Mirrors the encoder-side pattern from 1.7.0:
+single mutex held from `dec_init` to `dec_finish`. **No wire-format
+change; all 38 SIZE lines from the 2.2.7 baseline remain identical
+since the encoder and batch decoder are untouched.**
+
+#### Added — `deflate_dec_init / dec_write / dec_finish`
+- **`deflate_dec_init(dst, dst_cap): i64`** — allocates a streaming
+  decoder ctx, takes `_sankoch_mtx`. Returns ctx pointer or 0 on
+  alloc-fail / invalid args (then mutex is released). Output is
+  written directly into the caller's `dst[0..dst_cap)` buffer as
+  bytes become available.
+- **`deflate_dec_write(ctx, input, in_len): i64`** — feeds
+  `in_len` compressed bytes from `input`. Drives the state machine
+  forward as far as the chunk allows; suspends at any chunk
+  boundary, resumes on the next call. Returns 0 on success (chunk
+  consumed or stream complete); negative error on malformed input.
+  Errors are sticky on ctx — subsequent calls short-circuit.
+- **`deflate_dec_finish(ctx): i64`** — returns total bytes emitted
+  into `dst` on success, matching `deflate_decompress`'s return.
+  Releases `_sankoch_mtx` unconditionally. Returns
+  `-ERR_CORRUPT_DATA` if the BFINAL=1 EOB was never reached
+  (caller fed an incomplete stream).
+
+#### Architecture — hold/bits bit accumulator
+- Chunk-boundary suspension uses a 64-bit `hold` register +
+  `bits` counter inside the ctx (zlib / libdeflate / miniz
+  pattern). `_ddec_fill(ctx, chunk, cp, end, n)` pulls bytes from
+  the current chunk into `hold` one at a time until `ctx.bits >=
+  n` or the chunk is exhausted. The chosen-vs-rewind decision is
+  documented inline; rejected alternative would have required a
+  carry-over tail buffer plus per-symbol save/restore.
+- 88-byte ctx layout (11 i64 slots): `dst / dp / dst_cap / state /
+  hold / bits / bfinal / btype / stored_len / stored_remaining /
+  err`. Fits inside a single cache line on x86_64 with room.
+- 5 state-machine states: `HEADER` (read BFINAL+BTYPE) →
+  `STORED_LEN` (byte-align then 16-bit LEN) → `STORED_NLEN` (16-bit
+  NLEN + XOR validate) → `STORED_DATA` (raw byte copy) → `DONE`
+  (BFINAL=1 block complete). Each state suspends cleanly on
+  chunk exhaustion and resumes on the next `dec_write`.
+
+#### Tests — +57 assertions (2026-05-23)
+13 new bite-1 tests in `tests/tcyr/sankoch.tcyr`. Wire bytes
+hand-crafted since the batch compressor never emits pure stored
+output. Coverage:
+- `test_dec_stream_empty_bfinal_stored` — single empty stored
+  block (5-byte stream: `01 00 00 FF FF`).
+- `test_dec_stream_single_stored_block` — "Hello" payload, single
+  `dec_write` call.
+- `test_dec_stream_byte_at_a_time` — same "Hello" stream fed one
+  byte per `dec_write`. Exercises state-machine suspension at
+  every possible point: header straddles, LEN straddles, NLEN
+  straddles, data straddles.
+- `test_dec_stream_multi_block_stored` — two stored blocks
+  (BFINAL=0 "AB" + BFINAL=1 "CD") in one stream.
+- `test_dec_stream_nlen_mismatch` — corrupt NLEN returns
+  `-ERR_CORRUPT_DATA`.
+- `test_dec_stream_fixed_unsupported` — BTYPE=01 returns
+  `-ERR_UNSUPPORTED_FORMAT` (bite-2 will replace this).
+- `test_dec_stream_dynamic_unsupported` — BTYPE=10 same
+  (bite-3).
+- `test_dec_stream_reserved_block_type` — BTYPE=11 returns
+  `-ERR_INVALID_BLOCK_TYPE`.
+- `test_dec_stream_incomplete_stream` — BFINAL=1 never seen;
+  `dec_finish` returns `-ERR_CORRUPT_DATA`.
+- `test_dec_stream_buffer_too_small` — payload exceeds dst_cap;
+  rejected at NLEN read.
+- `test_dec_stream_post_done_writes_noop` — calls after EOB
+  return 0 without error.
+- `test_dec_stream_finish_releases_lock` — a follow-up
+  `deflate_compress` succeeds, proving the mutex was released.
+- `test_dec_stream_encoder_empty_roundtrip` — level-1 (fixed
+  path) `deflate_enc_*` with zero writes emits a BFINAL=1
+  stored-LEN=0 block; the streaming decoder round-trips it
+  cleanly. The one codec-emitted shape bite-1 supports.
+
+#### Verified (2026-05-23)
+- `cyrius build src/lib.cyr` — OK, 0 warnings on library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,029,395 / 1,029,395**
+  passed (was 1,029,338 at 2.2.7; +57).
+- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
+  **Total: 1,375,978 assertions** (was 1,375,921 at 2.2.7).
+- `cyrius fuzz` — 1,649 iterations, all green.
+- `cyrius vet src/lib.cyr` — clean.
+- `cyrius lint src/deflate.cyr` + `tests/tcyr/sankoch.tcyr` —
+  0 warnings each.
+- `cyrfmt --check` — clean on both touched files.
+
+#### Next — bites 2..6 of the 2.3.0 arc
+- **Bite 2**: fixed-Huffman block decode. Adds Huffman-symbol
+  state machine on top of bite-1's hold/bits accumulator: literal
+  emit, length code + extra bits, distance code + extra bits,
+  match-copy from output window.
+- **Bite 3**: dynamic-Huffman blocks. The big one —
+  `_read_dynamic` state-machine'd: HLIT/HDIST/HCLEN, cl-tree
+  build, all_lens loop. Re-uses bite-2's per-symbol machinery.
+- **Bite 4**: zlib + gzip wrappers (incremental Adler-32 / CRC-32,
+  header parse straddling chunks).
+- **Bite 5**: LZ4F multi-block frame, per-block emit.
+- **Bite 6**: `stream.cyr` dispatch wiring (`stream_decompress_init`
+  routes to `*_dec_*` in incremental mode).
+
 ## [2.2.7] — 2026-05-23
 
 **P(-1) closeout against Cyrius 6.0.1 — entry door to the 2.3.0
