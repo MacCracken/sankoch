@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🚧 2.3.0 — true incremental decompression (bites 1-2 of 6 done)
+### 🚧 2.3.0 — true incremental decompression (bites 1-3 of 6 done)
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -447,9 +447,18 @@ opens.
   zero-padded partial bytes. 7 new tests (+1,105 assertions); first
   bite to round-trip against the batch compressor's level-1 output.
   ctx grew 88 → 112 bytes.
-- 🎯 **Bite 3** — dynamic-Huffman blocks. The big one:
-  `_read_dynamic` state-machine'd (HLIT / HDIST / HCLEN, cl-tree
-  build, all_lens loop). Re-uses bite-2's per-symbol machinery.
+- ✅ **Bite 3 (2026-05-23)** — dynamic-Huffman block decode (BTYPE=10).
+  Six new state-machine arms slice `_deflate_read_dynamic` into
+  chunk-suspendable pieces: `DYN_HLIT` / `DYN_HDIST` / `DYN_HCLEN`
+  / `DYN_CL_LENS` (loop over hclen × 3-bit cl_order reads) /
+  `DYN_AL_SYM` (decode cl symbol → literal/repeat) / `DYN_AL_EXTRA`
+  (read 2/3/7 extras + emit repeat). Lazy-global workspaces
+  (`_ddec_cl_order` / `_ddec_cl_lens` / `_ddec_all_lens`) persist
+  partial trees across chunks. MED-01 (HLIT > 286) reject preserved
+  in the new state. 6 new tests (+1,342 assertions); after this
+  bite the streaming decoder accepts all 3 DEFLATE block types and
+  round-trips against every encoder level 1-9. ctx grew 112 → 160
+  bytes.
 - 🎯 **Bite 4** — zlib + gzip wrappers. Incremental Adler-32 /
   CRC-32; header + trailer parse that may straddle chunks.
 - 🎯 **Bite 5** — LZ4F multi-block frame; per-block emit.

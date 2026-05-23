@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2.3.0 bite-3 — dynamic-Huffman block decode
+
+Bite 3 of 6 — the structurally largest piece of the 2.3.0 arc.
+Adds the dynamic-Huffman path (BTYPE=10), which is what every
+`deflate_compress_level(.., 4..9)` call emits in practice. After
+this bite the streaming decoder accepts ALL three DEFLATE block
+types; bite 4 then wraps zlib and gzip headers/trailers around it.
+
+#### Added — dynamic-header state machine (2026-05-23)
+- **Six new state-machine arms** in `deflate_dec_write`, slicing
+  the batch `_deflate_read_dynamic`'s sequential parse into
+  chunk-suspendable pieces:
+  - `DDEC_STATE_DYN_HLIT` — fill 5 bits, parse HLIT, apply the
+    MED-01 (2.1.3) `hlit > 286` reject on the spec-illegal
+    encodings 30–31.
+  - `DDEC_STATE_DYN_HDIST` — fill 5 bits, parse HDIST.
+  - `DDEC_STATE_DYN_HCLEN` — fill 4 bits, parse HCLEN, zero-init
+    the cl_lens workspace.
+  - `DDEC_STATE_DYN_CL_LENS` — loop reading `hclen` × 3-bit
+    code-length-code lengths, scattering through the cl_order
+    permutation. Each iteration persists `dyn_idx` before the
+    fill check, so any chunk boundary inside the loop resumes
+    cleanly.
+  - `DDEC_STATE_DYN_AL_SYM` — once cl_lens is built, decode one
+    cl symbol (literal 0–15 / repeat-16 / repeat-17 / repeat-18)
+    via `_ddec_decode_huff` and the existing cl Huffman table.
+    Literals get written directly into all_lens; repeats stash
+    the symbol in `dyn_rep_sym` and transition to AL_EXTRA.
+    When `dyn_idx >= hlit + hdist` the loop completes,
+    `huff_build_litlen` + `huff_build_dist` run on the split
+    workspace, and state transitions to `DDEC_STATE_DECODE_SYM`
+    (the existing bite-2 symbol-decode arms then drive payload
+    decompression on dynamic tables).
+  - `DDEC_STATE_DYN_AL_EXTRA` — fill 2/3/7 extra bits for the
+    pending repeat symbol (16/17/18 → 3-6/3-10/11-138 copies),
+    emit them into all_lens via an atomic loop (no input needed),
+    update `dyn_prev`, transition back to AL_SYM.
+- **Lazy-global workspaces** (`_ddec_cl_order`, `_ddec_cl_lens`,
+  `_ddec_all_lens`) — mutex-serialized like the encoder's
+  `_dh_ws` / `_dyn_*` slabs. cl_order is initialized once with
+  the RFC 1951 §3.2.7 permutation; cl_lens (152 B) and all_lens
+  (4672 B) hold the in-flight tree-build state across chunk
+  boundaries.
+- **HEADER btype==2 arm**: calls `_ddec_alloc_dyn_ws()` to lazy-
+  init the globals, then transitions to `DDEC_STATE_DYN_HLIT`
+  instead of returning `-ERR_UNSUPPORTED_FORMAT`.
+- **ctx grew from 112 → 160 bytes** (20 i64 slots). Six new
+  fields persist mid-parse state across `dec_write` boundaries:
+  `dyn_hlit` (+112), `dyn_hdist` (+120), `dyn_hclen` (+128),
+  `dyn_idx` (+136, doubles as the cl_lens loop cursor and the
+  all_lens write cursor), `dyn_prev` (+144, last code length
+  emitted — used by repeat-16), `dyn_rep_sym` (+152, pending
+  cl symbol awaiting extras).
+- **`huff_build_cl` overwrites the bite-2 fixed cl table** when
+  it runs on the cl_lens permutation; that's already the
+  existing batch decoder's behavior — the fixed-Huffman build
+  guards on `_huff_fixed_built` and will rebuild from `0` when
+  the next fixed block opens (see `huffman.cyr:287`).
+
+#### Tests — +1,342 assertions (2026-05-23)
+The bite-1 `test_dec_stream_dynamic_unsupported` test was
+replaced by 6 new bite-3 tests. Most of the assertion growth
+comes from the 1KB content loop again.
+- `test_dec_stream_dynamic_short_roundtrip` — round-trip "Hello"
+  via `deflate_compress_level(., 6, ...)` (dynamic path) through
+  `deflate_dec_*`. Smallest viable dynamic-block stream.
+- `test_dec_stream_dynamic_byte_at_a_time` — 12-byte
+  "Hello world!" at level 6, fed one byte per `dec_write`.
+  Exercises mid-symbol suspension at every chunk boundary in
+  the dynamic-header parse (HLIT / HDIST / HCLEN / CL_LENS loop
+  / AL_SYM / AL_EXTRA) AND the subsequent litlen/dist decode.
+  This is the test that catches subtle state-machine bugs.
+- `test_dec_stream_dynamic_with_backref` — 40-byte
+  "abcdefghij" × 4 at level 6; the dynamic compressor's tree
+  is built from the actual symbol frequencies. Tests dynamic-
+  table LEN_EXTRA / DIST_EXTRA / match-copy.
+- `test_dec_stream_dynamic_1kb_chunked` — 1024 bytes A..Z at
+  level 6, fed in 8-byte chunks. Many suspension/resume cycles;
+  1,024 inner content-byte assertions.
+- `test_dec_stream_dynamic_levels` — round-trip a small input
+  through every level 4..9 (the full dynamic band). Each level
+  may produce a different tree shape; all must round-trip.
+- `test_dec_stream_dynamic_hlit_overflow` — MED-01 regression
+  on the streaming path: hand-crafted byte `245` (BFINAL=1
+  BTYPE=10 HLIT=30 → count 287). The dynamic-header parser
+  must reject the stream cleanly.
+
+#### Verified (2026-05-23)
+- `cyrius build` — OK, 0 warnings on library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,031,842 /
+  1,031,842** passed (was 1,030,500 at bite-2; +1,342).
+- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
+  **Total: 1,378,425 assertions** (was 1,377,083 at bite-2).
+- `cyrius fuzz` — 1,649 iterations, all green.
+- `cyrius vet src/lib.cyr` — clean.
+- `cyrius lint src/deflate.cyr` + `tests/tcyr/sankoch.tcyr` —
+  0 warnings each.
+- `cyrfmt --check` — clean on both touched files (continuation-
+  indent drift applied via `--write`).
+- Wire format: 38 SIZE lines unchanged — bite-3 touches only
+  the new streaming decode path; encoder + batch decoder are
+  untouched.
+
 ### 2.3.0 bite-2 — fixed-Huffman block decode
 
 Bite 2 of 6 on the 2.3.0 arc. Adds the fixed-Huffman path
