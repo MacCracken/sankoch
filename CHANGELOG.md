@@ -7,579 +7,223 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### 2.3.0 bite-6 — stream.cyr incremental decompress dispatch
+## [2.3.0] — 2026-05-23
 
-Final bite of the 2.3.0 arc. Wires the four per-format streaming
-decoders (`deflate_dec_*`, `zlib_dec_*`, `gzip_dec_*`, `lz4f_dec_*`)
-into `stream.cyr` alongside the existing legacy buffered decompress
-path, so callers can opt into incremental decode via a single
-format-agnostic API. The 2.3.0 release is now ready to cut — all
-six planned bites have landed and every public surface is
-end-to-end exercised.
+**True incremental decompression — closes the streaming arc opened
+by 1.7.0 on the encode side.** Adds `<fmt>_dec_init / write / finish`
+for DEFLATE, zlib, gzip, and LZ4F; output bytes flow into the
+caller's buffer as compressed input chunks arrive, instead of
+buffering the whole stream and batch-decoding at finish.
+`stream.cyr` grows an incremental-mode dispatch (`stream_decompress_init_inc`)
+so the same format-agnostic shell wraps both modes. Minor bump
+because the new APIs are additive; legacy `stream_decompress_*`
+(buffered) and the batch `*_decompress` paths are untouched and
+remain fully supported. Wire format identical across the entire
+SIZE matrix — all 38 reference sizes byte-for-byte unchanged from
+2.2.7.
 
-#### Added — incremental-mode dispatch (2026-05-23)
-- **`stream_decompress_init_inc(format, dst, dst_cap)`** — new
-  init function that takes the output buffer up-front and
-  dispatches to the appropriate `*_dec_init`. Returns a ctx in
-  the new `STREAM_DECOMPRESS_INC` mode (= 2). `FORMAT_LZ4` (raw
-  block, no streaming decoder) returns 0; the other four formats
-  forward to their `_dec_init` cleanly.
-- **`stream_decompress_finish_inc(ctx)`** — finish counterpart
-  for INC-mode ctxs. Returns total decompressed bytes (mirroring
-  `*_dec_finish`'s return contract). Rejects non-INC ctxs with
-  `-ERR_INVALID_INPUT`.
-- **`stream_write` extended** to dispatch on `STREAM_DECOMPRESS_INC`
-  mode, forwarding chunks straight to the inner `*_dec_write`
-  with no input buffering. Existing `STREAM_COMPRESS` and legacy
-  `STREAM_DECOMPRESS` (buffered) dispatch paths unchanged.
-- **`stream_decompress_finish` (legacy)** now rejects INC ctxs
-  with `-ERR_INVALID_INPUT` (was previously also legacy-only by
-  the mode check; behavior unchanged but the error path is now
-  explicitly tested).
-- `stream_buffered` and `stream_reset` documented as no-ops for
-  INC ctxs (the inner streaming decoder owns its own state).
+Landed as 6 bites over 2026-05-23. See git history for the
+incremental development log; the per-bite CHANGELOG entries
+(2.3.0-bite-1 .. -bite-6) were collapsed into this release header.
 
-#### No breaking changes
-- Legacy `stream_decompress_init(format)` + `stream_write` (buffer
-  mode) + `stream_decompress_finish(ctx, dst, dst_cap)` unchanged.
-  Existing callers continue to work without modification; the new
-  incremental path is purely additive.
+### Added — streaming-decode public API (2026-05-23)
 
-#### Tests — 7 new cases, +86 assertions (2026-05-23)
-- `test_stream_dec_inc_deflate` / `_zlib` / `_gzip` / `_lz4f` —
-  round-trip "Hello" through each format's incremental pathway.
-- `test_stream_dec_inc_byte_at_a_time` — 20-byte gzip stream fed
-  one byte per `stream_write`; verifies the gzip_dec state
-  machine drives correctly through the dispatch layer.
-- `test_stream_dec_inc_raw_lz4_rejected` — `FORMAT_LZ4` (raw
-  block format) returns 0 from init.
-- `test_stream_dec_inc_mode_mismatch` — three negative checks:
-  legacy finish on INC ctx, INC finish on legacy ctx, INC finish
-  on compress ctx — all return `-ERR_INVALID_INPUT`.
-
-#### Verified (2026-05-23)
-- `cyrius build` — OK, 0 warnings on library path.
-- `cyrius test tests/tcyr/sankoch.tcyr` — **1,361,935 /
-  1,361,935** passed (was 1,361,849 at bite-5; +86).
-- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
-  **Total: 1,708,518 assertions** (was 1,708,432 at bite-5).
-- `cyrius fuzz` — 1,649 iterations, all green.
-- `cyrius vet src/lib.cyr` — clean.
-- `cyrius lint src/stream.cyr` + `tests/tcyr/sankoch.tcyr` —
-  0 warnings each.
-- `cyrfmt --check` — clean on both touched files.
-- Wire format: 38 SIZE lines unchanged — bite-6 is pure dispatch
-  plumbing on top of bites 1-5.
-
-#### 2.3.0 release readiness — all six bites landed
-| Bite | What | Status |
-|------|------|--------|
-| 1 | `deflate_dec_*` stored blocks + state-machine scaffold | ✅ shipped |
-| 2 | Fixed-Huffman decode (+ bridge helper, phantom-decode guard) | ✅ shipped |
-| 3 | Dynamic-Huffman decode (6 new states) | ✅ shipped |
-| 4 | `zlib_dec_*` + `gzip_dec_*` wrappers (+ overpull rewind) | ✅ shipped |
-| 5 | `lz4f_dec_*` streaming frame decoder | ✅ shipped |
-| 6 | `stream.cyr` incremental dispatch | ✅ shipped |
-
-Ready to cut **2.3.0**. Closeout actions (when the user is ready):
-bump `VERSION` 2.2.7 → 2.3.0, regenerate `dist/sankoch.cyr` +
-`dist/sankoch-core.cyr`, write the 2.3.0 cut entry in `CHANGELOG.md`
-collapsing these six bite entries into a single release header,
-update CLAUDE.md status / line counts, update the roadmap header.
-
-### 2.3.0 bite-5 — streaming LZ4F decoder
-
-Bite 5 of 6. Streaming counterpart of `lz4f_decompress`. Each LZ4
-block is independent (B.Indep=1, the encoder's setting), so the
-decoder buffers one block at a time into a 64KB workspace and hands
-it to the existing `lz4_decompress` for in-block decode. After this
-bite all four formats sankoch encodes (DEFLATE / zlib / gzip /
-LZ4F) have streaming-decode parity with their batch equivalents.
-
-#### Added — `lz4f_dec_init / write / finish` (2026-05-23)
-- 12-slot ctx (96 bytes): state, dst+dp+cap, parsed FLG, multipurpose
-  cursor/accumulator pair, 64KB block buffer pointer, current
-  block_size + uncompressed flag, incremental xxhash32 state, sticky
-  err. Mutex held init → finish.
-- **10-state machine** covers the full LZ4F frame surface:
-  `MAGIC` (4 bytes LE) → `FLG` (1 byte: version validate, bit-4
-  block-checksum reject, bit-1 reserved reject) → `BD` (1 byte:
-  bits 4-6 = block-max-ID, only 4 accepted for now) →
-  `CONTENT_SIZE` (8 bytes, skipped, if FLG.bit3) → `DICT_ID`
-  (4 bytes, skipped, if FLG.bit0) → `HC` (1 byte, consumed but
-  not validated — mirrors batch) → `BLOCK_SIZE` (4 bytes LE; high
-  bit = uncompressed flag; size 0 marks end-mark) → `BLOCK_DATA`
-  (accumulate block_size bytes into the 64KB workspace, then hand
-  to `lz4_decompress` or memcpy if uncompressed; update content
-  checksum on emitted output) → `CONTENT_CHECKSUM` (4 bytes LE,
-  validate against `xxhash32_final`, if FLG.bit2) → `DONE`.
-- `_ldec_after_bd(ctx, done_mask)` walks the post-BD optional-field
-  chain (CONTENT_SIZE → DICT_ID → HC), mirroring the gzip pattern.
-- `_ldec_to_block_size(ctx)` cleanly resets the `idx`/`acc` cursor
-  pair before each block-size accumulator runs.
-
-#### Bite-5 deferrals (documented in `src/lz4.cyr`)
-- **BD > 4** (256K / 1M / 4M blocks): the per-stream block-buffer
-  size is fixed at LZ4F_BLOCK_MAX = 64KB to match what sankoch's
-  encoder emits. Larger BD values return
-  `-ERR_UNSUPPORTED_FORMAT`. Lifting this is roadmap item **2.3.1
-  (configurable LZ4F block-max size)** — once the encoder learns
-  to emit larger blocks, the streaming decoder can size its
-  workspace based on the parsed BD byte.
-- **Block-checksum (FLG bit 4)** NOT supported in bite-5; the
-  encoder doesn't emit it. Streams that set it return
-  `-ERR_UNSUPPORTED_FORMAT`.
-- **Concatenated frames** (multiple frames in one stream): NOT
-  supported, mirroring the batch `lz4f_decompress` posture.
-
-#### Tests — +9 cases, +327,774 assertions (2026-05-23)
-Most of the assertion growth comes from per-byte content-loop checks
-on the 64K and 128K round-trips (65,536 + 131,072 + 131,072 ≈ 328K
-inner assertions across the three large-payload tests):
-- `test_ldec_short_roundtrip` — "Hello" round-trip via
-  `lz4f_compress` → `lz4f_dec_*`.
-- `test_ldec_byte_at_a_time` — same, 20 bytes input, fed one byte
-  per `dec_write`. Exercises suspension at every header / block-
-  size / block-data / trailer boundary.
-- `test_ldec_64kb_single_block` — exactly `LZ4F_BLOCK_MAX` bytes;
-  one full block + end-mark.
-- `test_ldec_128kb_multi_block` — 128 KB → 2 blocks; tests the
-  back-to-back BLOCK_SIZE → BLOCK_DATA → BLOCK_SIZE transitions
-  with 256-byte input chunks (heavy suspension).
-- `test_ldec_uncompressed_block_roundtrip` — 128 KB of LCG-derived
-  high-entropy bytes; the encoder's per-chunk fallback emits
-  uncompressed blocks (the "compressed size > raw size" case).
-  Tests the BLOCK_DATA uncompressed-copy path.
-- `test_ldec_bad_magic` — bad first byte rejected.
-- `test_ldec_bad_version` — FLG with version=0 rejected.
-- `test_ldec_bd_too_large_rejected` — BD = 0x50 (256K blocks)
-  rejected per the bite-5 64KB ceiling.
-- `test_ldec_bad_content_checksum` — flipped trailer byte rejected
-  by the incremental xxhash32 validation.
-
-#### Verified (2026-05-23)
-- `cyrius build` — OK, 0 warnings on library path.
-- `cyrius test tests/tcyr/sankoch.tcyr` — **1,361,849 / 1,361,849**
-  passed (was 1,034,075 at bite-4; +327,774).
-- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
-  **Total: 1,708,432 assertions** (was 1,380,658 at bite-4).
-- `cyrius fuzz` — 1,649 iterations, all green.
-- `cyrius vet src/lib.cyr` — clean.
-- `cyrius lint src/lz4.cyr` + `tests/tcyr/sankoch.tcyr` — 0
-  warnings each.
-- `cyrfmt --check` — clean on both touched files (continuation-
-  indent drift applied via `--write`).
-- Wire format: 38 SIZE lines unchanged.
-
-### 2.3.0 bite-4 — streaming zlib + gzip wrappers
-
-Bite 4 of 6. The streaming raw-DEFLATE decoder (bites 1-3) is now
-wrapped with format envelopes: `zlib_dec_init/write/finish` and
-`gzip_dec_init/write/finish`. After this bite the streaming
-decoder can consume the on-wire formats `zlib_compress` and
-`gzip_compress` emit — making sankoch's streaming decode
-interoperable with git objects (zlib), gzip files, and anything
-else the encoder side produces.
-
-#### API surface — `deflate_dec_write` return contract evolved
-- `deflate_dec_write` now returns **bytes consumed** (0..in_len)
-  on success instead of always 0. Negative still means error.
-  Bite-1/2/3 tests changed from `assert(... == 0)` to
-  `assert(... >= 0)`. This unlocks the wrappers: they can hand
-  `(input, in_len)` to the inner DEFLATE, see exactly how many
-  bytes were consumed, and split the remainder as trailer.
-
-#### Added — `zlib_dec_init / write / finish` (2026-05-23)
-- 9-slot ctx (72 bytes): inner deflate_dec ptr, state, Adler-32
-  state, header parse cursor, FCHECK fields, trailer accumulator,
-  sticky err. Mutex held init → finish via the inner
-  `deflate_dec_init` / `deflate_dec_finish`.
-- 4-state machine: `HEADER` (2 bytes CMF+FLG, validate FCHECK
-  per RFC 1950 §2.2, LOW-01 CINFO > 7 reject preserved, FDICT
-  reject) → `DEFLATE` (forward to inner, incremental Adler-32
-  on output bytes as inner emits them) → `TRAILER` (4 bytes
-  big-endian Adler-32, validate against incremental hash) →
-  `DONE`.
-- **Bite-4 scope deferral**: FDICT-bearing zlib streams return
-  `-ERR_UNSUPPORTED_FORMAT`. Full FDICT streaming would require
-  a `deflate_dec_init_dict` companion plus the dictionary feed,
-  scoped for a follow-on 2.3.x patch.
-
-#### Added — `gzip_dec_init / write / finish` (2026-05-23)
-- 10-slot ctx (80 bytes): inner deflate_dec ptr, state,
-  CRC-32 state, header cursor, parsed FLG, FEXTRA-data remaining
-  counter, trailer index, accumulated CRC + ISIZE, sticky err.
-- **9-state header machine** covers the full RFC 1952 §2 surface:
-  `HDR_FIXED` (10-byte magic+CM+FLG+MTIME+XFL+OS, with magic
-  and CM validation and LOW-02 reserved-FLG-bit reject) →
-  `HDR_FEXTRA_LEN` (if FLG.FEXTRA) → `HDR_FEXTRA_DATA` →
-  `HDR_FNAME` (NUL-terminated, if FLG.FNAME) →
-  `HDR_FCOMMENT` (NUL-terminated, if FLG.FCOMMENT) →
-  `HDR_FHCRC` (2 bytes, consumed but not validated per the
-  carried INFO-01 from 2.1.3) → `DEFLATE` → `TRAILER`
-  (CRC-32 + ISIZE, little-endian, both validated against
-  the incremental hash and inner `dp`) → `DONE`.
-- `_gdec_next_hdr_state(ctx, done_mask)` picks the next header
-  sub-state by walking the on-wire FLG-bit order; the
-  `done_mask` tracks which sub-sections already ran so the
-  function can be reused at every header transition.
-- **Bite-4 scope deferral**: SINGLE-MEMBER streams only.
-  Concatenated gzip members (RFC 1952 §2.2) need a per-member
-  inner-DEFLATE reset and a state for "magic-or-EOF after
-  trailer" — scoped for a follow-on 2.3.x patch alongside FDICT.
-
-#### Critical fix — bit-accumulator overpull
-- The streaming DEFLATE decoder's `_ddec_fill` pulls full
-  bytes from input even when only a few bits are needed. When
-  the inner transitioned to `DDEC_STATE_DONE` mid-byte, it
-  could have a full unused byte still sitting in `ctx.hold` —
-  one byte further than the deflate stream actually extends.
-  The encoder always byte-pads to a boundary at finish
-  (`bw_align`), so the trailer reliably starts at the boundary
-  after the consumed bits.
-- **Fix**: both wrappers rewind `cp` by `(ctx.bits >> 3)` when
-  the inner transitions to DONE. Without this rewind, the
-  trailer position was off by 1 byte and round-trips failed
-  on `n == 5` (decompressed-length match). Caught by the
-  first round-trip tests; fix verified by the full 1,024-byte
-  chunked round-trip on both wrappers.
-
-#### Tests — +2,233 assertions (2026-05-23)
-15 new tests across both wrappers:
-- **zlib**: short round-trip (L6 dynamic); short round-trip (L1
-  fixed); byte-at-a-time chunked (20 bytes); 1KB chunked-16;
-  bad FCHECK reject; FDICT stream reject (built via
-  `zlib_enc_init_dict`); bad Adler-32 trailer reject.
-- **gzip**: short round-trip; byte-at-a-time; 1KB chunked-16;
-  bad magic reject; reserved-FLG-bit reject (LOW-02
-  regression); bad CRC-32 trailer reject; bad ISIZE trailer
-  reject; **`test_gdec_fname_field`** hand-crafts a stream
-  with FLG.FNAME set + "name\0" preceding the deflate payload
-  — exercises the optional-header sub-states.
-
-#### Verified (2026-05-23)
-- `cyrius build` — OK, 0 warnings on library path.
-- `cyrius test tests/tcyr/sankoch.tcyr` — **1,034,075 /
-  1,034,075** passed (was 1,031,842 at bite-3; +2,233).
-- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
-  **Total: 1,380,658 assertions** (was 1,378,425 at bite-3).
-- `cyrius fuzz` — 1,649 iterations, all green.
-- `cyrius vet src/lib.cyr` — clean.
-- `cyrius lint` × 4 touched files — 0 warnings each.
-- `cyrfmt --check` — clean on all four touched files (cyrfmt
-  --write applied as needed for continuation indents).
-- Wire format: 38 SIZE lines unchanged — bite-4 touches only
-  the new streaming wrapper paths.
-
-### 2.3.0 bite-3 — dynamic-Huffman block decode
-
-Bite 3 of 6 — the structurally largest piece of the 2.3.0 arc.
-Adds the dynamic-Huffman path (BTYPE=10), which is what every
-`deflate_compress_level(.., 4..9)` call emits in practice. After
-this bite the streaming decoder accepts ALL three DEFLATE block
-types; bite 4 then wraps zlib and gzip headers/trailers around it.
-
-#### Added — dynamic-header state machine (2026-05-23)
-- **Six new state-machine arms** in `deflate_dec_write`, slicing
-  the batch `_deflate_read_dynamic`'s sequential parse into
-  chunk-suspendable pieces:
-  - `DDEC_STATE_DYN_HLIT` — fill 5 bits, parse HLIT, apply the
-    MED-01 (2.1.3) `hlit > 286` reject on the spec-illegal
-    encodings 30–31.
-  - `DDEC_STATE_DYN_HDIST` — fill 5 bits, parse HDIST.
-  - `DDEC_STATE_DYN_HCLEN` — fill 4 bits, parse HCLEN, zero-init
-    the cl_lens workspace.
-  - `DDEC_STATE_DYN_CL_LENS` — loop reading `hclen` × 3-bit
-    code-length-code lengths, scattering through the cl_order
-    permutation. Each iteration persists `dyn_idx` before the
-    fill check, so any chunk boundary inside the loop resumes
-    cleanly.
-  - `DDEC_STATE_DYN_AL_SYM` — once cl_lens is built, decode one
-    cl symbol (literal 0–15 / repeat-16 / repeat-17 / repeat-18)
-    via `_ddec_decode_huff` and the existing cl Huffman table.
-    Literals get written directly into all_lens; repeats stash
-    the symbol in `dyn_rep_sym` and transition to AL_EXTRA.
-    When `dyn_idx >= hlit + hdist` the loop completes,
-    `huff_build_litlen` + `huff_build_dist` run on the split
-    workspace, and state transitions to `DDEC_STATE_DECODE_SYM`
-    (the existing bite-2 symbol-decode arms then drive payload
-    decompression on dynamic tables).
-  - `DDEC_STATE_DYN_AL_EXTRA` — fill 2/3/7 extra bits for the
-    pending repeat symbol (16/17/18 → 3-6/3-10/11-138 copies),
-    emit them into all_lens via an atomic loop (no input needed),
-    update `dyn_prev`, transition back to AL_SYM.
-- **Lazy-global workspaces** (`_ddec_cl_order`, `_ddec_cl_lens`,
-  `_ddec_all_lens`) — mutex-serialized like the encoder's
-  `_dh_ws` / `_dyn_*` slabs. cl_order is initialized once with
-  the RFC 1951 §3.2.7 permutation; cl_lens (152 B) and all_lens
-  (4672 B) hold the in-flight tree-build state across chunk
-  boundaries.
-- **HEADER btype==2 arm**: calls `_ddec_alloc_dyn_ws()` to lazy-
-  init the globals, then transitions to `DDEC_STATE_DYN_HLIT`
-  instead of returning `-ERR_UNSUPPORTED_FORMAT`.
-- **ctx grew from 112 → 160 bytes** (20 i64 slots). Six new
-  fields persist mid-parse state across `dec_write` boundaries:
-  `dyn_hlit` (+112), `dyn_hdist` (+120), `dyn_hclen` (+128),
-  `dyn_idx` (+136, doubles as the cl_lens loop cursor and the
-  all_lens write cursor), `dyn_prev` (+144, last code length
-  emitted — used by repeat-16), `dyn_rep_sym` (+152, pending
-  cl symbol awaiting extras).
-- **`huff_build_cl` overwrites the bite-2 fixed cl table** when
-  it runs on the cl_lens permutation; that's already the
-  existing batch decoder's behavior — the fixed-Huffman build
-  guards on `_huff_fixed_built` and will rebuild from `0` when
-  the next fixed block opens (see `huffman.cyr:287`).
-
-#### Tests — +1,342 assertions (2026-05-23)
-The bite-1 `test_dec_stream_dynamic_unsupported` test was
-replaced by 6 new bite-3 tests. Most of the assertion growth
-comes from the 1KB content loop again.
-- `test_dec_stream_dynamic_short_roundtrip` — round-trip "Hello"
-  via `deflate_compress_level(., 6, ...)` (dynamic path) through
-  `deflate_dec_*`. Smallest viable dynamic-block stream.
-- `test_dec_stream_dynamic_byte_at_a_time` — 12-byte
-  "Hello world!" at level 6, fed one byte per `dec_write`.
-  Exercises mid-symbol suspension at every chunk boundary in
-  the dynamic-header parse (HLIT / HDIST / HCLEN / CL_LENS loop
-  / AL_SYM / AL_EXTRA) AND the subsequent litlen/dist decode.
-  This is the test that catches subtle state-machine bugs.
-- `test_dec_stream_dynamic_with_backref` — 40-byte
-  "abcdefghij" × 4 at level 6; the dynamic compressor's tree
-  is built from the actual symbol frequencies. Tests dynamic-
-  table LEN_EXTRA / DIST_EXTRA / match-copy.
-- `test_dec_stream_dynamic_1kb_chunked` — 1024 bytes A..Z at
-  level 6, fed in 8-byte chunks. Many suspension/resume cycles;
-  1,024 inner content-byte assertions.
-- `test_dec_stream_dynamic_levels` — round-trip a small input
-  through every level 4..9 (the full dynamic band). Each level
-  may produce a different tree shape; all must round-trip.
-- `test_dec_stream_dynamic_hlit_overflow` — MED-01 regression
-  on the streaming path: hand-crafted byte `245` (BFINAL=1
-  BTYPE=10 HLIT=30 → count 287). The dynamic-header parser
-  must reject the stream cleanly.
-
-#### Verified (2026-05-23)
-- `cyrius build` — OK, 0 warnings on library path.
-- `cyrius test tests/tcyr/sankoch.tcyr` — **1,031,842 /
-  1,031,842** passed (was 1,030,500 at bite-2; +1,342).
-- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
-  **Total: 1,378,425 assertions** (was 1,377,083 at bite-2).
-- `cyrius fuzz` — 1,649 iterations, all green.
-- `cyrius vet src/lib.cyr` — clean.
-- `cyrius lint src/deflate.cyr` + `tests/tcyr/sankoch.tcyr` —
-  0 warnings each.
-- `cyrfmt --check` — clean on both touched files (continuation-
-  indent drift applied via `--write`).
-- Wire format: 38 SIZE lines unchanged — bite-3 touches only
-  the new streaming decode path; encoder + batch decoder are
-  untouched.
-
-### 2.3.0 bite-2 — fixed-Huffman block decode
-
-Bite 2 of 6 on the 2.3.0 arc. Adds the fixed-Huffman path
-(BTYPE=01) on top of the bite-1 scaffold. The streaming decoder
-now round-trips against `deflate_compress_level(.., 1..3)`
-output (the levels that route through the fixed-Huffman encoder).
-Dynamic-Huffman (BTYPE=10) still returns `-ERR_UNSUPPORTED_FORMAT`
-until bite 3.
-
-#### Added — fixed-Huffman streaming decode (2026-05-23)
-- **`_ddec_decode_huff(ctx, fast, lengths, codes, num_symbols)`** —
-  bridge-decode one Huffman symbol from `ctx.hold`. Drains the
-  64-bit accumulator into a 4-byte stack buffer, points a stack-
-  allocated 32-byte br struct at it (no per-call `alloc`), and
-  reuses the existing battle-tested `_huff_decode`. On success
-  advances `ctx.hold/bits` by the consumed-bit count. Returns
-  `0 - DDEC_NEED_MORE` on bridge exhaustion (atomic rollback —
-  `ctx.hold/bits` unchanged); the next `dec_write` resumes the
-  attempt with more bits filled.
-- **Phantom-decode guard**: the bridge is byte-granular, so when
-  `ctx.bits < 8` the high pad bits of the last partial byte are
-  zeros that the fast table or slow path can accidentally walk
-  into and "decode" a spurious code. The helper rejects any
-  decode that reports `consumed > ctx.bits` and treats it as
-  need-more — caller retries with more input. Without this
-  guard, byte-at-a-time feeds were producing bogus EOB hits at
+#### DEFLATE — `deflate_dec_init / dec_write / dec_finish`
+- 160-byte ctx (20 i64 slots) with hold/bits accumulator
+  (zlib / libdeflate / miniz pattern). Chunk-boundary suspension
+  works via a single `_ddec_fill(ctx, chunk, cp, end, n)` primitive
+  that pulls bytes one at a time until enough bits are available;
+  state-machine arms check `bits >= n` after fill and return
+  `cp` on insufficiency without losing input.
+- **15-state machine** spans all three DEFLATE block types:
+  - Stored (BTYPE=00): `STORED_LEN` → `STORED_NLEN` (XOR validate,
+    preserves the HIGH-01 source-bound check from 2.1.3) →
+    `STORED_DATA` (byte copy directly from chunk to dst).
+  - Fixed Huffman (BTYPE=01): `DECODE_SYM` → `LEN_EXTRA` →
+    `DECODE_DIST` → `DIST_EXTRA` → atomic match-copy → back to
+    `DECODE_SYM`.
+  - Dynamic Huffman (BTYPE=10): `DYN_HLIT` → `DYN_HDIST` →
+    `DYN_HCLEN` → `DYN_CL_LENS` (loop reading hclen × 3-bit code
+    lengths through the cl_order permutation) → `DYN_AL_SYM`
+    (decode cl symbol, branch on literal/repeat-16/17/18) →
+    `DYN_AL_EXTRA` (read 2/3/7 extra bits + emit repeat into the
+    all_lens workspace, back to AL_SYM). MED-01 `hlit > 286`
+    reject from 2.1.3 carried over verbatim.
+- **`_ddec_decode_huff`** — Huffman-decode helper that drains
+  `ctx.hold` into a 4-byte stack buffer, points a stack-allocated
+  32-byte br struct at it, calls the existing battle-tested
+  `_huff_decode`, then advances `ctx.hold/bits` by the consumed-bit
+  count. No per-call alloc.
+- **Phantom-decode guard** in `_ddec_decode_huff`: the bridge is
+  byte-granular, so when `ctx.bits < 8` the high pad bits of the
+  partial byte are zeros that the fast table or slow path can
+  accidentally walk into and "decode" a code shorter than expected.
+  The helper rejects any decode that consumed past `ctx.bits` and
+  treats it as need-more (caller retries with more input). Without
+  this guard, byte-at-a-time feeds produced spurious EOB hits at
   chunk boundaries.
-- **Four new state-machine arms** in `deflate_dec_write`:
-  - `DDEC_STATE_DECODE_SYM` — decode next litlen symbol. Branches
-    on result: literal (emit + stay), EOB (transition to next
-    block or DONE), length code (save base + extra count, →
-    LEN_EXTRA).
-  - `DDEC_STATE_LEN_EXTRA` — fill + consume length extra bits,
-    add to `cur_length`, → DECODE_DIST.
-  - `DDEC_STATE_DECODE_DIST` — decode dist symbol, save base +
-    extra count, → DIST_EXTRA.
-  - `DDEC_STATE_DIST_EXTRA` — fill + consume dist extra bits,
-    add to `cur_distance`, perform the match-copy (byte-at-a-
-    time loop — REQUIRED for correctness because matches with
-    `distance < length` overlap their own write region, e.g.
-    `distance=1` for RLE runs), → DECODE_SYM.
-- **`HEADER` arm**: BTYPE=01 now calls `huff_build_fixed()` and
-  transitions to `DECODE_SYM` instead of returning
-  `-ERR_UNSUPPORTED_FORMAT`.
-- **ctx grew from 88 → 112 bytes** (14 i64 slots). Three new
-  fields: `cur_length` (+88), `cur_distance` (+96),
-  `cur_extra_count` (+104) — mid-symbol scratch carried across
-  the EXTRA states. `DDEC_NEED_MORE = 1024` sentinel added to
-  the `DeflateDec` enum (negative-magnitude convention matches
-  ERR_*).
-- **Match-copy bounds**: distance > dp returns
-  `-ERR_MATCH_OUT_OF_RANGE`; dp + length > dst_cap returns
-  `-ERR_BUFFER_TOO_SMALL`; dp + length > `DECOMPRESS_MAX_OUTPUT`
-  returns `-ERR_OUTPUT_LIMIT`. All sticky on the ctx.
+- Lazy-global workspaces (`_ddec_cl_order`, `_ddec_cl_lens`,
+  `_ddec_all_lens`) carry partial dynamic trees across chunk
+  boundaries — same mutex-serialized lazy-alloc pattern as the
+  encoder's `_dh_ws` / `_dyn_*` slabs.
+- **Contract**: `deflate_dec_write` returns bytes consumed
+  (0..in_len) on success; negative is error. This is the only
+  visible API contract shift from 2.2.7 (the original bite-1
+  shape returned 0 on success); the wrappers needed it to split
+  each chunk between DEFLATE body and trailer.
 
-#### Tests — +1,105 assertions (2026-05-23)
-The bite-1 `test_dec_stream_fixed_unsupported` test was
-replaced by 7 new bite-2 tests; the 1,024-iteration content
-check in the 1KB round-trip accounts for most of the assertion
-growth:
-- `test_dec_stream_fixed_eob_only` — hand-crafted 2-byte stream
-  `03 00` (BFINAL=1 BTYPE=01 EOB-only). The minimal valid
-  fixed-Huffman block.
-- `test_dec_stream_fixed_short_literal_roundtrip` — round-trip
-  "Hello" via `deflate_compress_level(., 1, ., ., 1)` (fixed
-  path) through `deflate_dec_*`.
-- `test_dec_stream_fixed_byte_at_a_time` — same stream, fed one
-  byte per `dec_write`. Exercises mid-symbol suspension at
-  every chunk boundary; the phantom-decode guard catches the
-  partial-bit ambiguity.
-- `test_dec_stream_fixed_with_backref` — 20-byte "abcdefghij"
-  doubled; the level-1 compressor emits a length=10 distance=10
-  back-reference for the second half. Tests the
-  `LEN_EXTRA → DECODE_DIST → DIST_EXTRA → match-copy` path.
-- `test_dec_stream_fixed_rle_distance_1` — 20-byte 'a' run;
-  encoder emits distance=1 RLE. Tests the overlap-safe
-  byte-at-a-time match-copy loop.
-- `test_dec_stream_fixed_1kb_roundtrip` — 1024 bytes A..Z
-  cycling, compressed input fed in 16-byte chunks. Multiple
-  suspension/resume cycles across both literal and back-
-  reference states; 1,024 inner content-byte assertions.
-- `test_dec_stream_fixed_buffer_too_small` — 5-byte payload
-  into a 3-byte dst; decoder rejects with negative error.
+#### zlib — `zlib_dec_init / dec_write / dec_finish`
+- 72-byte ctx. 4-state machine: `HEADER` (2-byte CMF+FLG; FCHECK
+  modulo-31 validate per RFC 1950 §2.2; LOW-01 CINFO > 7 reject
+  preserved; FDICT reject — see deferred below) → `DEFLATE`
+  (forward chunks to the inner DEFLATE decoder, update incremental
+  Adler-32 on emitted bytes) → `TRAILER` (4-byte big-endian
+  Adler-32, validate against incremental hash) → `DONE`.
+- Mutex held init → finish via the inner `deflate_dec_init` /
+  `deflate_dec_finish` (same pattern as encoder side).
 
-#### Verified (2026-05-23)
-- `cyrius build` — OK, 0 warnings on library path.
-- `cyrius test tests/tcyr/sankoch.tcyr` — **1,030,500 /
-  1,030,500** passed (was 1,029,395 at bite-1; +1,105).
+#### gzip — `gzip_dec_init / dec_write / dec_finish`
+- 80-byte ctx. **9-state machine** covers the full RFC 1952 §2
+  surface: `HDR_FIXED` (10-byte magic+CM+FLG+MTIME+XFL+OS with
+  magic+CM validation and LOW-02 reserved-FLG-bit reject preserved
+  from 2.1.3) → `HDR_FEXTRA_LEN` (if FLG.FEXTRA) →
+  `HDR_FEXTRA_DATA` → `HDR_FNAME` (NUL-terminated, if FLG.FNAME) →
+  `HDR_FCOMMENT` (NUL-terminated, if FLG.FCOMMENT) → `HDR_FHCRC`
+  (2 bytes; consumed but not validated, carrying INFO-01 from
+  2.1.3) → `DEFLATE` → `TRAILER` (CRC-32 + ISIZE, both LE, both
+  validated against the incremental hash and inner `dp`) → `DONE`.
+- `_gdec_next_hdr_state(ctx, done_mask)` walks the on-wire
+  FLG-bit chain at every header sub-state transition, so adding
+  / skipping optional fields is a single shared code path.
+
+#### LZ4F — `lz4f_dec_init / dec_write / dec_finish`
+- 96-byte ctx. **10-state machine**: `MAGIC` (4 bytes LE) → `FLG`
+  (version validate, bit-4 block-checksum reject, bit-1 reserved
+  reject) → `BD` (block-max ID = 4 / 64KB only; larger sizes
+  rejected — see deferred) → optional `CONTENT_SIZE` / `DICT_ID` →
+  `HC` (consumed, not validated, mirroring batch) → `BLOCK_SIZE`
+  (4 bytes LE; high bit = uncompressed flag; size 0 marks
+  end-mark) → `BLOCK_DATA` (accumulate into the 64KB block buffer,
+  then hand to `lz4_decompress` or memcpy if uncompressed; update
+  incremental xxhash32) → `CONTENT_CHECKSUM` (4 bytes LE,
+  validate) → `DONE`.
+
+#### `stream.cyr` — incremental-mode dispatch
+- **`stream_decompress_init_inc(format, dst, dst_cap)`** —
+  new init function that takes the output buffer up-front and
+  dispatches to the appropriate `*_dec_init`. Returns a ctx in
+  the new `STREAM_DECOMPRESS_INC = 2` mode. `FORMAT_LZ4` (raw
+  block, no streaming decoder) returns 0; the other four formats
+  forward cleanly.
+- **`stream_write` extended** with INC-mode dispatch routing to
+  `*_dec_write`. Existing `STREAM_COMPRESS` and legacy
+  `STREAM_DECOMPRESS` (buffered) dispatch paths unchanged.
+- **`stream_decompress_finish_inc(ctx)`** — finish counterpart
+  for INC-mode ctxs. Mirrors `*_dec_finish`'s return contract.
+
+### Fixed — bit-accumulator overpull in zlib/gzip wrappers
+- The streaming DEFLATE decoder's `_ddec_fill` pulls full bytes
+  from input even when only a few bits are needed. When the inner
+  transitioned to `DDEC_STATE_DONE` mid-byte, it could have a full
+  unused byte still sitting in `ctx.hold` — one byte further than
+  the deflate stream actually extends. Without correction, the
+  zlib/gzip wrappers would see the trailer offset shifted by 1.
+  Fix: both wrappers rewind `cp` by `(ctx.bits >> 3)` when the
+  inner transitions to DONE. The encoder's `bw_align` reliably
+  byte-pads at finish, so the trailer always starts at the byte
+  boundary after the consumed bits — making the rewind safe.
+
+### Deferred — scoped to follow-on 2.3.x patches
+- **Streaming FDICT zlib** (`flg.bit5` = 1). The streaming decoder
+  rejects FDICT-bearing zlib with `-ERR_UNSUPPORTED_FORMAT` for
+  now. Full FDICT support needs a `deflate_dec_init_dict` analog
+  plus the dictionary feed; planned for a 2.3.x patch alongside
+  multi-member gzip.
+- **Concatenated gzip members** (RFC 1952 §2.2). The streaming
+  decoder handles a single member only; batch `gzip_decompress`
+  still handles concatenated streams as before. Multi-member
+  streaming needs a per-member inner-DEFLATE reset and a
+  magic-or-EOF-after-trailer state.
+- **LZ4F block-max ID > 4** (256K / 1M / 4M blocks). Bite-5 fixes
+  the streaming block buffer at LZ4F_BLOCK_MAX = 64KB to match
+  what sankoch's encoder emits. Lifting this is roadmap item
+  **2.3.1** (configurable LZ4F block-max size); once the encoder
+  learns to emit larger blocks, the streaming decoder will size
+  its workspace based on the parsed BD byte.
+- **LZ4F per-block checksum** (FLG bit 4). Not supported in
+  bite-5; sankoch's encoder doesn't emit it. Streams that set it
+  return `-ERR_UNSUPPORTED_FORMAT`.
+
+### Tests — +332,597 assertions (2026-05-23)
+sankoch.tcyr 1,029,338 → **1,361,935** (+332,597). git_object.tcyr
+unchanged at 346,583. **Total: 1,708,518 assertions** across the
+two suites. Most of the growth comes from per-byte content-loops
+on the 64KB and 128KB LZ4F round-trips in bite-5. Bite-by-bite
+test additions:
+- Bite 1 (stored blocks): 13 hand-crafted tests, +57 assertions —
+  empty stream, single block, byte-at-a-time, multi-block,
+  NLEN-mismatch, unsupported BTYPE 01/10/11, incomplete-stream,
+  buffer-too-small, post-DONE no-op, mutex-release proof, empty
+  round-trip via `deflate_enc_*`.
+- Bite 2 (fixed Huffman): 7 round-trips (level-1 fixed-path) at
+  several payload shapes including distance=1 RLE and 1KB
+  chunked-16, +1,105 assertions.
+- Bite 3 (dynamic Huffman): 6 round-trips (level-6 dynamic-path)
+  including a sweep across levels 4-9 plus a MED-01 streaming-path
+  regression, +1,342 assertions.
+- Bite 4 (zlib + gzip wrappers): 15 cases including round-trips
+  at L1 and L6, byte-at-a-time chunked feeds, FDICT-rejected, bad
+  Adler / bad magic / reserved-FLG / bad CRC / bad ISIZE, and a
+  hand-crafted gzip FNAME-field stream, +2,233 assertions.
+- Bite 5 (LZ4F): 9 cases including 64K single-block, 128K
+  multi-block at 256-byte chunks, uncompressed-block path,
+  bad-magic, bad-version, BD-too-large reject, and bad
+  content-checksum, +327,774 assertions (dominated by 64K + 2×128K
+  content-loops).
+- Bite 6 (dispatch): 7 cases including a round-trip through each
+  of the four format dispatch paths, byte-at-a-time gzip via the
+  shell, FORMAT_LZ4 reject, and three mode-mismatch error checks,
+  +86 assertions.
+
+### Verified (2026-05-23)
+- `cyrius build src/lib.cyr` — OK, 0 warnings on the library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,361,935 / 1,361,935**
+  passed.
 - `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
-  **Total: 1,377,083 assertions** (was 1,375,978 at bite-1).
-- `cyrius fuzz` — 1,649 iterations, all green.
-- `cyrius vet src/lib.cyr` — clean.
-- `cyrius lint src/deflate.cyr` + `tests/tcyr/sankoch.tcyr` —
+- `cyrius fuzz` — 1,649 iterations across 12 harness functions in
+  2 files, all green.
+- `cyrius vet src/lib.cyr` — clean (20 deps, 0 untrusted, 0
+  missing).
+- `cyrius lint` × all 20 source / program / test / fuzz files —
   0 warnings each.
-- `cyrfmt --check` — clean on both touched files (a one-line
-  continuation-indent drift each was applied via `--write`).
-- Wire format: 38 SIZE lines unchanged — bite-2 touches only
-  the new streaming decode path; encoder + batch decoder are
-  untouched.
+- `cyrfmt --check` — clean across all touched files.
+- Wire-format SIZE-line gate: all 38 entries byte-for-byte
+  identical to the 2.2.7 baseline. The streaming-decode arc only
+  added new public surface; encoder + batch decoder are untouched.
+- `dist/sankoch.cyr` regenerated to 6326 lines (was 4871 at 2.2.7;
+  +1455 source lines for the streaming decode surface).
+  `dist/sankoch-core.cyr` unchanged at 315 lines (kernel-safe
+  profile contains only LZ4 batch decompress, which gained nothing
+  in this arc).
 
-### 2.3.0 bite-1 — streaming DEFLATE decoder (stored blocks)
+### Source — +1455 lines across 5 files
+- `src/deflate.cyr` 1676 → 2276 (+600) — bites 1/2/3 add ~600
+  lines for the state machine + hold/bits primitives + bridge
+  Huffman helper.
+- `src/lz4.cyr` 513 → 835 (+322) — bite 5 adds the LZ4F streaming
+  decoder.
+- `src/gzip.cyr` 270 → 531 (+261) — bite 4 streaming gzip wrapper.
+- `src/zlib.cyr` 222 → 406 (+184) — bite 4 streaming zlib wrapper.
+- `src/stream.cyr` 162 → 250 (+88) — bite 6 incremental dispatch.
+- All other modules unchanged.
 
-Opens the 2.3.0 true-incremental-decompression arc. Bite 1 of 6:
-public API surface + hold/bits accumulator + state machine for
-stored blocks (BTYPE=00) only. Fixed-Huffman (bite 2) and
-dynamic-Huffman (bite 3) blocks return `-ERR_UNSUPPORTED_FORMAT`
-until those bites land. Mirrors the encoder-side pattern from 1.7.0:
-single mutex held from `dec_init` to `dec_finish`. **No wire-format
-change; all 38 SIZE lines from the 2.2.7 baseline remain identical
-since the encoder and batch decoder are untouched.**
-
-#### Added — `deflate_dec_init / dec_write / dec_finish`
-- **`deflate_dec_init(dst, dst_cap): i64`** — allocates a streaming
-  decoder ctx, takes `_sankoch_mtx`. Returns ctx pointer or 0 on
-  alloc-fail / invalid args (then mutex is released). Output is
-  written directly into the caller's `dst[0..dst_cap)` buffer as
-  bytes become available.
-- **`deflate_dec_write(ctx, input, in_len): i64`** — feeds
-  `in_len` compressed bytes from `input`. Drives the state machine
-  forward as far as the chunk allows; suspends at any chunk
-  boundary, resumes on the next call. Returns 0 on success (chunk
-  consumed or stream complete); negative error on malformed input.
-  Errors are sticky on ctx — subsequent calls short-circuit.
-- **`deflate_dec_finish(ctx): i64`** — returns total bytes emitted
-  into `dst` on success, matching `deflate_decompress`'s return.
-  Releases `_sankoch_mtx` unconditionally. Returns
-  `-ERR_CORRUPT_DATA` if the BFINAL=1 EOB was never reached
-  (caller fed an incomplete stream).
-
-#### Architecture — hold/bits bit accumulator
-- Chunk-boundary suspension uses a 64-bit `hold` register +
-  `bits` counter inside the ctx (zlib / libdeflate / miniz
-  pattern). `_ddec_fill(ctx, chunk, cp, end, n)` pulls bytes from
-  the current chunk into `hold` one at a time until `ctx.bits >=
-  n` or the chunk is exhausted. The chosen-vs-rewind decision is
-  documented inline; rejected alternative would have required a
-  carry-over tail buffer plus per-symbol save/restore.
-- 88-byte ctx layout (11 i64 slots): `dst / dp / dst_cap / state /
-  hold / bits / bfinal / btype / stored_len / stored_remaining /
-  err`. Fits inside a single cache line on x86_64 with room.
-- 5 state-machine states: `HEADER` (read BFINAL+BTYPE) →
-  `STORED_LEN` (byte-align then 16-bit LEN) → `STORED_NLEN` (16-bit
-  NLEN + XOR validate) → `STORED_DATA` (raw byte copy) → `DONE`
-  (BFINAL=1 block complete). Each state suspends cleanly on
-  chunk exhaustion and resumes on the next `dec_write`.
-
-#### Tests — +57 assertions (2026-05-23)
-13 new bite-1 tests in `tests/tcyr/sankoch.tcyr`. Wire bytes
-hand-crafted since the batch compressor never emits pure stored
-output. Coverage:
-- `test_dec_stream_empty_bfinal_stored` — single empty stored
-  block (5-byte stream: `01 00 00 FF FF`).
-- `test_dec_stream_single_stored_block` — "Hello" payload, single
-  `dec_write` call.
-- `test_dec_stream_byte_at_a_time` — same "Hello" stream fed one
-  byte per `dec_write`. Exercises state-machine suspension at
-  every possible point: header straddles, LEN straddles, NLEN
-  straddles, data straddles.
-- `test_dec_stream_multi_block_stored` — two stored blocks
-  (BFINAL=0 "AB" + BFINAL=1 "CD") in one stream.
-- `test_dec_stream_nlen_mismatch` — corrupt NLEN returns
-  `-ERR_CORRUPT_DATA`.
-- `test_dec_stream_fixed_unsupported` — BTYPE=01 returns
-  `-ERR_UNSUPPORTED_FORMAT` (bite-2 will replace this).
-- `test_dec_stream_dynamic_unsupported` — BTYPE=10 same
-  (bite-3).
-- `test_dec_stream_reserved_block_type` — BTYPE=11 returns
-  `-ERR_INVALID_BLOCK_TYPE`.
-- `test_dec_stream_incomplete_stream` — BFINAL=1 never seen;
-  `dec_finish` returns `-ERR_CORRUPT_DATA`.
-- `test_dec_stream_buffer_too_small` — payload exceeds dst_cap;
-  rejected at NLEN read.
-- `test_dec_stream_post_done_writes_noop` — calls after EOB
-  return 0 without error.
-- `test_dec_stream_finish_releases_lock` — a follow-up
-  `deflate_compress` succeeds, proving the mutex was released.
-- `test_dec_stream_encoder_empty_roundtrip` — level-1 (fixed
-  path) `deflate_enc_*` with zero writes emits a BFINAL=1
-  stored-LEN=0 block; the streaming decoder round-trips it
-  cleanly. The one codec-emitted shape bite-1 supports.
-
-#### Verified (2026-05-23)
-- `cyrius build src/lib.cyr` — OK, 0 warnings on library path.
-- `cyrius test tests/tcyr/sankoch.tcyr` — **1,029,395 / 1,029,395**
-  passed (was 1,029,338 at 2.2.7; +57).
-- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
-  **Total: 1,375,978 assertions** (was 1,375,921 at 2.2.7).
-- `cyrius fuzz` — 1,649 iterations, all green.
-- `cyrius vet src/lib.cyr` — clean.
-- `cyrius lint src/deflate.cyr` + `tests/tcyr/sankoch.tcyr` —
-  0 warnings each.
-- `cyrfmt --check` — clean on both touched files.
-
-#### Next — bites 2..6 of the 2.3.0 arc
-- **Bite 2**: fixed-Huffman block decode. Adds Huffman-symbol
-  state machine on top of bite-1's hold/bits accumulator: literal
-  emit, length code + extra bits, distance code + extra bits,
-  match-copy from output window.
-- **Bite 3**: dynamic-Huffman blocks. The big one —
-  `_read_dynamic` state-machine'd: HLIT/HDIST/HCLEN, cl-tree
-  build, all_lens loop. Re-uses bite-2's per-symbol machinery.
-- **Bite 4**: zlib + gzip wrappers (incremental Adler-32 / CRC-32,
-  header parse straddling chunks).
-- **Bite 5**: LZ4F multi-block frame, per-block emit.
-- **Bite 6**: `stream.cyr` dispatch wiring (`stream_decompress_init`
-  routes to `*_dec_*` in incremental mode).
+### `[lib.core]` — unchanged
+The kernel-safe profile (`dist/sankoch-core.cyr`) is bite-by-bite
+untouched. Streaming decode is alloc-using (ctx + workspaces +
+incremental checksum state) and stays in the full `[lib]` profile.
+The kernel-safe tripwire (`programs/core_smoke.cyr`) re-validates
+clean; the AGNOS initrd LZ4-decompress contract is identical to
+the 2.1.2 cut.
 
 ## [2.2.7] — 2026-05-23
 

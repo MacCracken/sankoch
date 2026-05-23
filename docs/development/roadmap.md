@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.2.6) | **Last Updated**: 2026-05-20
+> **Status**: Stable (v2.3.0) | **Last Updated**: 2026-05-23
 
 ---
 
@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🚧 2.3.0 — true incremental decompression (all 6 bites done, ready to cut)
+### ✅ 2.3.0 — true incremental decompression — shipped 2026-05-23
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -625,7 +625,7 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 
 ---
 
-## File Summary (at 2.2.6)
+## File Summary (at 2.3.0)
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -637,22 +637,22 @@ Primitives that already exist in the AGNOS ecosystem, mapped to where they live:
 | huffman.cyr      |  661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes | full |
 | lz77.cyr         |  179 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  169 | LZ4 block + frame decompress + LZ4F enum (kernel-safe) | core |
-| lz4.cyr          |  513 | LZ4 block + frame compress + `lz4f_enc_*` streaming | full |
-| deflate.cyr      | 1676 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` streaming, dict | full |
-| zlib.cyr         |  222 | RFC 1950 wrapper + FDICT + `zlib_enc_*` streaming | full |
-| gzip.cyr         |  270 | RFC 1952 wrapper + concatenated members + `gzip_enc_*` streaming | full |
+| lz4.cyr          |  835 | LZ4 block + frame compress + `lz4f_enc_*` + `lz4f_dec_*` streaming | full |
+| deflate.cyr      | 2276 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming, dict | full |
+| zlib.cyr         |  406 | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming | full |
+| gzip.cyr         |  531 | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming | full |
 | lib.cyr          |  193 | Public API, `_sankoch_mtx`, two-tier lock dispatch | full |
-| stream.cyr       |  162 | Streaming dispatch (`stream_compress_init/write/finish` → per-format `_enc_*`) | full |
-| **Total**        | **4844** | | |
+| stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
+| **Total**        | **6299** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 300 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **116 distinct test functions** (106 sankoch.tcyr + 10
-git_object.tcyr) producing **1,375,921 assertions** total
-(1,029,338 + 346,583). Most of the assertion count comes from
+Tests: **156 distinct test functions** (146 sankoch.tcyr + 10
+git_object.tcyr) producing **1,708,518 assertions** total
+(1,361,935 + 346,583). Most of the assertion count comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -675,7 +675,7 @@ Fuzz: 1,649 iterations across 6 harnesses
 160, plus the four streaming variants and the 2.0.2 tree-shape /
 skewed-freq harnesses).
 
-Distlib: `dist/sankoch.cyr` at 4,871 lines (full) +
+Distlib: `dist/sankoch.cyr` at 6,326 lines (full) +
 `dist/sankoch-core.cyr` at 315 lines (kernel-safe).
 
 ## Dependencies
@@ -696,4 +696,4 @@ ship with Cyrius ≥ 6.0.1, which is the current pin).
 
 ---
 
-*Last Updated: 2026-05-20 (2.2.6 toolchain bump to Cyrius 6.0.1)*
+*Last Updated: 2026-05-23 (2.3.0 cut — true incremental decompression)*

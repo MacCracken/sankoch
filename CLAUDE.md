@@ -9,7 +9,7 @@ compression library for AGNOS.
 - **License**: GPL-3.0-only
 - **Language**: Cyrius (sovereign systems language, compiled by cc5)
 - **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.2.7 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x / 5.8.x / 5.11.x / 6.0.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate
+- **Status**: 2.3.0 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x / 5.8.x / 5.11.x / 6.0.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate. **True incremental decompression** for DEFLATE / zlib / gzip / LZ4F shipped in 2.3.0 — see `*_dec_init/write/finish` and `stream_decompress_init_inc`
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
 - **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
 
@@ -22,7 +22,7 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
-- **Source**: 4844 lines across 14 domain modules (`src/*.cyr`)
+- **Source**: 6299 lines across 14 domain modules (`src/*.cyr`)
 - **Tests**: **116 distinct test functions** (106 sankoch.tcyr + 10
   git_object.tcyr) producing **1,375,921 assertions** total
   (1,029,338 + 346,583). The assertion count is heavily inflated by
@@ -38,17 +38,19 @@ external dependencies, zero C FFI, zero shell-outs to `gzip`.
   before quoting the headline. Plus 1,649 fuzz iterations across 6
   harnesses (lz4 / deflate batch + 4 streaming +
   2 tree-shape/skewed-freq); 45+ benchmarks
-- **Dist bundles**: `dist/sankoch.cyr` (full, ~4,871 lines) +
+- **Dist bundles**: `dist/sankoch.cyr` (full, ~6,326 lines) +
   `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
   Both zero deps
-- **Stable**: 2.2.7 — the v2.0.0 track feature set is complete:
+- **Stable**: 2.3.0 — feature set:
   LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
   xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
   FDICT; gzip incl. concatenated members; true incremental streaming
-  across all four formats (DEFLATE, zlib, gzip, LZ4F) via
-  `*_enc_init/write/finish` APIs (with `*_enc_init_dict` preset-
-  dictionary variants since 2.2.0); public-API thread safety via the
-  two-tier mutex split
+  on BOTH encode AND decode sides across all four formats (DEFLATE,
+  zlib, gzip, LZ4F) via `*_enc_init/write/finish` and
+  `*_dec_init/write/finish` APIs (with `*_enc_init_dict` preset-
+  dictionary variants on the encode side since 2.2.0; FDICT on the
+  streaming decode side is a 2.3.x follow-on); public-API thread
+  safety via the two-tier mutex split
 - **Toolchain**: Cyrius 6.0.1 (`cyrius.cyml: cyrius = "6.0.1"`)
 - **Integration**: will be consumed by future git impl, ark, AGNOS
   kernel (initrd), shravan, tarang
