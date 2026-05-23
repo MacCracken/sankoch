@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2.3.0 bite-2 — fixed-Huffman block decode
+
+Bite 2 of 6 on the 2.3.0 arc. Adds the fixed-Huffman path
+(BTYPE=01) on top of the bite-1 scaffold. The streaming decoder
+now round-trips against `deflate_compress_level(.., 1..3)`
+output (the levels that route through the fixed-Huffman encoder).
+Dynamic-Huffman (BTYPE=10) still returns `-ERR_UNSUPPORTED_FORMAT`
+until bite 3.
+
+#### Added — fixed-Huffman streaming decode (2026-05-23)
+- **`_ddec_decode_huff(ctx, fast, lengths, codes, num_symbols)`** —
+  bridge-decode one Huffman symbol from `ctx.hold`. Drains the
+  64-bit accumulator into a 4-byte stack buffer, points a stack-
+  allocated 32-byte br struct at it (no per-call `alloc`), and
+  reuses the existing battle-tested `_huff_decode`. On success
+  advances `ctx.hold/bits` by the consumed-bit count. Returns
+  `0 - DDEC_NEED_MORE` on bridge exhaustion (atomic rollback —
+  `ctx.hold/bits` unchanged); the next `dec_write` resumes the
+  attempt with more bits filled.
+- **Phantom-decode guard**: the bridge is byte-granular, so when
+  `ctx.bits < 8` the high pad bits of the last partial byte are
+  zeros that the fast table or slow path can accidentally walk
+  into and "decode" a spurious code. The helper rejects any
+  decode that reports `consumed > ctx.bits` and treats it as
+  need-more — caller retries with more input. Without this
+  guard, byte-at-a-time feeds were producing bogus EOB hits at
+  chunk boundaries.
+- **Four new state-machine arms** in `deflate_dec_write`:
+  - `DDEC_STATE_DECODE_SYM` — decode next litlen symbol. Branches
+    on result: literal (emit + stay), EOB (transition to next
+    block or DONE), length code (save base + extra count, →
+    LEN_EXTRA).
+  - `DDEC_STATE_LEN_EXTRA` — fill + consume length extra bits,
+    add to `cur_length`, → DECODE_DIST.
+  - `DDEC_STATE_DECODE_DIST` — decode dist symbol, save base +
+    extra count, → DIST_EXTRA.
+  - `DDEC_STATE_DIST_EXTRA` — fill + consume dist extra bits,
+    add to `cur_distance`, perform the match-copy (byte-at-a-
+    time loop — REQUIRED for correctness because matches with
+    `distance < length` overlap their own write region, e.g.
+    `distance=1` for RLE runs), → DECODE_SYM.
+- **`HEADER` arm**: BTYPE=01 now calls `huff_build_fixed()` and
+  transitions to `DECODE_SYM` instead of returning
+  `-ERR_UNSUPPORTED_FORMAT`.
+- **ctx grew from 88 → 112 bytes** (14 i64 slots). Three new
+  fields: `cur_length` (+88), `cur_distance` (+96),
+  `cur_extra_count` (+104) — mid-symbol scratch carried across
+  the EXTRA states. `DDEC_NEED_MORE = 1024` sentinel added to
+  the `DeflateDec` enum (negative-magnitude convention matches
+  ERR_*).
+- **Match-copy bounds**: distance > dp returns
+  `-ERR_MATCH_OUT_OF_RANGE`; dp + length > dst_cap returns
+  `-ERR_BUFFER_TOO_SMALL`; dp + length > `DECOMPRESS_MAX_OUTPUT`
+  returns `-ERR_OUTPUT_LIMIT`. All sticky on the ctx.
+
+#### Tests — +1,105 assertions (2026-05-23)
+The bite-1 `test_dec_stream_fixed_unsupported` test was
+replaced by 7 new bite-2 tests; the 1,024-iteration content
+check in the 1KB round-trip accounts for most of the assertion
+growth:
+- `test_dec_stream_fixed_eob_only` — hand-crafted 2-byte stream
+  `03 00` (BFINAL=1 BTYPE=01 EOB-only). The minimal valid
+  fixed-Huffman block.
+- `test_dec_stream_fixed_short_literal_roundtrip` — round-trip
+  "Hello" via `deflate_compress_level(., 1, ., ., 1)` (fixed
+  path) through `deflate_dec_*`.
+- `test_dec_stream_fixed_byte_at_a_time` — same stream, fed one
+  byte per `dec_write`. Exercises mid-symbol suspension at
+  every chunk boundary; the phantom-decode guard catches the
+  partial-bit ambiguity.
+- `test_dec_stream_fixed_with_backref` — 20-byte "abcdefghij"
+  doubled; the level-1 compressor emits a length=10 distance=10
+  back-reference for the second half. Tests the
+  `LEN_EXTRA → DECODE_DIST → DIST_EXTRA → match-copy` path.
+- `test_dec_stream_fixed_rle_distance_1` — 20-byte 'a' run;
+  encoder emits distance=1 RLE. Tests the overlap-safe
+  byte-at-a-time match-copy loop.
+- `test_dec_stream_fixed_1kb_roundtrip` — 1024 bytes A..Z
+  cycling, compressed input fed in 16-byte chunks. Multiple
+  suspension/resume cycles across both literal and back-
+  reference states; 1,024 inner content-byte assertions.
+- `test_dec_stream_fixed_buffer_too_small` — 5-byte payload
+  into a 3-byte dst; decoder rejects with negative error.
+
+#### Verified (2026-05-23)
+- `cyrius build` — OK, 0 warnings on library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,030,500 /
+  1,030,500** passed (was 1,029,395 at bite-1; +1,105).
+- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
+  **Total: 1,377,083 assertions** (was 1,375,978 at bite-1).
+- `cyrius fuzz` — 1,649 iterations, all green.
+- `cyrius vet src/lib.cyr` — clean.
+- `cyrius lint src/deflate.cyr` + `tests/tcyr/sankoch.tcyr` —
+  0 warnings each.
+- `cyrfmt --check` — clean on both touched files (a one-line
+  continuation-indent drift each was applied via `--write`).
+- Wire format: 38 SIZE lines unchanged — bite-2 touches only
+  the new streaming decode path; encoder + batch decoder are
+  untouched.
+
 ### 2.3.0 bite-1 — streaming DEFLATE decoder (stored blocks)
 
 Opens the 2.3.0 true-incremental-decompression arc. Bite 1 of 6:

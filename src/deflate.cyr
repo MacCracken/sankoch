@@ -525,7 +525,7 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len): i
 # and land in bites 2 and 3 of the 2.3.0 arc.
 
 enum DeflateDec {
-    DDEC_CTX_SIZE = 88;            # 11 i64 slots
+    DDEC_CTX_SIZE = 112;           # 14 i64 slots
 
     # State-machine cursor (stored in ctx + 24).
     DDEC_STATE_HEADER = 0;         # need BFINAL (1) + BTYPE (2)
@@ -533,6 +533,18 @@ enum DeflateDec {
     DDEC_STATE_STORED_NLEN = 2;    # need NLEN (16) + XOR validate
     DDEC_STATE_STORED_DATA = 3;    # raw byte copy from chunk to dst
     DDEC_STATE_DONE = 4;           # BFINAL=1 block completed
+    # Bite-2: fixed-Huffman block decode states.
+    DDEC_STATE_DECODE_SYM = 5;     # decode next litlen symbol
+    DDEC_STATE_LEN_EXTRA = 6;      # consuming length extra bits
+    DDEC_STATE_DECODE_DIST = 7;    # decode dist symbol
+    DDEC_STATE_DIST_EXTRA = 8;     # consuming dist extra bits + match-copy
+
+    # Sentinel returned by _ddec_decode_huff when the bridge ran out
+    # of bits before a Huffman symbol could be matched. Stored as the
+    # positive magnitude; helper returns `0 - DDEC_NEED_MORE` to keep
+    # the sign convention consistent with ERR_* codes. Magnitude is
+    # well outside the 1..9 ERR_* range so it cannot collide.
+    DDEC_NEED_MORE = 1024;
 }
 
 # ctx layout (all 8-byte slots):
@@ -547,10 +559,67 @@ enum DeflateDec {
 #   +64  stored_len          — parsed LEN (retained for NLEN check)
 #   +72  stored_remaining    — bytes left to copy in current stored block
 #   +80  err                 — sticky error; 0 = no error
+#   +88  cur_length          — bite-2: length being computed mid-symbol
+#   +96  cur_distance        — bite-2: distance being computed mid-symbol
+#   +104 cur_extra_count     — bite-2: extra bits to read in the next EXTRA state
 
 fn _ddec_state(ctx): i64 { return load64(ctx + 24); }
 fn _ddec_err(ctx): i64 { return load64(ctx + 80); }
 fn _ddec_dp(ctx): i64 { return load64(ctx + 8); }
+
+# Bridge-decode one Huffman symbol from ctx.hold. Drains the accumulator
+# into a 4-byte stack buffer, points a stack-allocated 32-byte br struct
+# at it, and calls the existing `_huff_decode` — no per-call alloc.
+# Returns: a non-negative symbol on success (with ctx.hold/bits advanced
+# by the consumed-bit count); `0 - DDEC_NEED_MORE` if the bridge ran
+# out of bits before a code could be matched (ctx.hold/bits unchanged,
+# caller waits for the next dec_write); or a real negative error
+# (e.g. -ERR_INVALID_HUFFMAN) when the slow path exhausted HUFF_MAX_BITS
+# without a match.
+fn _ddec_decode_huff(ctx, fast, lengths, codes, num_symbols): i64 {
+    var bits = load64(ctx + 40);
+    if (bits == 0) { return 0 - DDEC_NEED_MORE; }
+
+    var hold = load64(ctx + 32);
+    var bridge_buf[4];
+    store8(&bridge_buf + 0, hold & 255);
+    store8(&bridge_buf + 1, (hold >> 8) & 255);
+    store8(&bridge_buf + 2, (hold >> 16) & 255);
+    store8(&bridge_buf + 3, (hold >> 24) & 255);
+    var bridge_dlen = (bits + 7) >> 3;
+
+    # Stack-allocated br: mimics br_init without alloc.
+    var bridge_br[32];
+    store64(&bridge_br + 0, &bridge_buf);
+    store64(&bridge_br + 8, 0);
+    store64(&bridge_br + 16, 0);
+    store64(&bridge_br + 24, bridge_dlen);
+
+    var sym = _huff_decode(&bridge_br, fast, lengths, codes, num_symbols);
+    var br_bpos = load64(&bridge_br + 8);
+    var br_bbit = load64(&bridge_br + 16);
+    var consumed = br_bpos * 8 + br_bbit;
+
+    if (sym < 0) {
+        # Bridge exhausted before a match? Treat as need-more (atomic
+        # rollback — caller's ctx.hold/bits remain unchanged, so the
+        # next write resumes the attempt with more bits filled).
+        if (consumed >= bits) { return 0 - DDEC_NEED_MORE; }
+        return sym;
+    }
+
+    # A successful return may still be a phantom match — the bridge
+    # buffer is byte-granular, so when bits < 8 the high pad bits of
+    # the partial byte are zeros that the fast table or slow path can
+    # accidentally walk into and "decode" a code shorter than expected.
+    # Reject any decode that consumed past the valid bit count; the
+    # caller will retry with more input.
+    if (consumed > bits) { return 0 - DDEC_NEED_MORE; }
+
+    store64(ctx + 32, hold >> consumed);
+    store64(ctx + 40, bits - consumed);
+    return sym;
+}
 
 # Poison ctx with a sticky error. State-machine drivers call this then
 # return; subsequent dec_write calls short-circuit.
@@ -623,6 +692,9 @@ fn deflate_dec_init(dst, dst_cap): i64 {
     store64(ctx + 64, 0);
     store64(ctx + 72, 0);
     store64(ctx + 80, 0);
+    store64(ctx + 88, 0);
+    store64(ctx + 96, 0);
+    store64(ctx + 104, 0);
 
     _deflate_init_tables();
     return ctx;
@@ -660,7 +732,8 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
                 _ddec_align(ctx);
                 store64(ctx + 24, DDEC_STATE_STORED_LEN);
             } elif (btype == 1) {
-                return _ddec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+                huff_build_fixed();
+                store64(ctx + 24, DDEC_STATE_DECODE_SYM);
             } elif (btype == 2) {
                 return _ddec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
             } else {
@@ -720,6 +793,108 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             } else {
                 return 0;
             }
+        } elif (state == DDEC_STATE_DECODE_SYM) {
+            # Pull enough bits to attempt a fast-table decode. Fixed
+            # litlen codes are 7-9 bits; the helper handles short bridges
+            # gracefully so we don't stall at the very end of a chunk.
+            cp = _ddec_fill(ctx, input, cp, end, 9);
+            var sym = _ddec_decode_huff(ctx, _huff_litlen_fast,
+            _huff_litlen_lens, _huff_litlen_codes, _huff_litlen_count);
+            if (sym == 0 - DDEC_NEED_MORE) { return 0; }
+            if (sym < 0) { return _ddec_poison(ctx, sym); }
+
+            if (sym < 256) {
+                # Literal byte: emit directly.
+                var dp_lit = load64(ctx + 8);
+                if (dp_lit >= load64(ctx + 16)) {
+                    return _ddec_poison(ctx, 0 - ERR_BUFFER_TOO_SMALL);
+                }
+                if (dp_lit >= DECOMPRESS_MAX_OUTPUT) {
+                    return _ddec_poison(ctx, 0 - ERR_OUTPUT_LIMIT);
+                }
+                store8(load64(ctx + 0) + dp_lit, sym);
+                store64(ctx + 8, dp_lit + 1);
+            } elif (sym == 256) {
+                # End of block.
+                if (load64(ctx + 48) == 1) {
+                    store64(ctx + 24, DDEC_STATE_DONE);
+                    return 0;
+                } else {
+                    store64(ctx + 24, DDEC_STATE_HEADER);
+                }
+            } else {
+                # Length code (sym is 257..285).
+                var len_idx = sym - 257;
+                if (len_idx >= 29) {
+                    return _ddec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+                }
+                store64(ctx + 88,
+                load64(&_deflate_len_base + len_idx * 8));
+                store64(ctx + 104,
+                load64(&_deflate_len_extra + len_idx * 8));
+                store64(ctx + 24, DDEC_STATE_LEN_EXTRA);
+            }
+        } elif (state == DDEC_STATE_LEN_EXTRA) {
+            var extra_lc = load64(ctx + 104);
+            if (extra_lc > 0) {
+                cp = _ddec_fill(ctx, input, cp, end, extra_lc);
+                if (load64(ctx + 40) < extra_lc) { return 0; }
+                var eb = _ddec_consume_bits(ctx, extra_lc);
+                store64(ctx + 88, load64(ctx + 88) + eb);
+            }
+            store64(ctx + 24, DDEC_STATE_DECODE_DIST);
+        } elif (state == DDEC_STATE_DECODE_DIST) {
+            # Fixed distance table: all 30 codes are exactly 5 bits, but
+            # we still pull 9 to share the litlen fill threshold and let
+            # the bridge consume only what the fast table prescribes.
+            cp = _ddec_fill(ctx, input, cp, end, 9);
+            var dsym = _ddec_decode_huff(ctx, _huff_dist_fast,
+            _huff_dist_lens, _huff_dist_codes, _huff_dist_count);
+            if (dsym == 0 - DDEC_NEED_MORE) { return 0; }
+            if (dsym < 0) { return _ddec_poison(ctx, dsym); }
+            if (dsym >= 30) {
+                return _ddec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+            }
+            store64(ctx + 96,
+            load64(&_deflate_dist_base + dsym * 8));
+            store64(ctx + 104,
+            load64(&_deflate_dist_extra + dsym * 8));
+            store64(ctx + 24, DDEC_STATE_DIST_EXTRA);
+        } elif (state == DDEC_STATE_DIST_EXTRA) {
+            var extra_dc = load64(ctx + 104);
+            if (extra_dc > 0) {
+                cp = _ddec_fill(ctx, input, cp, end, extra_dc);
+                if (load64(ctx + 40) < extra_dc) { return 0; }
+                var deb = _ddec_consume_bits(ctx, extra_dc);
+                store64(ctx + 96, load64(ctx + 96) + deb);
+            }
+            # Match-copy: read `length_v` bytes starting `distance` back
+            # from the current output position. The byte-at-a-time loop
+            # is REQUIRED for correctness because matches can overlap
+            # their own write region (distance < length — used for RLE,
+            # e.g. distance=1 to repeat the previous byte).
+            var length_v = load64(ctx + 88);
+            var distance = load64(ctx + 96);
+            var dp_match = load64(ctx + 8);
+            if (distance > dp_match) {
+                return _ddec_poison(ctx, 0 - ERR_MATCH_OUT_OF_RANGE);
+            }
+            if (dp_match + length_v > load64(ctx + 16)) {
+                return _ddec_poison(ctx, 0 - ERR_BUFFER_TOO_SMALL);
+            }
+            if (dp_match + length_v > DECOMPRESS_MAX_OUTPUT) {
+                return _ddec_poison(ctx, 0 - ERR_OUTPUT_LIMIT);
+            }
+            var dst_match = load64(ctx + 0);
+            var src_match = dp_match - distance;
+            var i_match = 0;
+            while (i_match < length_v) {
+                store8(dst_match + dp_match + i_match,
+                load8(dst_match + src_match + i_match));
+                i_match = i_match + 1;
+            }
+            store64(ctx + 8, dp_match + length_v);
+            store64(ctx + 24, DDEC_STATE_DECODE_SYM);
         } else {
             return _ddec_poison(ctx, 0 - ERR_INVALID_INPUT);
         }

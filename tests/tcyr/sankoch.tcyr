@@ -2097,7 +2097,7 @@ fn test_dec_stream_multi_block_stored() {
     var n = deflate_dec_finish(ctx);
     assert(n == 4, "multi-block len");
     assert(load8(dst + 0) == 65 && load8(dst + 1) == 66
-        && load8(dst + 2) == 67 && load8(dst + 3) == 68, "multi-block content");
+    && load8(dst + 2) == 67 && load8(dst + 3) == 68, "multi-block content");
     return 0;
 }
 
@@ -2119,17 +2119,181 @@ fn test_dec_stream_nlen_mismatch() {
     return 0;
 }
 
-fn test_dec_stream_fixed_unsupported() {
-    # BTYPE=01 (fixed Huffman) returns ERR_UNSUPPORTED_FORMAT in bite-1.
-    var src = alloc(1);
-    store8(src + 0, 3);   # BFINAL=1, BTYPE=01
+fn test_dec_stream_fixed_eob_only() {
+    # Hand-crafted BFINAL=1, BTYPE=01, EOB (7-bit code 0000000), padded.
+    # Byte 0 = 0b00000011 = 3 (BFINAL=1, BTYPE=01, first 5 bits of EOB).
+    # Byte 1 = 0 (last 2 bits of EOB, 6 trailing padding bits).
+    var src = alloc(2);
+    store8(src + 0, 3);
+    store8(src + 1, 0);
     var dst = alloc(8);
     var ctx = deflate_dec_init(dst, 8);
-    assert(ctx != 0, "fixed unsupported init");
-    var rc = deflate_dec_write(ctx, src, 1);
-    assert(rc < 0, "fixed-Huffman rejected (bite-1)");
+    assert(ctx != 0, "fixed EOB-only init");
+    assert(deflate_dec_write(ctx, src, 2) == 0, "fixed EOB-only write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 0, "fixed EOB-only emits zero bytes");
+    return 0;
+}
+
+fn test_dec_stream_fixed_short_literal_roundtrip() {
+    # Encoder at level 1 routes through the fixed-Huffman path. Compress
+    # "Hello" and round-trip through the streaming decoder.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "fixed short rt compress");
+
+    var d = alloc(16);
+    var ctx = deflate_dec_init(d, 16);
+    assert(ctx != 0, "fixed short rt init");
+    assert(deflate_dec_write(ctx, c, clen) == 0, "fixed short rt write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "fixed short rt len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "fixed short rt content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_byte_at_a_time() {
+    # Same level-1 compress of "Hello", but feed the compressed bytes
+    # one at a time. Exercises mid-symbol state-machine suspension
+    # across every chunk boundary in the litlen / EOB sequence.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "fixed BAAT compress");
+
+    var d = alloc(16);
+    var ctx = deflate_dec_init(d, 16);
+    assert(ctx != 0, "fixed BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(deflate_dec_write(ctx, c + i, 1) == 0, "fixed BAAT write");
+        i = i + 1;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "fixed BAAT len");
+    i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "fixed BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_with_backref() {
+    # Level-1 compress an input long enough to produce LZ77 back-
+    # references (length code + distance code), then round-trip via
+    # the streaming decoder. "abcdefghijabcdefghij" — 20 bytes, the
+    # second half matches the first at distance=10, length=10.
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));   # 'a'..'j' repeated
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 20, c, 64, 1);
+    assert(clen > 0, "fixed backref compress");
+
+    var d = alloc(32);
+    var ctx = deflate_dec_init(d, 32);
+    assert(ctx != 0, "fixed backref init");
+    assert(deflate_dec_write(ctx, c, clen) == 0, "fixed backref write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 20, "fixed backref len");
+    var i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "fixed backref content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_rle_distance_1() {
+    # Run-length encoding via distance=1: encoder back-references the
+    # immediately preceding byte. Compressor at level 1 emits a length
+    # code + dist=1 for a long run. "aaaa....a" (20 'a's).
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) { store8(src + k, 97); k = k + 1; }
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 20, c, 64, 1);
+    assert(clen > 0, "fixed RLE compress");
+
+    var d = alloc(32);
+    var ctx = deflate_dec_init(d, 32);
+    assert(ctx != 0, "fixed RLE init");
+    assert(deflate_dec_write(ctx, c, clen) == 0, "fixed RLE write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 20, "fixed RLE len");
+    var i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == 97, "fixed RLE content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_1kb_roundtrip() {
+    # Longer round-trip — 1024 bytes of mixed text with patterns the
+    # level-1 fixed-Huffman path can compress via both literals and
+    # back-references. Feeds the compressed stream in chunks of 16
+    # bytes (forces multiple suspension/resume cycles).
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));   # 'A'..'Z' cycling
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = deflate_compress_level(src, 1024, c, 2048, 1);
+    assert(clen > 0, "fixed 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = deflate_dec_init(d, 1024);
+    assert(ctx != 0, "fixed 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 16;
+        if (off + step > clen) { step = clen - off; }
+        assert(deflate_dec_write(ctx, c + off, step) == 0,
+        "fixed 1kb chunk write");
+        off = off + step;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 1024, "fixed 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "fixed 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_buffer_too_small() {
+    # Level-1 compress "Hello", attempt to decode into a 3-byte dst.
+    # The decoder must error (BUFFER_TOO_SMALL) instead of overrunning.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "fixed too-small compress");
+
+    var d = alloc(3);
+    var ctx = deflate_dec_init(d, 3);
+    assert(ctx != 0, "fixed too-small init");
+    var rc = deflate_dec_write(ctx, c, clen);
     var fin = deflate_dec_finish(ctx);
-    assert(fin < 0, "fixed finish error");
+    assert(rc < 0 || fin < 0, "fixed too-small rejected");
     return 0;
 }
 
@@ -2401,7 +2565,6 @@ fn main() {
     test_dec_stream_byte_at_a_time();
     test_dec_stream_multi_block_stored();
     test_dec_stream_nlen_mismatch();
-    test_dec_stream_fixed_unsupported();
     test_dec_stream_dynamic_unsupported();
     test_dec_stream_reserved_block_type();
     test_dec_stream_incomplete_stream();
@@ -2409,6 +2572,15 @@ fn main() {
     test_dec_stream_post_done_writes_noop();
     test_dec_stream_finish_releases_lock();
     test_dec_stream_encoder_empty_roundtrip();
+
+    # 2.3.0 bite-2 — fixed-Huffman block decode
+    test_dec_stream_fixed_eob_only();
+    test_dec_stream_fixed_short_literal_roundtrip();
+    test_dec_stream_fixed_byte_at_a_time();
+    test_dec_stream_fixed_with_backref();
+    test_dec_stream_fixed_rle_distance_1();
+    test_dec_stream_fixed_1kb_roundtrip();
+    test_dec_stream_fixed_buffer_too_small();
 
     var r = assert_summary();
     return r;

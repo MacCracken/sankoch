@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🚧 2.3.0 — true incremental decompression (bite 1 of 6 done)
+### 🚧 2.3.0 — true incremental decompression (bites 1-2 of 6 done)
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -437,11 +437,16 @@ opens.
   `-ERR_UNSUPPORTED_FORMAT` until bites 2 & 3. 13 new hand-crafted
   tests (+57 assertions, total 1,375,978); wire format byte-identical
   to 2.2.7. Mutex held `dec_init` → `dec_finish` mirroring encoder.
-- 🎯 **Bite 2** — fixed-Huffman block decode. Huffman-symbol state
-  machine on top of bite-1's hold/bits accumulator: literal emit,
-  length code + extra bits, distance code + extra bits, match-copy
-  from output window. First bite that round-trips against the batch
-  compressor (level 1-3 emit fixed-Huffman blocks).
+- ✅ **Bite 2 (2026-05-23)** — fixed-Huffman block decode (BTYPE=01).
+  `_ddec_decode_huff` bridge helper (stack-only 4-byte buffer +
+  32-byte br struct; reuses the existing `_huff_decode`). Four new
+  state-machine arms (`DECODE_SYM` / `LEN_EXTRA` / `DECODE_DIST` /
+  `DIST_EXTRA`) drive literal emit, length+extra, distance+extra,
+  and overlap-safe match-copy. Phantom-decode guard
+  (`consumed > ctx.bits` → need-more) rejects spurious matches on
+  zero-padded partial bytes. 7 new tests (+1,105 assertions); first
+  bite to round-trip against the batch compressor's level-1 output.
+  ctx grew 88 → 112 bytes.
 - 🎯 **Bite 3** — dynamic-Huffman blocks. The big one:
   `_read_dynamic` state-machine'd (HLIT / HDIST / HCLEN, cl-tree
   build, all_lens loop). Re-uses bite-2's per-symbol machinery.
