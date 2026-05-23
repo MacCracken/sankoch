@@ -759,9 +759,13 @@ fn deflate_dec_init(dst, dst_cap): i64 {
 
 # Feed `in_len` compressed bytes from input. Drives the state machine
 # forward as far as the chunk allows; emits decoded bytes into the
-# caller's dst buffer as they become available. Returns 0 on success
-# (chunk consumed or stream completed); negative error on malformed
-# input. Errors are sticky on the ctx — further calls short-circuit.
+# caller's dst buffer as they become available. Returns the number of
+# input bytes consumed (0..in_len) on success, or a negative error on
+# malformed input. Errors are sticky on the ctx — further calls
+# short-circuit. When the BFINAL=1 EOB transitions the ctx into
+# `DDEC_STATE_DONE`, callers can detect "stream completed mid-chunk"
+# by checking `consumed < in_len`; bite-4's zlib/gzip wrappers rely
+# on this to know where the trailer begins inside the same chunk.
 fn deflate_dec_write(ctx, input, in_len): i64 {
     if (_ddec_err(ctx) < 0) { return _ddec_err(ctx); }
     if (in_len < 0) { return _ddec_poison(ctx, 0 - ERR_INVALID_INPUT); }
@@ -776,11 +780,11 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
     while (1) {
         var state = _ddec_state(ctx);
 
-        if (state == DDEC_STATE_DONE) { return 0; }
+        if (state == DDEC_STATE_DONE) { return cp; }
 
         if (state == DDEC_STATE_HEADER) {
             cp = _ddec_fill(ctx, input, cp, end, 3);
-            if (load64(ctx + 40) < 3) { return 0; }
+            if (load64(ctx + 40) < 3) { return cp; }
             var hdr = _ddec_consume_bits(ctx, 3);
             store64(ctx + 48, hdr & 1);
             var btype = (hdr >> 1) & 3;
@@ -799,14 +803,14 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             }
         } elif (state == DDEC_STATE_STORED_LEN) {
             cp = _ddec_fill(ctx, input, cp, end, 16);
-            if (load64(ctx + 40) < 16) { return 0; }
+            if (load64(ctx + 40) < 16) { return cp; }
             var len_val = _ddec_consume_bits(ctx, 16);
             store64(ctx + 64, len_val);
             store64(ctx + 72, len_val);
             store64(ctx + 24, DDEC_STATE_STORED_NLEN);
         } elif (state == DDEC_STATE_STORED_NLEN) {
             cp = _ddec_fill(ctx, input, cp, end, 16);
-            if (load64(ctx + 40) < 16) { return 0; }
+            if (load64(ctx + 40) < 16) { return cp; }
             var nlen = _ddec_consume_bits(ctx, 16);
             var stored = load64(ctx + 64);
             if ((stored ^ nlen) != 65535) {
@@ -844,12 +848,12 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             if (load64(ctx + 72) == 0) {
                 if (load64(ctx + 48) == 1) {
                     store64(ctx + 24, DDEC_STATE_DONE);
-                    return 0;
+                    return cp;
                 } else {
                     store64(ctx + 24, DDEC_STATE_HEADER);
                 }
             } else {
-                return 0;
+                return cp;
             }
         } elif (state == DDEC_STATE_DECODE_SYM) {
             # Pull enough bits to attempt a fast-table decode. Fixed
@@ -858,7 +862,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             cp = _ddec_fill(ctx, input, cp, end, 9);
             var sym = _ddec_decode_huff(ctx, _huff_litlen_fast,
             _huff_litlen_lens, _huff_litlen_codes, _huff_litlen_count);
-            if (sym == 0 - DDEC_NEED_MORE) { return 0; }
+            if (sym == 0 - DDEC_NEED_MORE) { return cp; }
             if (sym < 0) { return _ddec_poison(ctx, sym); }
 
             if (sym < 256) {
@@ -876,7 +880,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
                 # End of block.
                 if (load64(ctx + 48) == 1) {
                     store64(ctx + 24, DDEC_STATE_DONE);
-                    return 0;
+                    return cp;
                 } else {
                     store64(ctx + 24, DDEC_STATE_HEADER);
                 }
@@ -896,7 +900,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             var extra_lc = load64(ctx + 104);
             if (extra_lc > 0) {
                 cp = _ddec_fill(ctx, input, cp, end, extra_lc);
-                if (load64(ctx + 40) < extra_lc) { return 0; }
+                if (load64(ctx + 40) < extra_lc) { return cp; }
                 var eb = _ddec_consume_bits(ctx, extra_lc);
                 store64(ctx + 88, load64(ctx + 88) + eb);
             }
@@ -908,7 +912,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             cp = _ddec_fill(ctx, input, cp, end, 9);
             var dsym = _ddec_decode_huff(ctx, _huff_dist_fast,
             _huff_dist_lens, _huff_dist_codes, _huff_dist_count);
-            if (dsym == 0 - DDEC_NEED_MORE) { return 0; }
+            if (dsym == 0 - DDEC_NEED_MORE) { return cp; }
             if (dsym < 0) { return _ddec_poison(ctx, dsym); }
             if (dsym >= 30) {
                 return _ddec_poison(ctx, 0 - ERR_CORRUPT_DATA);
@@ -922,7 +926,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             var extra_dc = load64(ctx + 104);
             if (extra_dc > 0) {
                 cp = _ddec_fill(ctx, input, cp, end, extra_dc);
-                if (load64(ctx + 40) < extra_dc) { return 0; }
+                if (load64(ctx + 40) < extra_dc) { return cp; }
                 var deb = _ddec_consume_bits(ctx, extra_dc);
                 store64(ctx + 96, load64(ctx + 96) + deb);
             }
@@ -955,7 +959,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             store64(ctx + 24, DDEC_STATE_DECODE_SYM);
         } elif (state == DDEC_STATE_DYN_HLIT) {
             cp = _ddec_fill(ctx, input, cp, end, 5);
-            if (load64(ctx + 40) < 5) { return 0; }
+            if (load64(ctx + 40) < 5) { return cp; }
             var hlit_raw = _ddec_consume_bits(ctx, 5) + 257;
             # MED-01 fix (2.1.3): RFC 1951 §3.2.7 caps HLIT count at 286.
             if (hlit_raw > 286) {
@@ -965,13 +969,13 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             store64(ctx + 24, DDEC_STATE_DYN_HDIST);
         } elif (state == DDEC_STATE_DYN_HDIST) {
             cp = _ddec_fill(ctx, input, cp, end, 5);
-            if (load64(ctx + 40) < 5) { return 0; }
+            if (load64(ctx + 40) < 5) { return cp; }
             var hdist_raw = _ddec_consume_bits(ctx, 5) + 1;
             store64(ctx + 120, hdist_raw);
             store64(ctx + 24, DDEC_STATE_DYN_HCLEN);
         } elif (state == DDEC_STATE_DYN_HCLEN) {
             cp = _ddec_fill(ctx, input, cp, end, 4);
-            if (load64(ctx + 40) < 4) { return 0; }
+            if (load64(ctx + 40) < 4) { return cp; }
             var hclen_raw = _ddec_consume_bits(ctx, 4) + 4;
             store64(ctx + 128, hclen_raw);
             # Zero-init cl_lens — the cl_order permutation writes a
@@ -994,7 +998,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
                 cp = _ddec_fill(ctx, input, cp, end, 3);
                 if (load64(ctx + 40) < 3) {
                     store64(ctx + 136, cl_pos);
-                    return 0;
+                    return cp;
                 }
                 var cl_val = _ddec_consume_bits(ctx, 3);
                 var cl_perm = load64(_ddec_cl_order + cl_pos * 8);
@@ -1025,7 +1029,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
                 cp = _ddec_fill(ctx, input, cp, end, 9);
                 var cl_sym = _ddec_decode_huff(ctx, _huff_cl_fast,
                 _huff_cl_lens, _huff_cl_codes, _huff_cl_count);
-                if (cl_sym == 0 - DDEC_NEED_MORE) { return 0; }
+                if (cl_sym == 0 - DDEC_NEED_MORE) { return cp; }
                 if (cl_sym < 0) { return _ddec_poison(ctx, cl_sym); }
                 if (cl_sym <= 15) {
                     store64(_ddec_all_lens + al_pos * 8, cl_sym);
@@ -1053,7 +1057,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             elif (rep_sym == 17) { rep_bits = 3; rep_base = 3; }
             else { rep_bits = 7; rep_base = 11; }
             cp = _ddec_fill(ctx, input, cp, end, rep_bits);
-            if (load64(ctx + 40) < rep_bits) { return 0; }
+            if (load64(ctx + 40) < rep_bits) { return cp; }
             var rep_count = _ddec_consume_bits(ctx, rep_bits) + rep_base;
             var val_write = 0;
             if (rep_sym == 16) {
@@ -1078,7 +1082,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
         }
     }
 
-    return 0;
+    return cp;
 }
 
 # Finalize the streaming decoder. Returns total bytes emitted into dst

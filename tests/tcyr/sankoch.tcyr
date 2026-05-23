@@ -2026,7 +2026,7 @@ fn test_dec_stream_empty_bfinal_stored() {
     var dst = alloc(8);
     var ctx = deflate_dec_init(dst, 8);
     assert(ctx != 0, "dec_init returns ctx");
-    assert(deflate_dec_write(ctx, src, 5) == 0, "dec_write empty stored");
+    assert(deflate_dec_write(ctx, src, 5) >= 0, "dec_write empty stored");
     var n = deflate_dec_finish(ctx);
     assert(n == 0, "dec_finish returns 0 for empty stored");
     return 0;
@@ -2043,7 +2043,7 @@ fn test_dec_stream_single_stored_block() {
     var dst = alloc(16);
     var ctx = deflate_dec_init(dst, 16);
     assert(ctx != 0, "single stored init");
-    assert(deflate_dec_write(ctx, src, 10) == 0, "single stored write");
+    assert(deflate_dec_write(ctx, src, 10) >= 0, "single stored write");
     var n = deflate_dec_finish(ctx);
     assert(n == 5, "single stored finish len");
     assert(load8(dst + 0) == 72 && load8(dst + 4) == 111, "single stored content");
@@ -2065,7 +2065,7 @@ fn test_dec_stream_byte_at_a_time() {
     assert(ctx != 0, "byte-at-a-time init");
     var i = 0;
     while (i < 10) {
-        assert(deflate_dec_write(ctx, src + i, 1) == 0, "byte-at-a-time write");
+        assert(deflate_dec_write(ctx, src + i, 1) >= 0, "byte-at-a-time write");
         i = i + 1;
     }
     var n = deflate_dec_finish(ctx);
@@ -2093,7 +2093,7 @@ fn test_dec_stream_multi_block_stored() {
     var dst = alloc(8);
     var ctx = deflate_dec_init(dst, 8);
     assert(ctx != 0, "multi-block init");
-    assert(deflate_dec_write(ctx, src, 14) == 0, "multi-block write");
+    assert(deflate_dec_write(ctx, src, 14) >= 0, "multi-block write");
     var n = deflate_dec_finish(ctx);
     assert(n == 4, "multi-block len");
     assert(load8(dst + 0) == 65 && load8(dst + 1) == 66
@@ -2129,7 +2129,7 @@ fn test_dec_stream_fixed_eob_only() {
     var dst = alloc(8);
     var ctx = deflate_dec_init(dst, 8);
     assert(ctx != 0, "fixed EOB-only init");
-    assert(deflate_dec_write(ctx, src, 2) == 0, "fixed EOB-only write");
+    assert(deflate_dec_write(ctx, src, 2) >= 0, "fixed EOB-only write");
     var n = deflate_dec_finish(ctx);
     assert(n == 0, "fixed EOB-only emits zero bytes");
     return 0;
@@ -2148,7 +2148,7 @@ fn test_dec_stream_fixed_short_literal_roundtrip() {
     var d = alloc(16);
     var ctx = deflate_dec_init(d, 16);
     assert(ctx != 0, "fixed short rt init");
-    assert(deflate_dec_write(ctx, c, clen) == 0, "fixed short rt write");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "fixed short rt write");
     var n = deflate_dec_finish(ctx);
     assert(n == 5, "fixed short rt len");
     var i = 0;
@@ -2175,7 +2175,7 @@ fn test_dec_stream_fixed_byte_at_a_time() {
     assert(ctx != 0, "fixed BAAT init");
     var i = 0;
     while (i < clen) {
-        assert(deflate_dec_write(ctx, c + i, 1) == 0, "fixed BAAT write");
+        assert(deflate_dec_write(ctx, c + i, 1) >= 0, "fixed BAAT write");
         i = i + 1;
     }
     var n = deflate_dec_finish(ctx);
@@ -2206,7 +2206,7 @@ fn test_dec_stream_fixed_with_backref() {
     var d = alloc(32);
     var ctx = deflate_dec_init(d, 32);
     assert(ctx != 0, "fixed backref init");
-    assert(deflate_dec_write(ctx, c, clen) == 0, "fixed backref write");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "fixed backref write");
     var n = deflate_dec_finish(ctx);
     assert(n == 20, "fixed backref len");
     var i = 0;
@@ -2231,7 +2231,7 @@ fn test_dec_stream_fixed_rle_distance_1() {
     var d = alloc(32);
     var ctx = deflate_dec_init(d, 32);
     assert(ctx != 0, "fixed RLE init");
-    assert(deflate_dec_write(ctx, c, clen) == 0, "fixed RLE write");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "fixed RLE write");
     var n = deflate_dec_finish(ctx);
     assert(n == 20, "fixed RLE len");
     var i = 0;
@@ -2264,7 +2264,7 @@ fn test_dec_stream_fixed_1kb_roundtrip() {
     while (off < clen) {
         var step = 16;
         if (off + step > clen) { step = clen - off; }
-        assert(deflate_dec_write(ctx, c + off, step) == 0,
+        assert(deflate_dec_write(ctx, c + off, step) >= 0,
         "fixed 1kb chunk write");
         off = off + step;
     }
@@ -2310,7 +2310,7 @@ fn test_dec_stream_dynamic_short_roundtrip() {
     var d = alloc(16);
     var ctx = deflate_dec_init(d, 16);
     assert(ctx != 0, "dyn short rt init");
-    assert(deflate_dec_write(ctx, c, clen) == 0, "dyn short rt write");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "dyn short rt write");
     var n = deflate_dec_finish(ctx);
     assert(n == 5, "dyn short rt len");
     var i = 0;
@@ -2340,7 +2340,7 @@ fn test_dec_stream_dynamic_byte_at_a_time() {
     assert(ctx != 0, "dyn BAAT init");
     var i = 0;
     while (i < clen) {
-        assert(deflate_dec_write(ctx, c + i, 1) == 0, "dyn BAAT write");
+        assert(deflate_dec_write(ctx, c + i, 1) >= 0, "dyn BAAT write");
         i = i + 1;
     }
     var n = deflate_dec_finish(ctx);
@@ -2370,7 +2370,7 @@ fn test_dec_stream_dynamic_with_backref() {
     var d = alloc(64);
     var ctx = deflate_dec_init(d, 64);
     assert(ctx != 0, "dyn backref init");
-    assert(deflate_dec_write(ctx, c, clen) == 0, "dyn backref write");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "dyn backref write");
     var n = deflate_dec_finish(ctx);
     assert(n == 40, "dyn backref len");
     var i = 0;
@@ -2402,7 +2402,7 @@ fn test_dec_stream_dynamic_1kb_chunked() {
     while (off < clen) {
         var step = 8;
         if (off + step > clen) { step = clen - off; }
-        assert(deflate_dec_write(ctx, c + off, step) == 0,
+        assert(deflate_dec_write(ctx, c + off, step) >= 0,
         "dyn 1kb chunk write");
         off = off + step;
     }
@@ -2435,7 +2435,7 @@ fn test_dec_stream_dynamic_levels() {
         var d = alloc(64);
         var ctx = deflate_dec_init(d, 64);
         assert(ctx != 0, "dyn levels init");
-        assert(deflate_dec_write(ctx, c, clen) == 0, "dyn levels write");
+        assert(deflate_dec_write(ctx, c, clen) >= 0, "dyn levels write");
         var n = deflate_dec_finish(ctx);
         assert(n == 32, "dyn levels len");
         var i = 0;
@@ -2489,7 +2489,7 @@ fn test_dec_stream_incomplete_stream() {
     var dst = alloc(8);
     var ctx = deflate_dec_init(dst, 8);
     assert(ctx != 0, "incomplete init");
-    assert(deflate_dec_write(ctx, src, 1) == 0, "incomplete partial write");
+    assert(deflate_dec_write(ctx, src, 1) >= 0, "incomplete partial write");
     var fin = deflate_dec_finish(ctx);
     assert(fin < 0, "incomplete stream rejected at finish");
     return 0;
@@ -2522,7 +2522,7 @@ fn test_dec_stream_post_done_writes_noop() {
     var dst = alloc(8);
     var ctx = deflate_dec_init(dst, 8);
     assert(ctx != 0, "post-done init");
-    assert(deflate_dec_write(ctx, src, 5) == 0, "complete stream");
+    assert(deflate_dec_write(ctx, src, 5) >= 0, "complete stream");
     var trailing = alloc(3);
     store8(trailing + 0, 99); store8(trailing + 1, 99); store8(trailing + 2, 99);
     assert(deflate_dec_write(ctx, trailing, 3) == 0, "post-done writes no-op");
@@ -2570,9 +2570,366 @@ fn test_dec_stream_encoder_empty_roundtrip() {
     var d = alloc(8);
     var dec = deflate_dec_init(d, 8);
     assert(dec != 0, "empty rt dec_init");
-    assert(deflate_dec_write(dec, c, clen) == 0, "empty rt dec_write");
+    assert(deflate_dec_write(dec, c, clen) >= 0, "empty rt dec_write");
     var n = deflate_dec_finish(dec);
     assert(n == 0, "empty rt dec_finish returns 0");
+    return 0;
+}
+
+# ================================================================
+# 2.3.0 bite-4: streaming zlib + gzip wrappers
+# ================================================================
+
+fn test_zdec_short_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 5, c, 64, 6);
+    assert(clen > 0, "zdec short compress");
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "zdec short init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    assert(rc >= 0, "zdec short write");
+    var n = zlib_dec_finish(ctx);
+    assert(n == 5, "zdec short len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "zdec short content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_level_1_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "zdec L1 compress");
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "zdec L1 init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    assert(rc >= 0, "zdec L1 write");
+    var n = zlib_dec_finish(ctx);
+    assert(n == 5, "zdec L1 len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "zdec L1 content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_byte_at_a_time() {
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 20, c, 64, 6);
+    assert(clen > 0, "zdec BAAT compress");
+
+    var d = alloc(32);
+    var ctx = zlib_dec_init(d, 32);
+    assert(ctx != 0, "zdec BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(zlib_dec_write(ctx, c + i, 1) >= 0, "zdec BAAT write");
+        i = i + 1;
+    }
+    var n = zlib_dec_finish(ctx);
+    assert(n == 20, "zdec BAAT len");
+    i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "zdec BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_1kb_chunked() {
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = zlib_compress_level(src, 1024, c, 2048, 6);
+    assert(clen > 0, "zdec 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = zlib_dec_init(d, 1024);
+    assert(ctx != 0, "zdec 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 16;
+        if (off + step > clen) { step = clen - off; }
+        assert(zlib_dec_write(ctx, c + off, step) >= 0, "zdec 1kb chunk");
+        off = off + step;
+    }
+    var n = zlib_dec_finish(ctx);
+    assert(n == 1024, "zdec 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "zdec 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_bad_fcheck() {
+    # Hand-crafted: CMF=0x78, FLG=0x02 → (0x78*256 + 0x02) % 31 = 1, not 0.
+    var src = alloc(8);
+    store8(src + 0, 120); store8(src + 1, 2);  # bad FCHECK
+    var dst = alloc(8);
+    var ctx = zlib_dec_init(dst, 8);
+    assert(ctx != 0, "bad FCHECK init");
+    var rc = zlib_dec_write(ctx, src, 2);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad FCHECK rejected");
+    return 0;
+}
+
+fn test_zdec_fdict_rejected() {
+    # Use zlib_enc_init_dict to produce a FDICT-bearing stream; the
+    # bite-4 streaming decoder rejects FDICT with -ERR_UNSUPPORTED_FORMAT.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var dict = alloc(3);
+    store8(dict + 0, 97); store8(dict + 1, 98); store8(dict + 2, 99);
+    var c = alloc(64);
+    var enc = zlib_enc_init_dict(6, c, 64, dict, 3);
+    assert(enc != 0, "FDICT compress init");
+    assert(zlib_enc_write(enc, src, 5) >= 0, "FDICT compress write");
+    var clen = zlib_enc_finish(enc);
+    assert(clen > 0, "FDICT compress finish");
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "FDICT decode init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "FDICT rejected");
+    return 0;
+}
+
+fn test_zdec_bad_trailer() {
+    # Compress, then corrupt the final 4 bytes (Adler-32 trailer).
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 5, c, 64, 6);
+    assert(clen > 5, "bad trailer compress");
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "bad trailer init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad Adler-32 rejected");
+    return 0;
+}
+
+fn test_gdec_short_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 5, c, 64, 6);
+    assert(clen > 0, "gdec short compress");
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "gdec short init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    assert(rc >= 0, "gdec short write");
+    var n = gzip_dec_finish(ctx);
+    assert(n == 5, "gdec short len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "gdec short content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_byte_at_a_time() {
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 20, c, 64, 6);
+    assert(clen > 0, "gdec BAAT compress");
+
+    var d = alloc(32);
+    var ctx = gzip_dec_init(d, 32);
+    assert(ctx != 0, "gdec BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(gzip_dec_write(ctx, c + i, 1) >= 0, "gdec BAAT write");
+        i = i + 1;
+    }
+    var n = gzip_dec_finish(ctx);
+    assert(n == 20, "gdec BAAT len");
+    i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "gdec BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_1kb_chunked() {
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = gzip_compress_level(src, 1024, c, 2048, 6);
+    assert(clen > 0, "gdec 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = gzip_dec_init(d, 1024);
+    assert(ctx != 0, "gdec 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 16;
+        if (off + step > clen) { step = clen - off; }
+        assert(gzip_dec_write(ctx, c + off, step) >= 0, "gdec 1kb chunk");
+        off = off + step;
+    }
+    var n = gzip_dec_finish(ctx);
+    assert(n == 1024, "gdec 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "gdec 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_bad_magic() {
+    var src = alloc(2);
+    store8(src + 0, 30);   # not 0x1F
+    store8(src + 1, 139);
+    var dst = alloc(8);
+    var ctx = gzip_dec_init(dst, 8);
+    assert(ctx != 0, "bad magic init");
+    var rc = gzip_dec_write(ctx, src, 2);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad magic rejected");
+    return 0;
+}
+
+fn test_gdec_reserved_flg() {
+    # LOW-02 (2.1.3): FLG reserved bits 5-7 must be zero.
+    var src = alloc(4);
+    store8(src + 0, 31); store8(src + 1, 139); store8(src + 2, 8);
+    store8(src + 3, 32);  # FLG = 0x20 — reserved bit 5 set
+    var dst = alloc(8);
+    var ctx = gzip_dec_init(dst, 8);
+    assert(ctx != 0, "reserved FLG init");
+    var rc = gzip_dec_write(ctx, src, 4);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "gdec reserved FLG rejected");
+    return 0;
+}
+
+fn test_gdec_bad_crc_trailer() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 5, c, 64, 6);
+    assert(clen > 8, "bad CRC compress");
+    # Trailer is the last 8 bytes; corrupt the CRC-32 (bytes [clen-8..clen-4]).
+    store8(c + clen - 8, load8(c + clen - 8) ^ 1);
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "bad CRC init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad CRC rejected");
+    return 0;
+}
+
+fn test_gdec_bad_isize() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 5, c, 64, 6);
+    assert(clen > 8, "bad ISIZE compress");
+    # ISIZE is bytes [clen-4..clen]; corrupt one of them.
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "bad ISIZE init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad ISIZE rejected");
+    return 0;
+}
+
+fn test_gdec_fname_field() {
+    # Hand-craft a gzip stream with FNAME set: header byte 3 = FLG=8
+    # (FNAME bit), then "myfile\0" before the deflate payload. Splice
+    # against a normal gzip_compress payload for the deflate + trailer.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var base = alloc(64);
+    var baselen = gzip_compress_level(src, 5, base, 64, 6);
+    assert(baselen > 18, "fname base compress");
+
+    # Build modified stream: copy 10-byte header (with FLG=8), insert
+    # "name\0" (5 bytes), then copy the deflate + trailer from baselen-8 onward.
+    var c = alloc(96);
+    var i = 0;
+    while (i < 10) { store8(c + i, load8(base + i)); i = i + 1; }
+    store8(c + 3, 8);                              # FLG = FNAME
+    store8(c + 10, 110); store8(c + 11, 97); store8(c + 12, 109);
+    store8(c + 13, 101); store8(c + 14, 0);        # "name\0"
+    var deflate_off = 10;
+    var deflate_len = baselen - 10;
+    var j = 0;
+    while (j < deflate_len) {
+        store8(c + 15 + j, load8(base + deflate_off + j));
+        j = j + 1;
+    }
+    var clen = 15 + deflate_len;
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "fname decode init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    assert(rc >= 0, "fname decode write");
+    var n = gzip_dec_finish(ctx);
+    assert(n == 5, "fname decode len");
+    i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "fname decode content");
+        i = i + 1;
+    }
     return 0;
 }
 
@@ -2745,6 +3102,23 @@ fn main() {
     test_dec_stream_dynamic_1kb_chunked();
     test_dec_stream_dynamic_levels();
     test_dec_stream_dynamic_hlit_overflow();
+
+    # 2.3.0 bite-4 — streaming zlib + gzip wrappers
+    test_zdec_short_roundtrip();
+    test_zdec_level_1_roundtrip();
+    test_zdec_byte_at_a_time();
+    test_zdec_1kb_chunked();
+    test_zdec_bad_fcheck();
+    test_zdec_fdict_rejected();
+    test_zdec_bad_trailer();
+    test_gdec_short_roundtrip();
+    test_gdec_byte_at_a_time();
+    test_gdec_1kb_chunked();
+    test_gdec_bad_magic();
+    test_gdec_reserved_flg();
+    test_gdec_bad_crc_trailer();
+    test_gdec_bad_isize();
+    test_gdec_fname_field();
 
     var r = assert_summary();
     return r;

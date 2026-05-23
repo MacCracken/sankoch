@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🚧 2.3.0 — true incremental decompression (bites 1-3 of 6 done)
+### 🚧 2.3.0 — true incremental decompression (bites 1-4 of 6 done)
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -459,8 +459,19 @@ opens.
   bite the streaming decoder accepts all 3 DEFLATE block types and
   round-trips against every encoder level 1-9. ctx grew 112 → 160
   bytes.
-- 🎯 **Bite 4** — zlib + gzip wrappers. Incremental Adler-32 /
-  CRC-32; header + trailer parse that may straddle chunks.
+- ✅ **Bite 4 (2026-05-23)** — streaming zlib + gzip wrappers.
+  `zlib_dec_init / write / finish` (no FDICT yet) and
+  `gzip_dec_init / write / finish` (single-member only) wrap the
+  bite-1/2/3 DEFLATE decoder. 4-state zlib machine; 9-state gzip
+  machine covering the full RFC 1952 optional-field surface
+  (FEXTRA / FNAME / FCOMMENT / FHCRC) with the LOW-02
+  reserved-FLG reject preserved. `deflate_dec_write` contract
+  evolved to return bytes-consumed so the wrappers can split each
+  chunk between DEFLATE body and trailer. Bit-accumulator
+  overpull fixed in both wrappers via a `cp -= (ctx.bits >> 3)`
+  rewind when the inner transitions to DONE. 15 new tests
+  (+2,233 assertions). FDICT zlib + concatenated-member gzip
+  scoped to a follow-on 2.3.x patch.
 - 🎯 **Bite 5** — LZ4F multi-block frame; per-block emit.
 - 🎯 **Bite 6** — `stream.cyr` dispatch routes `stream_decompress_init`
   to the appropriate `*_dec_*` for incremental-mode callers.

@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2.3.0 bite-4 — streaming zlib + gzip wrappers
+
+Bite 4 of 6. The streaming raw-DEFLATE decoder (bites 1-3) is now
+wrapped with format envelopes: `zlib_dec_init/write/finish` and
+`gzip_dec_init/write/finish`. After this bite the streaming
+decoder can consume the on-wire formats `zlib_compress` and
+`gzip_compress` emit — making sankoch's streaming decode
+interoperable with git objects (zlib), gzip files, and anything
+else the encoder side produces.
+
+#### API surface — `deflate_dec_write` return contract evolved
+- `deflate_dec_write` now returns **bytes consumed** (0..in_len)
+  on success instead of always 0. Negative still means error.
+  Bite-1/2/3 tests changed from `assert(... == 0)` to
+  `assert(... >= 0)`. This unlocks the wrappers: they can hand
+  `(input, in_len)` to the inner DEFLATE, see exactly how many
+  bytes were consumed, and split the remainder as trailer.
+
+#### Added — `zlib_dec_init / write / finish` (2026-05-23)
+- 9-slot ctx (72 bytes): inner deflate_dec ptr, state, Adler-32
+  state, header parse cursor, FCHECK fields, trailer accumulator,
+  sticky err. Mutex held init → finish via the inner
+  `deflate_dec_init` / `deflate_dec_finish`.
+- 4-state machine: `HEADER` (2 bytes CMF+FLG, validate FCHECK
+  per RFC 1950 §2.2, LOW-01 CINFO > 7 reject preserved, FDICT
+  reject) → `DEFLATE` (forward to inner, incremental Adler-32
+  on output bytes as inner emits them) → `TRAILER` (4 bytes
+  big-endian Adler-32, validate against incremental hash) →
+  `DONE`.
+- **Bite-4 scope deferral**: FDICT-bearing zlib streams return
+  `-ERR_UNSUPPORTED_FORMAT`. Full FDICT streaming would require
+  a `deflate_dec_init_dict` companion plus the dictionary feed,
+  scoped for a follow-on 2.3.x patch.
+
+#### Added — `gzip_dec_init / write / finish` (2026-05-23)
+- 10-slot ctx (80 bytes): inner deflate_dec ptr, state,
+  CRC-32 state, header cursor, parsed FLG, FEXTRA-data remaining
+  counter, trailer index, accumulated CRC + ISIZE, sticky err.
+- **9-state header machine** covers the full RFC 1952 §2 surface:
+  `HDR_FIXED` (10-byte magic+CM+FLG+MTIME+XFL+OS, with magic
+  and CM validation and LOW-02 reserved-FLG-bit reject) →
+  `HDR_FEXTRA_LEN` (if FLG.FEXTRA) → `HDR_FEXTRA_DATA` →
+  `HDR_FNAME` (NUL-terminated, if FLG.FNAME) →
+  `HDR_FCOMMENT` (NUL-terminated, if FLG.FCOMMENT) →
+  `HDR_FHCRC` (2 bytes, consumed but not validated per the
+  carried INFO-01 from 2.1.3) → `DEFLATE` → `TRAILER`
+  (CRC-32 + ISIZE, little-endian, both validated against
+  the incremental hash and inner `dp`) → `DONE`.
+- `_gdec_next_hdr_state(ctx, done_mask)` picks the next header
+  sub-state by walking the on-wire FLG-bit order; the
+  `done_mask` tracks which sub-sections already ran so the
+  function can be reused at every header transition.
+- **Bite-4 scope deferral**: SINGLE-MEMBER streams only.
+  Concatenated gzip members (RFC 1952 §2.2) need a per-member
+  inner-DEFLATE reset and a state for "magic-or-EOF after
+  trailer" — scoped for a follow-on 2.3.x patch alongside FDICT.
+
+#### Critical fix — bit-accumulator overpull
+- The streaming DEFLATE decoder's `_ddec_fill` pulls full
+  bytes from input even when only a few bits are needed. When
+  the inner transitioned to `DDEC_STATE_DONE` mid-byte, it
+  could have a full unused byte still sitting in `ctx.hold` —
+  one byte further than the deflate stream actually extends.
+  The encoder always byte-pads to a boundary at finish
+  (`bw_align`), so the trailer reliably starts at the boundary
+  after the consumed bits.
+- **Fix**: both wrappers rewind `cp` by `(ctx.bits >> 3)` when
+  the inner transitions to DONE. Without this rewind, the
+  trailer position was off by 1 byte and round-trips failed
+  on `n == 5` (decompressed-length match). Caught by the
+  first round-trip tests; fix verified by the full 1,024-byte
+  chunked round-trip on both wrappers.
+
+#### Tests — +2,233 assertions (2026-05-23)
+15 new tests across both wrappers:
+- **zlib**: short round-trip (L6 dynamic); short round-trip (L1
+  fixed); byte-at-a-time chunked (20 bytes); 1KB chunked-16;
+  bad FCHECK reject; FDICT stream reject (built via
+  `zlib_enc_init_dict`); bad Adler-32 trailer reject.
+- **gzip**: short round-trip; byte-at-a-time; 1KB chunked-16;
+  bad magic reject; reserved-FLG-bit reject (LOW-02
+  regression); bad CRC-32 trailer reject; bad ISIZE trailer
+  reject; **`test_gdec_fname_field`** hand-crafts a stream
+  with FLG.FNAME set + "name\0" preceding the deflate payload
+  — exercises the optional-header sub-states.
+
+#### Verified (2026-05-23)
+- `cyrius build` — OK, 0 warnings on library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,034,075 /
+  1,034,075** passed (was 1,031,842 at bite-3; +2,233).
+- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
+  **Total: 1,380,658 assertions** (was 1,378,425 at bite-3).
+- `cyrius fuzz` — 1,649 iterations, all green.
+- `cyrius vet src/lib.cyr` — clean.
+- `cyrius lint` × 4 touched files — 0 warnings each.
+- `cyrfmt --check` — clean on all four touched files (cyrfmt
+  --write applied as needed for continuation indents).
+- Wire format: 38 SIZE lines unchanged — bite-4 touches only
+  the new streaming wrapper paths.
+
 ### 2.3.0 bite-3 — dynamic-Huffman block decode
 
 Bite 3 of 6 — the structurally largest piece of the 2.3.0 arc.

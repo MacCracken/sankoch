@@ -188,6 +188,190 @@ fn zlib_enc_finish(ctx): i64 {
     return pos + 4;   # hdr_len + clen deflate + 4 adler32
 }
 
+# Streaming zlib decoder (bite-4 of the 2.3.0 arc).
+#
+# Wraps deflate_dec_* with the 2-byte zlib header parse and a trailing
+# big-endian Adler-32 verification. Mutex held from `zlib_dec_init` to
+# `zlib_dec_finish` (the lock is taken by the inner deflate_dec_init
+# and released by deflate_dec_finish — same pattern as the encoder).
+#
+# Bite-4 scope: FDICT streams are NOT supported and return
+# `-ERR_UNSUPPORTED_FORMAT` from the header parse. Full FDICT support
+# would require a `deflate_dec_init_dict` analog and is deferred to
+# a follow-on 2.3.x patch release.
+#
+# ctx layout (9 i64 slots = 72 bytes):
+#   +0   inner_dctx       — pointer to deflate_dec ctx (also owns dst)
+#   +8   state            — ZDEC_STATE_*
+#   +16  adler_state      — adler32 incremental state pointer
+#   +24  hdr_idx          — bytes parsed in the 2-byte header (0..2)
+#   +32  hdr_cmf          — parsed CMF byte
+#   +40  hdr_flg          — parsed FLG byte
+#   +48  trailer_idx      — bytes parsed in the 4-byte trailer (0..4)
+#   +56  trailer_value    — big-endian Adler-32 from the trailer
+#   +64  err              — sticky error; 0 = OK
+
+enum ZlibDec {
+    ZDEC_CTX_SIZE = 72;
+    ZDEC_STATE_HEADER = 0;
+    ZDEC_STATE_DEFLATE = 1;
+    ZDEC_STATE_TRAILER = 2;
+    ZDEC_STATE_DONE = 3;
+}
+
+fn _zdec_poison(ctx, code): i64 {
+    store64(ctx + 64, code);
+    return code;
+}
+
+# Start a streaming zlib decoder. Output written into dst[0..dst_cap).
+# Takes _sankoch_mtx (via the inner deflate_dec_init); released only
+# on zlib_dec_finish or on init alloc-failure.
+fn zlib_dec_init(dst, dst_cap): i64 {
+    var inner = deflate_dec_init(dst, dst_cap);
+    if (inner == 0) { return 0; }
+
+    var ctx = _sankoch_alloc(ZDEC_CTX_SIZE);
+    if (ctx == 0) { _sankoch_unlock(); return 0; }
+    var adler_st = adler32_init();
+    if (adler_st == 0) { _sankoch_unlock(); return 0; }
+
+    store64(ctx + 0, inner);
+    store64(ctx + 8, ZDEC_STATE_HEADER);
+    store64(ctx + 16, adler_st);
+    store64(ctx + 24, 0);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, 0);
+    store64(ctx + 48, 0);
+    store64(ctx + 56, 0);
+    store64(ctx + 64, 0);
+    return ctx;
+}
+
+# Feed `in_len` compressed bytes. Drives the header → DEFLATE →
+# trailer state machine; emits decompressed bytes into the dst buffer
+# as the inner DEFLATE decoder produces them, while incrementally
+# hashing them through Adler-32. Returns bytes consumed (0..in_len)
+# on success, or a sticky negative error.
+fn zlib_dec_write(ctx, input, in_len): i64 {
+    if (load64(ctx + 64) < 0) { return load64(ctx + 64); }
+    if (in_len < 0) {
+        return _zdec_poison(ctx, 0 - ERR_INVALID_INPUT);
+    }
+    if (in_len == 0) { return 0; }
+    if (in_len > 0 && input == 0) {
+        return _zdec_poison(ctx, 0 - ERR_INVALID_INPUT);
+    }
+
+    var cp = 0;
+    while (1) {
+        var state = load64(ctx + 8);
+
+        if (state == ZDEC_STATE_DONE) { return cp; }
+
+        if (state == ZDEC_STATE_HEADER) {
+            var hdr_idx = load64(ctx + 24);
+            while (hdr_idx < 2 && cp < in_len) {
+                if (hdr_idx == 0) {
+                    store64(ctx + 32, load8(input + cp));
+                } else {
+                    store64(ctx + 40, load8(input + cp));
+                }
+                cp = cp + 1;
+                hdr_idx = hdr_idx + 1;
+            }
+            store64(ctx + 24, hdr_idx);
+            if (hdr_idx < 2) { return cp; }
+            # Validate the 2-byte header per RFC 1950 §2.2.
+            var cmf = load64(ctx + 32);
+            var flg = load64(ctx + 40);
+            if (((cmf * 256 + flg) % 31) != 0) {
+                return _zdec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+            }
+            if ((cmf & 15) != 8) {
+                return _zdec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            }
+            # LOW-01 (2.1.3): reject CINFO > 7.
+            if (((cmf >> 4) & 15) > 7) {
+                return _zdec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            }
+            # Bite-4: FDICT not yet wired through the streaming path.
+            if ((flg & 32) != 0) {
+                return _zdec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            }
+            store64(ctx + 8, ZDEC_STATE_DEFLATE);
+        } elif (state == ZDEC_STATE_DEFLATE) {
+            var inner = load64(ctx + 0);
+            var inner_state = load64(inner + 24);
+            if (inner_state == DDEC_STATE_DONE) {
+                store64(ctx + 8, ZDEC_STATE_TRAILER);
+            } elif (cp >= in_len) {
+                return cp;
+            } else {
+                var dst_p = load64(inner + 0);
+                var dp_before = load64(inner + 8);
+                var rc = deflate_dec_write(inner, input + cp, in_len - cp);
+                if (rc < 0) { return _zdec_poison(ctx, rc); }
+                var dp_after = load64(inner + 8);
+                if (dp_after > dp_before) {
+                    adler32_update(load64(ctx + 16),
+                    dst_p + dp_before, dp_after - dp_before);
+                }
+                cp = cp + rc;
+                if (load64(inner + 24) == DDEC_STATE_DONE) {
+                    # The bit accumulator's `fill` pulls full bytes from
+                    # input even when only a few bits are needed, so when
+                    # the inner transitioned to DONE it may have pulled
+                    # one byte further than the deflate stream actually
+                    # extends. The encoder's `bw_align` byte-pads the
+                    # tail, so the trailer always starts at the byte
+                    # boundary AFTER the consumed bits — rewind `cp` by
+                    # the count of whole bytes still sitting in `hold`.
+                    var overpull = load64(inner + 40) >> 3;
+                    cp = cp - overpull;
+                    store64(ctx + 8, ZDEC_STATE_TRAILER);
+                } elif (cp >= in_len) {
+                    return cp;
+                }
+            }
+        } elif (state == ZDEC_STATE_TRAILER) {
+            var trailer_idx = load64(ctx + 48);
+            var trailer_val = load64(ctx + 56);
+            while (trailer_idx < 4 && cp < in_len) {
+                trailer_val = (trailer_val << 8) | load8(input + cp);
+                cp = cp + 1;
+                trailer_idx = trailer_idx + 1;
+            }
+            store64(ctx + 48, trailer_idx);
+            store64(ctx + 56, trailer_val);
+            if (trailer_idx < 4) { return cp; }
+            var computed = adler32_final(load64(ctx + 16));
+            if (trailer_val != computed) {
+                return _zdec_poison(ctx, 0 - ERR_CHECKSUM_MISMATCH);
+            }
+            store64(ctx + 8, ZDEC_STATE_DONE);
+            return cp;
+        } else {
+            return _zdec_poison(ctx, 0 - ERR_INVALID_INPUT);
+        }
+    }
+    return cp;
+}
+
+# Finalize the streaming zlib decoder. Returns total decompressed
+# bytes on success, or negative error. Releases _sankoch_mtx via
+# the inner deflate_dec_finish unconditionally.
+fn zlib_dec_finish(ctx): i64 {
+    var inner = load64(ctx + 0);
+    var inner_result = deflate_dec_finish(inner);
+    var zlib_err = load64(ctx + 64);
+    if (zlib_err < 0) { return zlib_err; }
+    if (load64(ctx + 8) != ZDEC_STATE_DONE) {
+        return 0 - ERR_CORRUPT_DATA;
+    }
+    return inner_result;
+}
+
 # Compress data into a zlib stream with explicit compression level.
 fn zlib_compress_level(src, src_len, dst, dst_cap, level): i64 {
     _sankoch_lock();
