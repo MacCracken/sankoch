@@ -509,5 +509,327 @@ fn lz4f_enc_finish(ctx): i64 {
     return dp;
 }
 
-# `lz4f_decompress` (frame decode) lives in src/lz4_decode.cyr — see
-# the note at the top of this file.
+# `lz4f_decompress` (batch frame decode) lives in src/lz4_decode.cyr —
+# see the note at the top of this file. The streaming counterpart
+# `lz4f_dec_init / write / finish` lives below; it sits in lz4.cyr
+# (full profile) because the block-buffering + incremental xxHash32
+# need alloc, which is out of scope for the kernel-safe [lib.core]
+# decode subset.
+
+# Streaming LZ4F decoder (bite-5 of the 2.3.0 arc).
+#
+# LZ4F frame format (RFC-equivalent: github.com/lz4/lz4 frame doc):
+#   magic (4 bytes LE = 0x184D2204) | FLG (1) | BD (1) | optional
+#   content_size (8, if FLG.bit3) | optional dict_id (4, if FLG.bit0)
+#   | HC (1) | blocks... | end_mark (4 zeros) | optional content
+#   checksum (4, if FLG.bit2)
+#
+# Each block:
+#   block_size (4 LE; bit 31 = uncompressed flag) | block_data
+#   (block_size bytes; LZ4 block or raw) | optional block_checksum
+#   (4 LE if FLG.bit4 — NOT supported in bite-5).
+#
+# Bite-5 scope:
+#   - Block-max-ID > 4 (BD bits 4-6 > 4 means 256K/1M/4M blocks) is
+#     rejected with -ERR_UNSUPPORTED_FORMAT; the 64KB ceiling matches
+#     what sankoch's encoder emits today. Lifting this is roadmap
+#     item 2.3.1 (configurable LZ4F block-max).
+#   - Per-block checksum (FLG bit 4) NOT supported in this bite; bite
+#     rejects streams that set it. Sankoch's encoder does not emit it.
+#   - Single-frame only; concatenated frames (RFC-equivalent multi-frame
+#     streams) are NOT supported in the streaming path. Batch
+#     `lz4f_decompress` doesn't support them either (single frame).
+#
+# ctx layout (12 i64 slots = 96 bytes):
+#   +0   state            — LDEC_STATE_*
+#   +8   dst              — output buffer pointer (caller-owned)
+#   +16  dp               — bytes emitted so far
+#   +24  dst_cap          — output buffer capacity
+#   +32  flg              — parsed FLG byte
+#   +40  idx              — multipurpose cursor (header bytes, optional-field
+#                            counter, block-data bytes accumulated, trailer bytes)
+#   +48  acc              — multipurpose accumulator (block_size LE bytes,
+#                            content-checksum LE bytes)
+#   +56  block_buf        — heap, LZ4F_BLOCK_MAX bytes
+#   +64  block_size       — parsed block size (with uncompressed bit cleared)
+#   +72  block_uncomp     — 1 if current block is uncompressed
+#   +80  xxh_state        — incremental xxhash32 state ptr (0 if no content cksum)
+#   +88  err              — sticky error; 0 = OK
+
+enum Lz4fDec {
+    LDEC_CTX_SIZE = 96;
+    LDEC_STATE_MAGIC = 0;            # 4-byte magic
+    LDEC_STATE_FLG = 1;              # 1 byte
+    LDEC_STATE_BD = 2;               # 1 byte
+    LDEC_STATE_CONTENT_SIZE = 3;     # 8 bytes (skipped), only if FLG.bit3
+    LDEC_STATE_DICT_ID = 4;          # 4 bytes (skipped), only if FLG.bit0
+    LDEC_STATE_HC = 5;               # 1 byte (not validated, mirroring batch)
+    LDEC_STATE_BLOCK_SIZE = 6;       # 4 bytes
+    LDEC_STATE_BLOCK_DATA = 7;       # block_size bytes accumulated into block_buf
+    LDEC_STATE_CONTENT_CHECKSUM = 8; # 4 bytes, validated against incremental xxh
+    LDEC_STATE_DONE = 9;
+}
+
+fn _ldec_poison(ctx, code): i64 {
+    store64(ctx + 88, code);
+    return code;
+}
+
+# After HC (and any optional fields), or after a non-zero block's data
+# decompresses to dst, transition to LDEC_STATE_BLOCK_SIZE. Reset idx
+# and acc so the 4-byte block-size accumulator starts fresh.
+fn _ldec_to_block_size(ctx): i64 {
+    store64(ctx + 40, 0);
+    store64(ctx + 48, 0);
+    store64(ctx + 0, LDEC_STATE_BLOCK_SIZE);
+    return 0;
+}
+
+# Advance to the next post-BD state per FLG bits in on-wire order:
+# content_size (bit 3) → dict_id (bit 0) → HC. `done_mask` records
+# which optional sections have already been consumed.
+fn _ldec_after_bd(ctx, done_mask): i64 {
+    var flg = load64(ctx + 32);
+    if ((flg & 8) != 0 && (done_mask & 8) == 0) {
+        store64(ctx + 40, 0);
+        store64(ctx + 0, LDEC_STATE_CONTENT_SIZE);
+    } elif ((flg & 1) != 0 && (done_mask & 1) == 0) {
+        store64(ctx + 40, 0);
+        store64(ctx + 0, LDEC_STATE_DICT_ID);
+    } else {
+        store64(ctx + 40, 0);
+        store64(ctx + 0, LDEC_STATE_HC);
+    }
+    return 0;
+}
+
+fn lz4f_dec_init(dst, dst_cap): i64 {
+    if (dst_cap < 0) { return 0; }
+    if (dst_cap > 0 && dst == 0) { return 0; }
+    _sankoch_lock();
+    var ctx = _sankoch_alloc(LDEC_CTX_SIZE);
+    if (ctx == 0) { _sankoch_unlock(); return 0; }
+    var block_buf = _sankoch_alloc(LZ4F_BLOCK_MAX);
+    if (block_buf == 0) { _sankoch_unlock(); return 0; }
+    var xxh_st = xxhash32_init();
+    if (xxh_st == 0) { _sankoch_unlock(); return 0; }
+
+    store64(ctx + 0, LDEC_STATE_MAGIC);
+    store64(ctx + 8, dst);
+    store64(ctx + 16, 0);
+    store64(ctx + 24, dst_cap);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, 0);
+    store64(ctx + 48, 0);
+    store64(ctx + 56, block_buf);
+    store64(ctx + 64, 0);
+    store64(ctx + 72, 0);
+    store64(ctx + 80, xxh_st);
+    store64(ctx + 88, 0);
+    return ctx;
+}
+
+fn lz4f_dec_write(ctx, input, in_len): i64 {
+    if (load64(ctx + 88) < 0) { return load64(ctx + 88); }
+    if (in_len < 0) {
+        return _ldec_poison(ctx, 0 - ERR_INVALID_INPUT);
+    }
+    if (in_len == 0) { return 0; }
+    if (in_len > 0 && input == 0) {
+        return _ldec_poison(ctx, 0 - ERR_INVALID_INPUT);
+    }
+
+    var cp = 0;
+    while (1) {
+        var state = load64(ctx + 0);
+        if (state == LDEC_STATE_DONE) { return cp; }
+
+        if (state == LDEC_STATE_MAGIC) {
+            var mi = load64(ctx + 40);
+            var macc = load64(ctx + 48);
+            while (mi < 4 && cp < in_len) {
+                macc = macc | (load8(input + cp) << (mi * 8));
+                cp = cp + 1;
+                mi = mi + 1;
+            }
+            store64(ctx + 40, mi);
+            store64(ctx + 48, macc);
+            if (mi < 4) { return cp; }
+            if (macc != LZ4F_MAGIC) {
+                return _ldec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+            }
+            store64(ctx + 40, 0);
+            store64(ctx + 48, 0);
+            store64(ctx + 0, LDEC_STATE_FLG);
+        } elif (state == LDEC_STATE_FLG) {
+            if (cp >= in_len) { return cp; }
+            var fb = load8(input + cp);
+            cp = cp + 1;
+            var ver = (fb >> 6) & 3;
+            if (ver != LZ4F_VERSION) {
+                return _ldec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            }
+            # Per-block checksum (bit 4) not supported in bite-5.
+            if ((fb >> 4) & 1) {
+                return _ldec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            }
+            # Reserved bit 1 must be 0 per spec.
+            if ((fb >> 1) & 1) {
+                return _ldec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+            }
+            store64(ctx + 32, fb);
+            store64(ctx + 0, LDEC_STATE_BD);
+        } elif (state == LDEC_STATE_BD) {
+            if (cp >= in_len) { return cp; }
+            var bdb = load8(input + cp);
+            cp = cp + 1;
+            # Bits 4-6 = block-max ID. Sankoch supports 4 (= 64KB) only
+            # in bite-5; lifting this is roadmap item 2.3.1.
+            var bms = (bdb >> 4) & 7;
+            if (bms != 4) {
+                return _ldec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+            }
+            _ldec_after_bd(ctx, 0);
+        } elif (state == LDEC_STATE_CONTENT_SIZE) {
+            var csi = load64(ctx + 40);
+            var skip = in_len - cp;
+            if (skip > 8 - csi) { skip = 8 - csi; }
+            cp = cp + skip;
+            csi = csi + skip;
+            store64(ctx + 40, csi);
+            if (csi < 8) { return cp; }
+            _ldec_after_bd(ctx, 8);
+        } elif (state == LDEC_STATE_DICT_ID) {
+            var di = load64(ctx + 40);
+            var dskip = in_len - cp;
+            if (dskip > 4 - di) { dskip = 4 - di; }
+            cp = cp + dskip;
+            di = di + dskip;
+            store64(ctx + 40, di);
+            if (di < 4) { return cp; }
+            _ldec_after_bd(ctx, 9);
+        } elif (state == LDEC_STATE_HC) {
+            if (cp >= in_len) { return cp; }
+            cp = cp + 1;
+            _ldec_to_block_size(ctx);
+        } elif (state == LDEC_STATE_BLOCK_SIZE) {
+            var bsi = load64(ctx + 40);
+            var bsacc = load64(ctx + 48);
+            while (bsi < 4 && cp < in_len) {
+                bsacc = bsacc | (load8(input + cp) << (bsi * 8));
+                cp = cp + 1;
+                bsi = bsi + 1;
+            }
+            store64(ctx + 40, bsi);
+            store64(ctx + 48, bsacc);
+            if (bsi < 4) { return cp; }
+            if (bsacc == 0) {
+                # End-mark — frame body complete.
+                if ((load64(ctx + 32) >> 2) & 1) {
+                    store64(ctx + 40, 0);
+                    store64(ctx + 48, 0);
+                    store64(ctx + 0, LDEC_STATE_CONTENT_CHECKSUM);
+                } else {
+                    store64(ctx + 0, LDEC_STATE_DONE);
+                    return cp;
+                }
+            } else {
+                var uncomp = (bsacc >> 31) & 1;
+                var bsv = bsacc & 2147483647;
+                if (bsv > LZ4F_BLOCK_MAX) {
+                    return _ldec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+                }
+                store64(ctx + 64, bsv);
+                store64(ctx + 72, uncomp);
+                store64(ctx + 40, 0);
+                store64(ctx + 0, LDEC_STATE_BLOCK_DATA);
+            }
+        } elif (state == LDEC_STATE_BLOCK_DATA) {
+            var bsv = load64(ctx + 64);
+            var bdi = load64(ctx + 40);
+            var room = bsv - bdi;
+            var bavail = in_len - cp;
+            var take = room;
+            if (take > bavail) { take = bavail; }
+            if (take > 0) {
+                var bbuf = load64(ctx + 56);
+                var bi = 0;
+                while (bi < take) {
+                    store8(bbuf + bdi + bi, load8(input + cp + bi));
+                    bi = bi + 1;
+                }
+                cp = cp + take;
+                bdi = bdi + take;
+                store64(ctx + 40, bdi);
+            }
+            if (bdi < bsv) { return cp; }
+            # Block fully buffered — emit into dst.
+            var dst_b = load64(ctx + 8);
+            var dp_b = load64(ctx + 16);
+            var dst_cap_b = load64(ctx + 24);
+            var emitted = 0;
+            if (load64(ctx + 72) == 1) {
+                # Uncompressed block — raw copy.
+                if (dp_b + bsv > dst_cap_b) {
+                    return _ldec_poison(ctx, 0 - ERR_BUFFER_TOO_SMALL);
+                }
+                if (dp_b + bsv > DECOMPRESS_MAX_OUTPUT) {
+                    return _ldec_poison(ctx, 0 - ERR_OUTPUT_LIMIT);
+                }
+                var bbuf2 = load64(ctx + 56);
+                var ci = 0;
+                while (ci < bsv) {
+                    store8(dst_b + dp_b + ci, load8(bbuf2 + ci));
+                    ci = ci + 1;
+                }
+                emitted = bsv;
+            } else {
+                var dlen = lz4_decompress(load64(ctx + 56), bsv,
+                dst_b + dp_b, dst_cap_b - dp_b);
+                if (dlen < 0) { return _ldec_poison(ctx, dlen); }
+                emitted = dlen;
+            }
+            # Update incremental content checksum on the newly-emitted bytes.
+            if ((load64(ctx + 32) >> 2) & 1) {
+                xxhash32_update(load64(ctx + 80),
+                dst_b + dp_b, emitted);
+            }
+            store64(ctx + 16, dp_b + emitted);
+            _ldec_to_block_size(ctx);
+        } elif (state == LDEC_STATE_CONTENT_CHECKSUM) {
+            var cci = load64(ctx + 40);
+            var ccacc = load64(ctx + 48);
+            while (cci < 4 && cp < in_len) {
+                ccacc = ccacc | (load8(input + cp) << (cci * 8));
+                cp = cp + 1;
+                cci = cci + 1;
+            }
+            store64(ctx + 40, cci);
+            store64(ctx + 48, ccacc);
+            if (cci < 4) { return cp; }
+            var computed_cc = xxhash32_final(load64(ctx + 80));
+            if (ccacc != computed_cc) {
+                return _ldec_poison(ctx, 0 - ERR_CHECKSUM_MISMATCH);
+            }
+            store64(ctx + 0, LDEC_STATE_DONE);
+            return cp;
+        } else {
+            return _ldec_poison(ctx, 0 - ERR_INVALID_INPUT);
+        }
+    }
+    return cp;
+}
+
+fn lz4f_dec_finish(ctx): i64 {
+    var rc = 0;
+    var err = load64(ctx + 88);
+    if (err < 0) {
+        rc = err;
+    } elif (load64(ctx + 0) != LDEC_STATE_DONE) {
+        rc = 0 - ERR_CORRUPT_DATA;
+    } else {
+        rc = load64(ctx + 16);
+    }
+    _sankoch_unlock();
+    return rc;
+}

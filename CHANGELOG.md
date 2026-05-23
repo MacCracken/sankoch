@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2.3.0 bite-5 — streaming LZ4F decoder
+
+Bite 5 of 6. Streaming counterpart of `lz4f_decompress`. Each LZ4
+block is independent (B.Indep=1, the encoder's setting), so the
+decoder buffers one block at a time into a 64KB workspace and hands
+it to the existing `lz4_decompress` for in-block decode. After this
+bite all four formats sankoch encodes (DEFLATE / zlib / gzip /
+LZ4F) have streaming-decode parity with their batch equivalents.
+
+#### Added — `lz4f_dec_init / write / finish` (2026-05-23)
+- 12-slot ctx (96 bytes): state, dst+dp+cap, parsed FLG, multipurpose
+  cursor/accumulator pair, 64KB block buffer pointer, current
+  block_size + uncompressed flag, incremental xxhash32 state, sticky
+  err. Mutex held init → finish.
+- **10-state machine** covers the full LZ4F frame surface:
+  `MAGIC` (4 bytes LE) → `FLG` (1 byte: version validate, bit-4
+  block-checksum reject, bit-1 reserved reject) → `BD` (1 byte:
+  bits 4-6 = block-max-ID, only 4 accepted for now) →
+  `CONTENT_SIZE` (8 bytes, skipped, if FLG.bit3) → `DICT_ID`
+  (4 bytes, skipped, if FLG.bit0) → `HC` (1 byte, consumed but
+  not validated — mirrors batch) → `BLOCK_SIZE` (4 bytes LE; high
+  bit = uncompressed flag; size 0 marks end-mark) → `BLOCK_DATA`
+  (accumulate block_size bytes into the 64KB workspace, then hand
+  to `lz4_decompress` or memcpy if uncompressed; update content
+  checksum on emitted output) → `CONTENT_CHECKSUM` (4 bytes LE,
+  validate against `xxhash32_final`, if FLG.bit2) → `DONE`.
+- `_ldec_after_bd(ctx, done_mask)` walks the post-BD optional-field
+  chain (CONTENT_SIZE → DICT_ID → HC), mirroring the gzip pattern.
+- `_ldec_to_block_size(ctx)` cleanly resets the `idx`/`acc` cursor
+  pair before each block-size accumulator runs.
+
+#### Bite-5 deferrals (documented in `src/lz4.cyr`)
+- **BD > 4** (256K / 1M / 4M blocks): the per-stream block-buffer
+  size is fixed at LZ4F_BLOCK_MAX = 64KB to match what sankoch's
+  encoder emits. Larger BD values return
+  `-ERR_UNSUPPORTED_FORMAT`. Lifting this is roadmap item **2.3.1
+  (configurable LZ4F block-max size)** — once the encoder learns
+  to emit larger blocks, the streaming decoder can size its
+  workspace based on the parsed BD byte.
+- **Block-checksum (FLG bit 4)** NOT supported in bite-5; the
+  encoder doesn't emit it. Streams that set it return
+  `-ERR_UNSUPPORTED_FORMAT`.
+- **Concatenated frames** (multiple frames in one stream): NOT
+  supported, mirroring the batch `lz4f_decompress` posture.
+
+#### Tests — +9 cases, +327,774 assertions (2026-05-23)
+Most of the assertion growth comes from per-byte content-loop checks
+on the 64K and 128K round-trips (65,536 + 131,072 + 131,072 ≈ 328K
+inner assertions across the three large-payload tests):
+- `test_ldec_short_roundtrip` — "Hello" round-trip via
+  `lz4f_compress` → `lz4f_dec_*`.
+- `test_ldec_byte_at_a_time` — same, 20 bytes input, fed one byte
+  per `dec_write`. Exercises suspension at every header / block-
+  size / block-data / trailer boundary.
+- `test_ldec_64kb_single_block` — exactly `LZ4F_BLOCK_MAX` bytes;
+  one full block + end-mark.
+- `test_ldec_128kb_multi_block` — 128 KB → 2 blocks; tests the
+  back-to-back BLOCK_SIZE → BLOCK_DATA → BLOCK_SIZE transitions
+  with 256-byte input chunks (heavy suspension).
+- `test_ldec_uncompressed_block_roundtrip` — 128 KB of LCG-derived
+  high-entropy bytes; the encoder's per-chunk fallback emits
+  uncompressed blocks (the "compressed size > raw size" case).
+  Tests the BLOCK_DATA uncompressed-copy path.
+- `test_ldec_bad_magic` — bad first byte rejected.
+- `test_ldec_bad_version` — FLG with version=0 rejected.
+- `test_ldec_bd_too_large_rejected` — BD = 0x50 (256K blocks)
+  rejected per the bite-5 64KB ceiling.
+- `test_ldec_bad_content_checksum` — flipped trailer byte rejected
+  by the incremental xxhash32 validation.
+
+#### Verified (2026-05-23)
+- `cyrius build` — OK, 0 warnings on library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,361,849 / 1,361,849**
+  passed (was 1,034,075 at bite-4; +327,774).
+- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
+  **Total: 1,708,432 assertions** (was 1,380,658 at bite-4).
+- `cyrius fuzz` — 1,649 iterations, all green.
+- `cyrius vet src/lib.cyr` — clean.
+- `cyrius lint src/lz4.cyr` + `tests/tcyr/sankoch.tcyr` — 0
+  warnings each.
+- `cyrfmt --check` — clean on both touched files (continuation-
+  indent drift applied via `--write`).
+- Wire format: 38 SIZE lines unchanged.
+
 ### 2.3.0 bite-4 — streaming zlib + gzip wrappers
 
 Bite 4 of 6. The streaming raw-DEFLATE decoder (bites 1-3) is now

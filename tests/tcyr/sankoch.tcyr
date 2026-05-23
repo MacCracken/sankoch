@@ -2934,6 +2934,212 @@ fn test_gdec_fname_field() {
 }
 
 # ================================================================
+# 2.3.0 bite-5: streaming LZ4F decoder
+# ================================================================
+
+fn test_ldec_short_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = lz4f_compress(src, 5, c, 64);
+    assert(clen > 0, "ldec short compress");
+
+    var d = alloc(16);
+    var ctx = lz4f_dec_init(d, 16);
+    assert(ctx != 0, "ldec short init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "ldec short write");
+    var n = lz4f_dec_finish(ctx);
+    assert(n == 5, "ldec short len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "ldec short content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_ldec_byte_at_a_time() {
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = lz4f_compress(src, 20, c, 64);
+    assert(clen > 0, "ldec BAAT compress");
+
+    var d = alloc(32);
+    var ctx = lz4f_dec_init(d, 32);
+    assert(ctx != 0, "ldec BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(lz4f_dec_write(ctx, c + i, 1) >= 0, "ldec BAAT write");
+        i = i + 1;
+    }
+    var n = lz4f_dec_finish(ctx);
+    assert(n == 20, "ldec BAAT len");
+    i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "ldec BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_ldec_64kb_single_block() {
+    # Exactly LZ4F_BLOCK_MAX bytes — exercises the block-boundary
+    # transition (block fully buffered, next block follows).
+    var src = alloc(65536);
+    var k = 0;
+    while (k < 65536) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(131072);
+    var clen = lz4f_compress(src, 65536, c, 131072);
+    assert(clen > 0, "ldec 64K compress");
+
+    var d = alloc(65536);
+    var ctx = lz4f_dec_init(d, 65536);
+    assert(ctx != 0, "ldec 64K init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "ldec 64K write");
+    var n = lz4f_dec_finish(ctx);
+    assert(n == 65536, "ldec 64K len");
+    var i = 0;
+    while (i < 65536) {
+        assert(load8(d + i) == load8(src + i), "ldec 64K content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_ldec_128kb_multi_block() {
+    # 128 KB input → 2 blocks per the encoder's 64KB chunking. Tests
+    # the back-to-back BLOCK_SIZE → BLOCK_DATA → BLOCK_SIZE transitions.
+    var src = alloc(131072);
+    var k = 0;
+    while (k < 131072) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(262144);
+    var clen = lz4f_compress(src, 131072, c, 262144);
+    assert(clen > 0, "ldec 128K compress");
+
+    var d = alloc(131072);
+    var ctx = lz4f_dec_init(d, 131072);
+    assert(ctx != 0, "ldec 128K init");
+    var off = 0;
+    while (off < clen) {
+        var step = 256;
+        if (off + step > clen) { step = clen - off; }
+        assert(lz4f_dec_write(ctx, c + off, step) >= 0, "ldec 128K chunk");
+        off = off + step;
+    }
+    var n = lz4f_dec_finish(ctx);
+    assert(n == 131072, "ldec 128K len");
+    var i = 0;
+    while (i < 131072) {
+        assert(load8(d + i) == load8(src + i), "ldec 128K content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_ldec_uncompressed_block_roundtrip() {
+    # 128 KB of high-entropy bytes — encoder emits uncompressed blocks
+    # (lz4f's per-chunk fallback when the compressed size would exceed
+    # the raw input). Tests the BLOCK_DATA uncompressed path.
+    var src = alloc(131072);
+    var seed = 0x9E3779B1;
+    var k = 0;
+    while (k < 131072) {
+        seed = (seed * 1664525 + 1013904223) & 4294967295;
+        store8(src + k, seed & 255);
+        k = k + 1;
+    }
+    var c = alloc(262144);
+    var clen = lz4f_compress(src, 131072, c, 262144);
+    assert(clen > 0, "ldec uncomp compress");
+
+    var d = alloc(131072);
+    var ctx = lz4f_dec_init(d, 131072);
+    assert(ctx != 0, "ldec uncomp init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "ldec uncomp write");
+    var n = lz4f_dec_finish(ctx);
+    assert(n == 131072, "ldec uncomp len");
+    var i = 0;
+    while (i < 131072) {
+        assert(load8(d + i) == load8(src + i), "ldec uncomp content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_ldec_bad_magic() {
+    var src = alloc(4);
+    store8(src + 0, 5); store8(src + 1, 34); store8(src + 2, 77); store8(src + 3, 24);
+    var dst = alloc(8);
+    var ctx = lz4f_dec_init(dst, 8);
+    assert(ctx != 0, "ldec bad magic init");
+    var rc = lz4f_dec_write(ctx, src, 4);
+    var fin = lz4f_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "ldec bad magic rejected");
+    return 0;
+}
+
+fn test_ldec_bad_version() {
+    # Magic + FLG with version field = 0 (must be 1). Build a stream
+    # with FLG bits 6-7 = 00 → byte 0x04.
+    var src = alloc(5);
+    store8(src + 0, 4); store8(src + 1, 34); store8(src + 2, 77); store8(src + 3, 24);
+    store8(src + 4, 4);   # FLG: version=0
+    var dst = alloc(8);
+    var ctx = lz4f_dec_init(dst, 8);
+    assert(ctx != 0, "ldec bad version init");
+    var rc = lz4f_dec_write(ctx, src, 5);
+    var fin = lz4f_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "ldec bad version rejected");
+    return 0;
+}
+
+fn test_ldec_bd_too_large_rejected() {
+    # BD = 0x50 → block-max-ID = 5 (256K), which bite-5 doesn't support.
+    var src = alloc(6);
+    store8(src + 0, 4); store8(src + 1, 34); store8(src + 2, 77); store8(src + 3, 24);
+    store8(src + 4, 100);   # FLG = sankoch-style (version=1, content cksum on)
+    store8(src + 5, 80);    # BD = 0x50 → 256K blocks, rejected
+    var dst = alloc(8);
+    var ctx = lz4f_dec_init(dst, 8);
+    assert(ctx != 0, "ldec BD too large init");
+    var rc = lz4f_dec_write(ctx, src, 6);
+    var fin = lz4f_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "ldec BD > 4 rejected");
+    return 0;
+}
+
+fn test_ldec_bad_content_checksum() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = lz4f_compress(src, 5, c, 64);
+    assert(clen > 4, "ldec bad cc compress");
+    # Trailer (last 4 bytes) is the content checksum; flip a bit.
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+
+    var d = alloc(16);
+    var ctx = lz4f_dec_init(d, 16);
+    assert(ctx != 0, "ldec bad cc init");
+    var rc = lz4f_dec_write(ctx, c, clen);
+    var fin = lz4f_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "ldec bad content checksum rejected");
+    return 0;
+}
+
+# ================================================================
 # main
 # ================================================================
 
@@ -3119,6 +3325,17 @@ fn main() {
     test_gdec_bad_crc_trailer();
     test_gdec_bad_isize();
     test_gdec_fname_field();
+
+    # 2.3.0 bite-5 — streaming LZ4F decoder
+    test_ldec_short_roundtrip();
+    test_ldec_byte_at_a_time();
+    test_ldec_64kb_single_block();
+    test_ldec_128kb_multi_block();
+    test_ldec_uncompressed_block_roundtrip();
+    test_ldec_bad_magic();
+    test_ldec_bad_version();
+    test_ldec_bd_too_large_rejected();
+    test_ldec_bad_content_checksum();
 
     var r = assert_summary();
     return r;

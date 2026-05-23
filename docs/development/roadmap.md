@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🚧 2.3.0 — true incremental decompression (bites 1-4 of 6 done)
+### 🚧 2.3.0 — true incremental decompression (bites 1-5 of 6 done)
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -472,7 +472,17 @@ opens.
   rewind when the inner transitions to DONE. 15 new tests
   (+2,233 assertions). FDICT zlib + concatenated-member gzip
   scoped to a follow-on 2.3.x patch.
-- 🎯 **Bite 5** — LZ4F multi-block frame; per-block emit.
+- ✅ **Bite 5 (2026-05-23)** — streaming LZ4F decoder. 10-state
+  frame parser (magic / FLG / BD / optional content-size / optional
+  dict-id / HC / block-size / block-data / content-checksum / done)
+  with `_ldec_after_bd` walking the optional-field chain. Each
+  block is buffered into a 64KB workspace and handed to the
+  existing `lz4_decompress`. Incremental xxhash32 validates the
+  optional content checksum. 9 new tests including a 128KB
+  multi-block + an uncompressed-block round-trip (+327,774
+  assertions, mostly per-byte content-loops). BD > 4 (block-max >
+  64K), FLG bit-4 block checksums, and concatenated frames
+  deferred to 2.3.1 / a follow-on patch.
 - 🎯 **Bite 6** — `stream.cyr` dispatch routes `stream_decompress_init`
   to the appropriate `*_dec_*` for incremental-mode callers.
 
