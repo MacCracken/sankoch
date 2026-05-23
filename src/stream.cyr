@@ -6,9 +6,16 @@
 # is never fully buffered, so inputs larger than available memory work
 # fine as long as dst_cap holds the compressed stream.
 #
-# Decompression side (pre-1.7.0 model, still buffered): accumulates
-# compressed input in a growable buffer and calls the batch decompressor
-# on finish. True incremental decompression is future work.
+# Decompression side (two modes, both shipped):
+#   - Legacy buffered (pre-1.7.0 model): `stream_decompress_init(format)`
+#     accumulates compressed input in a growable buffer and calls the
+#     batch decompressor at finish. Same API as before; no change.
+#   - Incremental (bite-6 of 2.3.0): `stream_decompress_init_inc(format,
+#     dst, dst_cap)` dispatches to the per-format streaming decoders
+#     (deflate_dec_*, zlib_dec_*, gzip_dec_*, lz4f_dec_*). Output bytes
+#     are emitted into dst as each stream_write chunk is consumed; no
+#     input buffering. Use this when the compressed input is larger
+#     than memory or arrives over a slow channel.
 #
 # Usage (compress):
 #   var ctx = stream_compress_init(FORMAT_GZIP, 6, dst, dst_cap)
@@ -16,24 +23,32 @@
 #   stream_write(ctx, chunk2, len2)
 #   var total = stream_compress_finish(ctx)
 #
-# Usage (decompress — unchanged from pre-1.7.0):
+# Usage (decompress — buffered):
 #   var ctx = stream_decompress_init(FORMAT_GZIP)
 #   stream_write(ctx, compressed_data, compressed_len)
 #   var result_len = stream_decompress_finish(ctx, out_buf, out_cap)
+#
+# Usage (decompress — incremental):
+#   var ctx = stream_decompress_init_inc(FORMAT_GZIP, out_buf, out_cap)
+#   stream_write(ctx, chunk1, len1)   # output written into out_buf as decoded
+#   stream_write(ctx, chunk2, len2)
+#   var result_len = stream_decompress_finish_inc(ctx)
 
 # Context layout (48 bytes):
 #   +0:  format
 #   +8:  level (compress only)
-#   +16: mode (0 = compress, 1 = decompress)
-#   +24: compress → inner encoder ctx pointer
-#        decompress → input buffer pointer
-#   +32: decompress only → input buffer capacity
-#   +40: decompress only → input buffer bytes written
+#   +16: mode (0 = compress, 1 = decompress buffered, 2 = decompress incremental)
+#   +24: compress       → inner encoder ctx pointer
+#        decompress buf → input buffer pointer
+#        decompress inc → inner streaming decoder ctx pointer
+#   +32: decompress buffered only → input buffer capacity
+#   +40: decompress buffered only → input buffer bytes written
 
 enum Stream {
     STREAM_COMPRESS = 0;
     STREAM_DECOMPRESS = 1;
-    STREAM_INIT_CAP = 65536;   # 64 KB initial buffer (decompress only)
+    STREAM_DECOMPRESS_INC = 2;
+    STREAM_INIT_CAP = 65536;   # 64 KB initial buffer (decompress buffered only)
 }
 
 # --- Compression ---
@@ -93,6 +108,39 @@ fn stream_decompress_init(format): i64 {
     return ctx;
 }
 
+# --- Decompression (incremental — bite 6 of 2.3.0) ---
+
+# Initialize a streaming incremental decoder. Output bytes are written
+# into dst[0..dst_cap) as each stream_write chunk is consumed (no input
+# buffering — caller's input pointer is read directly into the inner
+# decoder's hold accumulator). FORMAT_LZ4 (raw block format) has no
+# streaming decoder; use FORMAT_LZ4F instead. Returns ctx pointer or 0
+# on alloc failure / unsupported format.
+fn stream_decompress_init_inc(format, dst, dst_cap): i64 {
+    var inner = 0;
+    if (format == FORMAT_DEFLATE) {
+        inner = deflate_dec_init(dst, dst_cap);
+    } elif (format == FORMAT_ZLIB) {
+        inner = zlib_dec_init(dst, dst_cap);
+    } elif (format == FORMAT_GZIP) {
+        inner = gzip_dec_init(dst, dst_cap);
+    } elif (format == FORMAT_LZ4F) {
+        inner = lz4f_dec_init(dst, dst_cap);
+    } else {
+        return 0;   # FORMAT_LZ4 raw block or unknown — no streaming path
+    }
+    if (inner == 0) { return 0; }
+
+    var ctx = alloc(48);
+    store64(ctx, format);
+    store64(ctx + 8, 0);
+    store64(ctx + 16, STREAM_DECOMPRESS_INC);
+    store64(ctx + 24, inner);
+    store64(ctx + 32, 0);
+    store64(ctx + 40, 0);
+    return ctx;
+}
+
 # --- Shared write dispatch ---
 
 fn stream_write(ctx, data, len): i64 {
@@ -108,7 +156,26 @@ fn stream_write(ctx, data, len): i64 {
         return 0 - ERR_UNSUPPORTED_FORMAT;
     }
 
-    # Decompress mode: buffer input for a batch decompress at finish.
+    if (mode == STREAM_DECOMPRESS_INC) {
+        var format_inc = load64(ctx);
+        var inner_dec = load64(ctx + 24);
+        if (format_inc == FORMAT_DEFLATE) {
+            return deflate_dec_write(inner_dec, data, len);
+        }
+        if (format_inc == FORMAT_ZLIB)    {
+            return zlib_dec_write(inner_dec, data, len);
+        }
+        if (format_inc == FORMAT_GZIP)    {
+            return gzip_dec_write(inner_dec, data, len);
+        }
+        if (format_inc == FORMAT_LZ4F)    {
+            return lz4f_dec_write(inner_dec, data, len);
+        }
+        return 0 - ERR_UNSUPPORTED_FORMAT;
+    }
+
+    # Legacy buffered decompress mode: accumulate input for a batch
+    # decompress at finish.
     var written = load64(ctx + 40);
     var cap = load64(ctx + 32);
     while (written + len > cap) {
@@ -138,7 +205,9 @@ fn stream_compress_finish(ctx): i64 {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
-# Finish streaming decompression: decompress all buffered input into dst.
+# Finish streaming decompression (legacy buffered mode): decompress
+# all accumulated input into dst. Rejects ctxs in COMPRESS or
+# DECOMPRESS_INC mode — those have their own finish functions.
 fn stream_decompress_finish(ctx, dst, dst_cap): i64 {
     if (load64(ctx + 16) != STREAM_DECOMPRESS) { return 0 - ERR_INVALID_INPUT; }
     var format = load64(ctx);
@@ -147,15 +216,34 @@ fn stream_decompress_finish(ctx, dst, dst_cap): i64 {
     return decompress(format, buf, len, dst, dst_cap);
 }
 
-# Return the number of bytes currently buffered (decompress only;
-# compress-side ctx has no input buffer — returns 0).
+# Finish streaming incremental decompression. Returns total decompressed
+# bytes (matches what the per-format `*_dec_finish` would return), or
+# negative error. Releases _sankoch_mtx via the inner finish.
+fn stream_decompress_finish_inc(ctx): i64 {
+    if (load64(ctx + 16) != STREAM_DECOMPRESS_INC) {
+        return 0 - ERR_INVALID_INPUT;
+    }
+    var format = load64(ctx);
+    var inner = load64(ctx + 24);
+    if (format == FORMAT_DEFLATE) { return deflate_dec_finish(inner); }
+    if (format == FORMAT_ZLIB)    { return zlib_dec_finish(inner); }
+    if (format == FORMAT_GZIP)    { return gzip_dec_finish(inner); }
+    if (format == FORMAT_LZ4F)    { return lz4f_dec_finish(inner); }
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}
+
+# Return the number of bytes currently buffered (legacy decompress
+# mode only; compress and incremental-decompress ctxs have no input
+# buffer — return 0).
 fn stream_buffered(ctx): i64 {
     if (load64(ctx + 16) == STREAM_DECOMPRESS) { return load64(ctx + 40); }
     return 0;
 }
 
-# Reset the decompress-side input buffer. No-op on compress contexts
-# (compressor state is append-only and cannot be rewound).
+# Reset the legacy decompress-side input buffer. No-op on compress
+# contexts (compressor state is append-only) and on incremental
+# decompress contexts (the inner streaming decoder has its own state
+# machine and is not resettable mid-stream).
 fn stream_reset(ctx): i64 {
     if (load64(ctx + 16) == STREAM_DECOMPRESS) { store64(ctx + 40, 0); }
     return 0;

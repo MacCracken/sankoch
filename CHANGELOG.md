@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2.3.0 bite-6 — stream.cyr incremental decompress dispatch
+
+Final bite of the 2.3.0 arc. Wires the four per-format streaming
+decoders (`deflate_dec_*`, `zlib_dec_*`, `gzip_dec_*`, `lz4f_dec_*`)
+into `stream.cyr` alongside the existing legacy buffered decompress
+path, so callers can opt into incremental decode via a single
+format-agnostic API. The 2.3.0 release is now ready to cut — all
+six planned bites have landed and every public surface is
+end-to-end exercised.
+
+#### Added — incremental-mode dispatch (2026-05-23)
+- **`stream_decompress_init_inc(format, dst, dst_cap)`** — new
+  init function that takes the output buffer up-front and
+  dispatches to the appropriate `*_dec_init`. Returns a ctx in
+  the new `STREAM_DECOMPRESS_INC` mode (= 2). `FORMAT_LZ4` (raw
+  block, no streaming decoder) returns 0; the other four formats
+  forward to their `_dec_init` cleanly.
+- **`stream_decompress_finish_inc(ctx)`** — finish counterpart
+  for INC-mode ctxs. Returns total decompressed bytes (mirroring
+  `*_dec_finish`'s return contract). Rejects non-INC ctxs with
+  `-ERR_INVALID_INPUT`.
+- **`stream_write` extended** to dispatch on `STREAM_DECOMPRESS_INC`
+  mode, forwarding chunks straight to the inner `*_dec_write`
+  with no input buffering. Existing `STREAM_COMPRESS` and legacy
+  `STREAM_DECOMPRESS` (buffered) dispatch paths unchanged.
+- **`stream_decompress_finish` (legacy)** now rejects INC ctxs
+  with `-ERR_INVALID_INPUT` (was previously also legacy-only by
+  the mode check; behavior unchanged but the error path is now
+  explicitly tested).
+- `stream_buffered` and `stream_reset` documented as no-ops for
+  INC ctxs (the inner streaming decoder owns its own state).
+
+#### No breaking changes
+- Legacy `stream_decompress_init(format)` + `stream_write` (buffer
+  mode) + `stream_decompress_finish(ctx, dst, dst_cap)` unchanged.
+  Existing callers continue to work without modification; the new
+  incremental path is purely additive.
+
+#### Tests — 7 new cases, +86 assertions (2026-05-23)
+- `test_stream_dec_inc_deflate` / `_zlib` / `_gzip` / `_lz4f` —
+  round-trip "Hello" through each format's incremental pathway.
+- `test_stream_dec_inc_byte_at_a_time` — 20-byte gzip stream fed
+  one byte per `stream_write`; verifies the gzip_dec state
+  machine drives correctly through the dispatch layer.
+- `test_stream_dec_inc_raw_lz4_rejected` — `FORMAT_LZ4` (raw
+  block format) returns 0 from init.
+- `test_stream_dec_inc_mode_mismatch` — three negative checks:
+  legacy finish on INC ctx, INC finish on legacy ctx, INC finish
+  on compress ctx — all return `-ERR_INVALID_INPUT`.
+
+#### Verified (2026-05-23)
+- `cyrius build` — OK, 0 warnings on library path.
+- `cyrius test tests/tcyr/sankoch.tcyr` — **1,361,935 /
+  1,361,935** passed (was 1,361,849 at bite-5; +86).
+- `cyrius test tests/tcyr/git_object.tcyr` — 346,583 unchanged.
+  **Total: 1,708,518 assertions** (was 1,708,432 at bite-5).
+- `cyrius fuzz` — 1,649 iterations, all green.
+- `cyrius vet src/lib.cyr` — clean.
+- `cyrius lint src/stream.cyr` + `tests/tcyr/sankoch.tcyr` —
+  0 warnings each.
+- `cyrfmt --check` — clean on both touched files.
+- Wire format: 38 SIZE lines unchanged — bite-6 is pure dispatch
+  plumbing on top of bites 1-5.
+
+#### 2.3.0 release readiness — all six bites landed
+| Bite | What | Status |
+|------|------|--------|
+| 1 | `deflate_dec_*` stored blocks + state-machine scaffold | ✅ shipped |
+| 2 | Fixed-Huffman decode (+ bridge helper, phantom-decode guard) | ✅ shipped |
+| 3 | Dynamic-Huffman decode (6 new states) | ✅ shipped |
+| 4 | `zlib_dec_*` + `gzip_dec_*` wrappers (+ overpull rewind) | ✅ shipped |
+| 5 | `lz4f_dec_*` streaming frame decoder | ✅ shipped |
+| 6 | `stream.cyr` incremental dispatch | ✅ shipped |
+
+Ready to cut **2.3.0**. Closeout actions (when the user is ready):
+bump `VERSION` 2.2.7 → 2.3.0, regenerate `dist/sankoch.cyr` +
+`dist/sankoch-core.cyr`, write the 2.3.0 cut entry in `CHANGELOG.md`
+collapsing these six bite entries into a single release header,
+update CLAUDE.md status / line counts, update the roadmap header.
+
 ### 2.3.0 bite-5 — streaming LZ4F decoder
 
 Bite 5 of 6. Streaming counterpart of `lz4f_decompress`. Each LZ4

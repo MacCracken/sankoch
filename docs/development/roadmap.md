@@ -404,7 +404,7 @@ expected unless the audit surfaces something. If a finding wants
 a non-trivial fix, P(-1) calls it out and 2.2.8 picks it up
 before 2.3.0 starts.
 
-### 🚧 2.3.0 — true incremental decompression (bites 1-5 of 6 done)
+### 🚧 2.3.0 — true incremental decompression (all 6 bites done, ready to cut)
 
 Mirrors the 1.7.0 streaming-encoder work on the decode side. Minor
 bump because the new APIs are additive (`<fmt>_dec_init / write /
@@ -483,8 +483,15 @@ opens.
   assertions, mostly per-byte content-loops). BD > 4 (block-max >
   64K), FLG bit-4 block checksums, and concatenated frames
   deferred to 2.3.1 / a follow-on patch.
-- 🎯 **Bite 6** — `stream.cyr` dispatch routes `stream_decompress_init`
-  to the appropriate `*_dec_*` for incremental-mode callers.
+- ✅ **Bite 6 (2026-05-23)** — `stream.cyr` incremental dispatch.
+  New `stream_decompress_init_inc(format, dst, dst_cap)` returns a
+  ctx in the new `STREAM_DECOMPRESS_INC` mode wrapping the
+  appropriate `*_dec_init`. `stream_write` extended to dispatch
+  through the inner `*_dec_write`; `stream_decompress_finish_inc`
+  forwards to the inner finish. Legacy buffered API unchanged
+  (no breaking changes for existing callers). 7 new tests
+  (+86 assertions) including a byte-at-a-time round-trip and
+  mode-mismatch error paths.
 
 ### 🎯 2.3.1 — configurable LZ4F block-max size
 
