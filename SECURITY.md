@@ -38,12 +38,26 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   xxHash32 spec fix shipped in v1.6.1.
 - `docs/audit/2026-04-19-pre-2.0.0.md` — P(-1) before v2.0.0 cut.
   No CRITICAL/HIGH findings; two LOWs fixed in-pass.
+- `docs/audit/2026-05-01-pre-2.2.0.md` — P(-1) for the 2.1.x line.
+  1 HIGH (DEFLATE stored-block source-bounds bypass), 1 MEDIUM
+  (HLIT spec compliance), 2 LOWs (zlib CINFO, gzip reserved FLG)
+  — all fixed in 2.1.3.
+- `docs/audit/2026-05-01-pre-2.3.0.md` — P(-1) closeout for the
+  2.2.x line. Zero HIGH/MEDIUM/LOW findings; three INFOs
+  documented + carried forward.
+- `docs/audit/2026-05-23-pre-2.3.0-redux.md` — P(-1) closeout at
+  2.2.7 against Cyrius 6.0.1, immediately before opening the
+  2.3.0 streaming-decomp arc.
+
+Next periodic audit: **2.3.4 P(-1) closeout** for the 2.3.x line
+(per [`docs/development/roadmap.md`](docs/development/roadmap.md)).
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| 2.0.x   | Yes       |
-| < 2.0.0 | No — upgrade |
+| 2.3.x   | Yes       |
+| 2.2.x   | Security fixes only |
+| < 2.2.0 | No — upgrade |
 
-**Last Updated**: 2026-04-19
+**Last Updated**: 2026-05-23

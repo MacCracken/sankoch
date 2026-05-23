@@ -1,103 +1,56 @@
 # Sankoch — Claude Code Instructions
 
+> **Core rule** (per [first-party-documentation § CLAUDE.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#claudemd)): this file is **preferences, process, and procedures** — durable rules that change rarely. Volatile state (current version, source line counts, test/assertion totals, in-flight slots, consumers, distribution targets) lives in [`docs/development/state.md`](docs/development/state.md), bumped every release. Do not inline state here — inlined state rots within a minor.
+
+---
+
 ## Project Identity
 
-**Sankoch** (Sanskrit: संकोच — contraction, compression) — Lossless
-compression library for AGNOS.
+**Sankoch** (Sanskrit: संकोच — contraction, compression) — Lossless compression library for AGNOS.
 
-- **Type**: Flat library (include-based) + distlib bundle
+- **Type**: Shared library (include-based) + distlib bundle
 - **License**: GPL-3.0-only
-- **Language**: Cyrius (sovereign systems language, compiled by cc5)
-- **Version**: SemVer, version file at `VERSION`
-- **Status**: 2.3.0 (stable) — shipping as `lib/sankoch.cyr` in Cyrius stdlib via the cyrius 5.7.x / 5.8.x / 5.11.x / 6.0.x toolchain releases; kernel-safe `lib/sankoch-core.cyr` ships alongside for AGNOS initrd; aarch64 cross-build is a hard CI/release gate. **True incremental decompression** for DEFLATE / zlib / gzip / LZ4F shipped in 2.3.0 — see `*_dec_init/write/finish` and `stream_decompress_init_inc`
+- **Language**: Cyrius (toolchain pinned in `cyrius.cyml [package].cyrius`)
+- **Version**: `VERSION` at the project root is the source of truth — do not inline the number here
 - **Genesis repo**: [agnosticos](https://github.com/MacCracken/agnosticos)
-- **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md)
+- **Standards**: [First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-standards.md) · [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md)
+- **Shared crates**: [shared-crates.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/planning/shared-crates.md)
 
 ## Goal
 
-Own lossless compression. One library provides LZ4, DEFLATE, zlib, and
-gzip de/compression for everything downstream — ark packages, AGNOS
-initrd, git object reads, shravan/tarang container formats. Zero
-external dependencies, zero C FFI, zero shell-outs to `gzip`.
+Own lossless compression. One library provides LZ4, DEFLATE, zlib, and gzip de/compression for everything downstream — ark packages, AGNOS initrd, git object reads, shravan/tarang container formats. Zero external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
-- **Source**: 6299 lines across 14 domain modules (`src/*.cyr`)
-- **Tests**: **116 distinct test functions** (106 sankoch.tcyr + 10
-  git_object.tcyr) producing **1,375,921 assertions** total
-  (1,029,338 + 346,583). The assertion count is heavily inflated by
-  per-byte round-trip checks on the streaming suites (a single
-  200 KB round-trip contributes 200,000 assertions through one
-  `while (i < 200000) assert(load8(dst+i) == load8(src+i))` loop);
-  recent additions are the 2.0.2 / 2.0.3 cl-tree regression
-  fixtures, the 2.1.3 P(-1) audit-finding regressions, the 2.2.0
-  dict round-trips, and the 2.2.1 alloc-fault-injection tests.
-  Read it as a coverage-DENSITY number, not
-  a coverage-BREADTH number — see
-  `docs/development/cyrius-usage.md` "What 'assertions' means here"
-  before quoting the headline. Plus 1,649 fuzz iterations across 6
-  harnesses (lz4 / deflate batch + 4 streaming +
-  2 tree-shape/skewed-freq); 45+ benchmarks
-- **Dist bundles**: `dist/sankoch.cyr` (full, ~6,326 lines) +
-  `dist/sankoch-core.cyr` (kernel-safe LZ4 decompress, ~315 lines).
-  Both zero deps
-- **Stable**: 2.3.0 — feature set:
-  LZ4 block + multi-block frame with reference-`lz4`-CLI-compatible
-  xxHash32; DEFLATE with adaptive dynamic-block splitting; zlib incl.
-  FDICT; gzip incl. concatenated members; true incremental streaming
-  on BOTH encode AND decode sides across all four formats (DEFLATE,
-  zlib, gzip, LZ4F) via `*_enc_init/write/finish` and
-  `*_dec_init/write/finish` APIs (with `*_enc_init_dict` preset-
-  dictionary variants on the encode side since 2.2.0; FDICT on the
-  streaming decode side is a 2.3.x follow-on); public-API thread
-  safety via the two-tier mutex split
-- **Toolchain**: Cyrius 6.0.1 (`cyrius.cyml: cyrius = "6.0.1"`)
-- **Integration**: will be consumed by future git impl, ark, AGNOS
-  kernel (initrd), shravan, tarang
-- **Distribution**: 2.0.2 landed in Cyrius 5.6.34's stdlib; 2.0.3
-  picked up in Cyrius 5.6.35; 2.1.0 in the 5.6.42 era; 2.1.1 / 2.1.2
-  ship in the Cyrius 5.7.x line. The 2.1.2 cut also publishes
-  `lib/sankoch-core.cyr` alongside `lib/sankoch.cyr` for kernel-side
-  consumers (AGNOS initrd). Consumers
-  import it via `include "lib/sankoch.cyr"` — no separate dependency
-  declaration needed in their `cyrius.cyml`.
+> Volatile state lives in [`docs/development/state.md`](docs/development/state.md) —
+> current version, source lines, test/assertion counts, distlib lines, in-flight
+> slots, recent shipped releases, consumers, distribution targets. Refreshed every
+> release.
+> Historical release narrative lives in [`CHANGELOG.md`](CHANGELOG.md) (per-tag chronology).
+> Forward ladder lives in [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
-## Consumers
+This file (`CLAUDE.md`) is durable rules.
 
-| Consumer             | Uses             | Why                                     |
-|----------------------|------------------|-----------------------------------------|
-| Future git impl      | DEFLATE, zlib    | Git objects are zlib-compressed         |
-| ark                  | LZ4 or DEFLATE   | Package compression                     |
-| AGNOS kernel         | LZ4              | initrd, snapshots                       |
-| shravan / tarang     | DEFLATE, gzip    | Embedded compressed streams             |
-| Any crate            | All              | Replaces zlib FFI / shelling to gzip    |
+## Scaffolding
 
-## Dependencies
-
-- **Cyrius stdlib** — `syscalls`, `string`, `alloc`, `fmt`, `vec`,
-  `fnptr`, `thread`, `assert` (ships with Cyrius >= 6.0.1)
-
-No external deps. No FFI. No libc. Checksums (Adler-32, CRC-32,
-xxHash32) are inline — no sigil dependency for 30-line primitives that
-live inside the compression format specs anyway.
+Project predates `cyrius init` / `cyrius port` — it was originally hand-scaffolded but has since been retrofitted onto the first-party layout. Going forward, new structural elements use the tools; **do not manually create new project structure** beyond what's already in place.
 
 ## Quick Start
 
-See [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md)
-for the full command reference.
-
-At a glance:
-
 ```bash
 cyrius deps                              # resolve stdlib into lib/
-cyrius build src/lib.cyr build/sankoch   # compile-check (library — binary is trivial)
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,338 assertions (most are per-byte round-trip checks; see cyrius-usage.md)
-cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
-cyrius bench tests/bcyr/sankoch.bcyr     # throughput + compressed-size table
-cyrius distlib                           # → dist/sankoch.cyr
+cyrius build src/lib.cyr build/sankoch   # compile-check (library — emitted binary is trivial)
+cyrius test tests/tcyr/sankoch.tcyr      # main test suite
+cyrius test tests/tcyr/git_object.tcyr   # git-object regression suite
+cyrius fuzz                              # all 12 harness functions
+cyrius bench tests/bcyr/sankoch.bcyr     # throughput + SIZE lines
+cyrius distlib                           # → dist/sankoch.cyr (full)
+cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe LZ4 decompress)
 ```
 
-## Architecture
+Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
+
+## Architecture (at a glance)
 
 ```
 src/
@@ -110,164 +63,135 @@ src/
   huffman.cyr      — Huffman build/decode, fixed trees, optimal trees
   lz77.cyr         — Sliding window match-finder + lz77_rebase (for streaming slide)
   lz4_decode.cyr   — LZ4 block + frame decompress + LZ4F enum — kernel-safe   [core]
-  lz4.cyr          — LZ4 block + frame compress + lz4f_enc_*
-  deflate.cyr      — DEFLATE de/compress, adaptive blocks, dict, deflate_enc_* streaming
-  zlib.cyr         — zlib wrapper + FDICT + zlib_enc_*
-  gzip.cyr         — gzip wrapper + concatenated members + gzip_enc_*
-  stream.cyr       — Streaming dispatch (stream_compress_init / write / finish → *_enc_*)
+  lz4.cyr          — LZ4 block + frame compress + lz4f_enc_* + lz4f_dec_*
+  deflate.cyr      — DEFLATE de/compress, adaptive blocks, dict, deflate_enc_* + deflate_dec_*
+  zlib.cyr         — zlib wrapper + FDICT batch + zlib_enc_* + zlib_dec_*
+  gzip.cyr         — gzip wrapper + concatenated batch + gzip_enc_* + gzip_dec_*
+  stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
 programs/
-  core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules, asserts
-                     decompress + xxhash32 still produce correct output
+  core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules
 tests/tcyr/        — test suites (sankoch.tcyr, git_object.tcyr)
 tests/bcyr/        — benchmarks (sankoch.bcyr)
 fuzz/              — fuzz harnesses (lz4, deflate — both wired into CI)
 dist/
-  sankoch.cyr      — full distlib bundle (`cyrius distlib`); ships as lib/sankoch.cyr in Cyrius stdlib
-  sankoch-core.cyr — kernel-safe profile (`cyrius distlib core`); ships as lib/sankoch-core.cyr alongside
+  sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
+  sankoch-core.cyr — kernel-safe profile; ships as lib/sankoch-core.cyr alongside
 cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] modules)
 ```
 
-Modules tagged `[core]` are members of `[lib.core]` — the kernel-safe
-profile consumed by the AGNOS initrd loader. They contain no `alloc()`,
-no syscalls, and no mutex usage.
+Modules tagged `[core]` are members of `[lib.core]` — the kernel-safe profile consumed by the AGNOS initrd loader. They contain no `alloc()`, no syscalls, and no mutex usage.
 
-**Include order matters.** `src/lib.cyr` declares the full chain:
-stdlib first, then domain modules in dependency order. Stdlib includes
-live **only** in `lib.cyr` — never in individual domain modules.
-Domain modules are flat: zero transitive includes, which is what makes
-`cyrius distlib` (strip-include concatenation) produce a compile-clean
-bundle.
+**Include order matters.** `src/lib.cyr` declares the full chain: stdlib first, then domain modules in dependency order. Stdlib includes live **only** in `lib.cyr` — never in individual domain modules. Domain modules are flat: zero transitive includes, which is what makes `cyrius distlib` (strip-include concatenation) produce a compile-clean bundle.
 
-## Key Constraints
-
-- **Zero external deps.** Every bit is in this tree. Adler-32 /
-  CRC-32 are inline — pulling sigil for 30-line functions used in the
-  inner loop is wrong.
-- **All mutable state behind one mutex.** The compression globals
-  (bitreader, bitwriter, hash tables, Huffman tables, symbol buffers)
-  serialize on `_sankoch_lock()` / `_sankoch_unlock()`. No per-call
-  allocation on the hot path.
-- **Integer math only, i64 or fixed-size strings.**
-- **No floating point** — anywhere.
-- **Stack arrays: `var buf[N]` is N bytes, not N×8.** Use `&buf` for
-  `load*`/`store*` addresses. (See
-  [memory/reference_stack_array_addr.md](../../.claude/projects/-home-macro-Repos-sankoch/memory/reference_stack_array_addr.md).)
-- **Bundle gate.** CI regenerates `dist/sankoch.cyr` via
-  `cyrius distlib` and fails if it drifts from the committed file.
-  Don't hand-edit the bundle.
-
-## Development Process
-
-### P(-1): Scaffold Hardening (before any new features)
-
-0. Read CHANGELOG + roadmap — know what was intended
-1. Cleanliness: `cyrius build` (0 warnings for library path),
-   `cyrius lint` (0 warnings), `cyrius fmt --check` diff-clean,
-   `cyrius vet src/lib.cyr` clean
-2. Test sweep: both tcyr suites green, fuzz harnesses green
-3. Benchmark baseline: `cyrius bench tests/bcyr/sankoch.bcyr`
-4. Internal deep review — gaps, optimizations, correctness
-5. External research — RFC errata / zlib / lz4 reference changes
-6. Security audit — `docs/audit/YYYY-MM-DD.md`
-7. Additional tests / benchmarks from findings
-8. Post-review benchmarks — prove the wins
-9. Documentation audit — CLAUDE.md, roadmap, CHANGELOG
-10. Repeat if heavy
-
-### Work Loop (continuous)
-
-1. Work phase — implement algorithm, add tests/benchmarks
-2. Build: `cyrius build src/lib.cyr build/sankoch`
-3. Test: `cyrius test tests/tcyr/sankoch.tcyr` — 0 failures
-4. Benchmark: throughput (MB/s) and ratio for changes in the hot path
-5. Audit: verify against spec (RFC 1951, LZ4 block format)
-6. Documentation — CHANGELOG, roadmap
-7. Version check — `VERSION` and CHANGELOG header in sync
-8. Return to step 1
-
-### Closeout Pass (before every minor/major bump)
-
-1. Full test suite — 0 failures on both tcyr suites
-2. Benchmark run — `cyrius bench`, save CSV
-3. Dead code audit — review `dead:` list from `cyrius build`;
-   unreferenced public functions should be removed or justified
-4. Stale comment sweep — old version refs, outdated TODOs
-5. Security re-scan — `grep sys_system`, unchecked writes, buffer
-   size mismatches
-6. Downstream check — Cyrius stdlib `lib/sankoch.cyr` still matches
-   `dist/sankoch.cyr`
-7. CHANGELOG / roadmap sync — docs reflect current state; `VERSION`,
-   CHANGELOG header, intended git tag all consistent
-8. `cyrius distlib` regenerates `dist/sankoch.cyr` clean
-9. Clean rebuild — `rm -rf build lib && cyrius deps && cyrius build`
-
-### Task Sizing
-
-- **Low/Medium effort**: batch freely — multiple items per cycle
-- **Large effort**: small bites only — break into sub-tasks, verify
-  each before moving on
-- **If unsure**: treat it as large
+Per-file line counts and the current `[core]` total are in [`docs/development/state.md`](docs/development/state.md) and [`docs/development/roadmap.md` § File Summary](docs/development/roadmap.md#file-summary-at-230).
 
 ## Key Principles
 
-- **Correctness is the optimum sovereignty** — wrong compression
-  silently corrupts data. Every DEFLATE round-trip must match a
-  known-good zlib output byte-for-byte
-- **Numbers don't lie** — never claim a performance improvement
-  without before/after benchmark numbers
-- **Own the stack** — zero external dependencies; every byte in this
-  tree
-- **Test after EVERY change**, not after the feature is done
-- **ONE change at a time** — never bundle unrelated changes
-- **Study the RFCs** — RFC 1951 is the DEFLATE bible; read before
-  writing code
-- `cyrius build` / `cyrius test` handle everything — NEVER use raw
-  `cat file | cc5`
+- **Correctness is the optimum sovereignty** — wrong compression silently corrupts data. Every DEFLATE round-trip must match a known-good zlib output byte-for-byte.
+- **Own the stack** — zero external dependencies; every byte in this tree.
+- **Numbers don't lie** — never claim a performance improvement without before/after benchmark numbers.
+- **Test after EVERY change**, not after the feature is done.
+- **ONE change at a time** — never bundle unrelated changes.
+- **Study the RFCs** — RFC 1951 is the DEFLATE bible; read before writing code.
+- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`. The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
 
-## CI / Release
+## Rules (Hard Constraints)
 
-- **Toolchain pin**: `cyrius = "6.0.1"` in `cyrius.cyml`. CI and
-  release both read from the manifest
-- **Tag filter**: release workflow triggers on bare semver tags
-  (`2.0.0`, not `v2.0.0`)
-- **Version-verify gate**: release asserts `VERSION == git tag` before
-  building
-- **Lint gate**: CI runs `cyrius lint` per source; treat warnings as
-  errors
-- **Format gate**: CI runs `cyrius fmt --check`; drift fails the build
-- **No lock gate**: sankoch is stdlib-only (zero git deps), so there is
-  no `cyrius.lock` to verify against. The stdlib pin comes from the
-  toolchain version itself (`cyrius = "6.0.1"` in `cyrius.cyml`)
-- **Dist gate**: CI regenerates `dist/sankoch.cyr` via
-  `cyrius distlib` and fails on drift
-- **Concurrency**: CI uses `cancel-in-progress: true` keyed on
-  workflow + ref
-
-## Key References
-
-- [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md)
-  — toolchain commands, distlib, lint/fmt gates
-- [`docs/development/roadmap.md`](docs/development/roadmap.md)
-  — milestones through v2.0
-- [`docs/sources/compression.md`](docs/sources/compression.md)
-  — RFC citations, algorithm references
-- [`docs/benchmarks/`](docs/benchmarks) — throughput + size history
-- `CHANGELOG.md` — source of truth for all changes
-
-## DO NOT
-
+- **Read the genesis repo's CLAUDE.md first** — [agnosticos/CLAUDE.md](https://github.com/MacCracken/agnosticos/blob/main/CLAUDE.md)
 - **Do not commit or push** — the user handles all git operations
 - **NEVER use `gh` CLI** — use `curl` to the GitHub API if needed
 - Do not add external dependencies — zero-dep is load-bearing
-- Do not depend on sigil for Adler-32 / CRC-32 — they're inline
+- Do not depend on sigil for Adler-32 / CRC-32 / xxHash32 — they're inline (30-line primitives that live inside the compression format specs anyway)
 - Do not implement Zstandard in this crate — it deserves its own
-- Do not skip spec verification — every DEFLATE test must round-trip
-  against known-good zlib output
-- Do not hand-edit `dist/sankoch.cyr` — regenerate with
-  `cyrius distlib`
-- Do not add Cyrius stdlib includes in individual `src/*.cyr` —
-  `src/lib.cyr` owns the whole include chain
-- Do not hardcode toolchain versions in CI YAML — read
-  `cyrius.cyml`
-- Do not add `v` prefix to version tags — use bare semver
+- Do not skip spec verification — every DEFLATE test must round-trip against known-good zlib output
+- Do not hand-edit `dist/sankoch.cyr` or `dist/sankoch-core.cyr` — regenerate with `cyrius distlib` / `cyrius distlib core`
+- Do not add Cyrius stdlib includes in individual `src/*.cyr` — `src/lib.cyr` owns the whole include chain
+- Do not hardcode toolchain versions in CI YAML — read `cyrius.cyml` (`cyrius = "X.Y.Z"` pin is the only source of truth)
+- Do not add `v` prefix to version tags — bare semver only
 - Do not re-vendor stdlib into `src/` — `cyrius deps` manages `lib/`
+- **Build with `cyrius build`, never raw `cat file | cycc`** — the manifest auto-resolves deps and prepends includes
+
+## Key Constraints (load-bearing invariants)
+
+- **All mutable state behind one mutex.** The compression globals (bitreader, bitwriter, hash tables, Huffman tables, symbol buffers) serialize on `_sankoch_lock()` / `_sankoch_unlock()`. No per-call allocation on the hot path.
+- **Integer math only, i64 or fixed-size strings. No floating point — anywhere.**
+- **Stack arrays: `var buf[N]` is N bytes, not N×8.** Use `&buf` for `load*`/`store*` addresses.
+- **Bundle gate.** CI regenerates `dist/sankoch.cyr` via `cyrius distlib` and fails if it drifts from the committed file.
+
+## Process
+
+### P(-1): Scaffold Hardening (before each minor cut)
+
+Run before opening any minor; closes any debt the previous minor accreted. See the latest [`docs/audit/`](docs/audit/) entry for the most recent run's findings.
+
+0. Read CHANGELOG + roadmap — know what was intended.
+1. **Cleanliness gates**: `cyrius build` 0 warnings on library path; `cyrius lint` per source file 0 warnings; `cyrfmt --check` diff-clean across `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean.
+2. **Test sweep**: both tcyr suites green; all fuzz harnesses green.
+3. **Benchmark baseline**: `cyrius bench tests/bcyr/sankoch.bcyr`, save CSV to `docs/benchmarks/YYYY-MM-DD-*.md`.
+4. **Internal deep review** — gaps, optimizations, correctness.
+5. **External research** — RFC errata / zlib / lz4 reference changes since the last audit.
+6. **Security audit** — `docs/audit/YYYY-MM-DD-*.md`.
+7. **Additional tests / benchmarks** from findings.
+8. **Post-review benchmarks** — prove the wins.
+9. **Documentation audit** — CLAUDE.md, roadmap, state.md, CHANGELOG, README, doc-health.
+10. **Repeat if heavy** — keep drilling until clean.
+
+### Work Loop (continuous)
+
+1. Work phase — implement algorithm, add tests/benchmarks.
+2. Build: `cyrius build src/lib.cyr build/sankoch`.
+3. Test: `cyrius test tests/tcyr/sankoch.tcyr` — 0 failures.
+4. Benchmark: throughput (MB/s) and ratio for changes in the hot path.
+5. Audit: verify against spec (RFC 1951, LZ4 block format, etc.).
+6. Documentation — CHANGELOG, roadmap, state.md.
+7. Version check — `VERSION`, `cyrius.cyml` pin, CHANGELOG header in sync.
+8. Return to step 1.
+
+### Closeout Pass (before every minor/major bump)
+
+1. Full test suite — 0 failures on both tcyr suites.
+2. Benchmark run — `cyrius bench`, save CSV; compare against prior closeout.
+3. Dead code audit — review `dead:` list from `cyrius build`; unreferenced public functions should be removed or justified.
+4. Stale comment sweep — old version refs, outdated TODOs.
+5. Security re-scan — `grep sys_system` (must be zero in `src/`), unchecked writes, buffer size mismatches.
+6. Downstream check — Cyrius stdlib `lib/sankoch.cyr` matches `dist/sankoch.cyr`.
+7. CHANGELOG / roadmap / state.md / doc-health sync — docs reflect current state; `VERSION`, `cyrius.cyml` pin, CHANGELOG header, intended git tag all consistent.
+8. `cyrius distlib` + `cyrius distlib core` regenerate cleanly.
+9. Clean rebuild — `rm -rf build lib && cyrius deps && cyrius build`.
+
+### Task Sizing
+
+- **Low/Medium effort**: batch freely — multiple items per cycle.
+- **Large effort**: small bites only — break into sub-tasks, verify each before moving on. The 2.3.0 streaming-decompression arc shipped as 6 sequential bites; that pattern is the template.
+- **If unsure**: treat it as large.
+
+## CI / Release
+
+- **Toolchain pin**: `cyrius = "X.Y.Z"` field in `cyrius.cyml [package]`. CI and release both read this; no hardcoded version strings in YAML.
+- **Tag filter**: release workflow triggers on bare semver tags (`2.0.0`, not `v2.0.0`).
+- **Version-verify gate**: release asserts `VERSION == git tag` before building.
+- **Lint gate**: CI runs `cyrius lint` per source; treat warnings as errors.
+- **Format gate**: CI runs `cyrfmt --check`; drift fails the build.
+- **Dist gate**: CI regenerates `dist/sankoch.cyr` + `dist/sankoch-core.cyr` via `cyrius distlib` and fails on drift.
+- **Kernel-safe tripwire**: CI builds + runs `programs/core_smoke.cyr` linked against the `[lib.core]` modules only.
+- **aarch64 cross-build**: hard gate in both ci.yml and release.yml; expects `cycc_aarch64` in the Cyrius bundle (renamed from `cc5_aarch64` at Cyrius 6.0).
+- **No lock gate**: sankoch is stdlib-only (zero git deps), so there is no `cyrius.lock` to verify against. The stdlib pin comes from the toolchain version itself.
+- **Concurrency**: CI uses `cancel-in-progress: true` keyed on workflow + ref.
+
+## Docs
+
+- [`docs/adr/`](docs/adr/) — architecture decision records. *Why did we choose X over Y?*
+- [`docs/architecture/`](docs/architecture/) — non-obvious constraints and quirks. *What can't I derive from the code alone?*
+- [`docs/guides/`](docs/guides/) — task-oriented how-tos.
+  - [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md) — toolchain commands, distlib, lint/fmt gates.
+- [`docs/development/roadmap.md`](docs/development/roadmap.md) — forward ladder (post-2.3.0); shipped history lives in CHANGELOG.
+- [`docs/development/state.md`](docs/development/state.md) — **live state snapshot, refreshed every release**.
+- [`docs/doc-health.md`](docs/doc-health.md) — fresh / stale / archive ledger across the whole doc tree.
+- [`docs/sources/compression.md`](docs/sources/compression.md) — RFC citations, algorithm references.
+- [`docs/audit/`](docs/audit/) — periodic security audits (timestamped, never refreshed in place).
+- [`docs/benchmarks/`](docs/benchmarks/) — throughput + size history per release.
+- [`CHANGELOG.md`](CHANGELOG.md) — source of truth for all release changes.
+
+New quirks and constraints land in `docs/architecture/` as numbered items (`NNN-kebab-case.md`). New decisions land in `docs/adr/` using [`docs/adr/template.md`](docs/adr/template.md). **Never renumber either series.**
+
+Full doc-tree convention: [first-party-documentation.md](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md).

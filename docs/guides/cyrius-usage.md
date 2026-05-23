@@ -1,8 +1,8 @@
 # Cyrius Usage (sankoch)
 
 Single source of truth for toolchain commands in this repo. Every command
-below is invoked via the `cyrius` frontend — never shell out to `cc5`
-directly.
+below is invoked via the `cyrius` frontend — never shell out to `cycc`
+(or its predecessor names) directly.
 
 ## Prerequisites
 
@@ -33,21 +33,25 @@ compile errors across the full include chain before running tests.
 ### Test
 
 ```bash
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,265 assertions
-cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions (git integration; grew with 2.0.2 / 2.0.3 cl-tree regression fixtures)
+cyrius test tests/tcyr/sankoch.tcyr      # main test suite
+cyrius test tests/tcyr/git_object.tcyr   # git-object regressions (grew with 2.0.2 / 2.0.3 cl-tree fixtures)
 ```
 
 Both tcyr files include `src/lib.cyr` (full chain) + `lib/assert.cyr`.
 No manual stdlib imports — `src/lib.cyr` owns that.
 
+Current test-function and assertion totals live in
+[`../development/state.md`](../development/state.md) — refreshed every
+release. The headline numbers below explain what the assertion count
+*means*, not what it currently *is*.
+
 #### What "assertions" means here (and why the number is so large)
 
-**Assertions ≠ test cases.** At v2.2.0 the two suites contain
-**103 distinct test functions** (93 in `sankoch.tcyr`, 10 in
-`git_object.tcyr`) — the kind of unit you'd usually count as "tests."
-Those 103 functions emit **1,375,848 individual `assert(...)` calls**
-when run, and the second number is what `cyrius test` reports as the
-"passed" count.
+**Assertions ≠ test cases.** The two suites contain a small number of
+distinct test functions — the kind of unit you'd usually count as
+"tests." Those functions emit a much larger number of individual
+`assert(...)` calls when run, and the second number is what
+`cyrius test` reports as the "passed" count.
 
 The headline number is dominated by **per-byte round-trip
 verification**. A streaming round-trip test on a 200 KB input contains
@@ -145,13 +149,17 @@ fails the build.
 ## Release flow
 
 ```bash
-./scripts/version-bump.sh 2.1.1          # updates VERSION
-# edit CHANGELOG.md — add [2.1.1] section with release date
-cyrius distlib                           # regenerate bundle with new version header
-git commit -am "release 2.1.1"
-git tag 2.1.1                            # bare semver, no v prefix
+./scripts/version-bump.sh X.Y.Z          # updates VERSION
+# edit CHANGELOG.md — add [X.Y.Z] section with release date
+cyrius distlib                           # regenerate dist/sankoch.cyr with new version header
+cyrius distlib core                      # regenerate dist/sankoch-core.cyr too
+git commit -am "release X.Y.Z"
+git tag X.Y.Z                            # bare semver, no v prefix
 git push --tags                          # triggers .github/workflows/release.yml
 ```
+
+Update [`docs/development/state.md`](../development/state.md) in the
+same commit — it's the live snapshot CI/consumers read.
 
 The release workflow: runs CI → verifies `VERSION == tag` → builds
 with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates

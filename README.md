@@ -4,7 +4,8 @@
 
 Sovereign lossless compression library written in Cyrius. Zero external
 dependencies. Zero C FFI. Ships as `lib/sankoch.cyr` in the Cyrius
-standard library (landing in the next Cyrius lang release).
+standard library (toolchain pin in [`cyrius.cyml`](cyrius.cyml); current
+release in [`VERSION`](VERSION)).
 
 ## Formats
 
@@ -27,7 +28,7 @@ decompress(format, src, src_len, dst, dst_cap)         -> bytes or -err
 detect_format(src, src_len)                             -> Format or -err
 ```
 
-### Streaming (v1.7.0+, preset-dict v2.2.0+)
+### Streaming encode (v1.7.0+, preset-dict v2.2.0+)
 
 ```cyr
 var ctx = <fmt>_enc_init(level, dst, dst_cap)  # per format, or via stream.cyr
@@ -42,13 +43,29 @@ var total = <fmt>_enc_finish(ctx)              # flush + close
 var ctx = <fmt>_enc_init_dict(level, dst, dst_cap, dict, dict_len)
 ```
 
-Format-agnostic wrappers in `stream.cyr`:
+### Streaming decode (v2.3.0+)
 
 ```cyr
-stream_compress_init(format, level, dst, dst_cap)   -> ctx
-stream_write(ctx, chunk, len)
-stream_compress_finish(ctx)                         -> bytes or -err
+var ctx = <fmt>_dec_init(dst, dst_cap)         # per format
+<fmt>_dec_write(ctx, chunk, len)               # feed compressed input incrementally
+var total = <fmt>_dec_finish(ctx)              # validate trailer, return total bytes
 ```
+
+Output bytes flow into `dst` as compressed input arrives. Available for
+DEFLATE, zlib, gzip, and LZ4F. FDICT zlib + concatenated-member gzip
+streaming are deferred to a 2.3.x patch (see roadmap).
+
+### Format-agnostic dispatch (in `stream.cyr`)
+
+```cyr
+stream_compress_init(format, level, dst, dst_cap)        -> ctx
+stream_decompress_init_inc(format, dst, dst_cap)         -> ctx  # v2.3.0+
+stream_write(ctx, chunk, len)
+stream_compress_finish(ctx)                              -> bytes or -err
+stream_decompress_finish_inc(ctx)                        -> bytes or -err
+```
+
+The legacy buffered `stream_decompress_init(format)` + `stream_decompress_finish(ctx, dst, dst_cap)` path is also still supported.
 
 Incremental Adler-32, CRC-32, and xxHash32 checksum APIs
 (`<name>_init` / `_update` / `_final`) are exposed for callers who
@@ -59,45 +76,43 @@ want to feed their own data streams.
 ```sh
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check
-cyrius test tests/tcyr/sankoch.tcyr      # 1,029,338 assertions
-cyrius test tests/tcyr/git_object.tcyr   #   346,583 assertions
-cyrius fuzz                              # all 6 harnesses, 1,649 iters
+cyrius test tests/tcyr/sankoch.tcyr      # main test suite
+cyrius test tests/tcyr/git_object.tcyr   # git-object regressions
+cyrius fuzz                              # all fuzz harness functions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
-cyrius distlib                           # → dist/sankoch.cyr
+cyrius distlib                           # → dist/sankoch.cyr (full)
+cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe)
 ```
 
-Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md).
+Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
+Current test / assertion / line totals live in [`docs/development/state.md`](docs/development/state.md).
 
 ## Architecture
 
-| File          | Lines | Role |
-|---------------|------:|------|
-| types.cyr     |    37 | Enums: formats, errors, limits, magic bytes |
-| checksum.cyr  |   508 | Adler-32, CRC-32, xxHash32 — batch + incremental |
-| bitreader.cyr |    99 | LSB-first bit-stream reader |
-| bitwriter.cyr |   143 | LSB-first bit-stream writer |
-| huffman.cyr   |   661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes |
-| lz77.cyr      |   161 | Sliding window match-finder, 8-byte word-compare match extend, rebase |
-| lz4.cyr       |   647 | LZ4 block + frame de/compress + streaming enc |
-| deflate.cyr   |  1600 | DEFLATE de/compress, adaptive blocks, streaming enc, dict |
-| zlib.cyr      |   169 | RFC 1950 wrapper + FDICT + streaming enc |
-| gzip.cyr      |   237 | RFC 1952 wrapper + concatenated members + streaming enc |
-| stream.cyr    |   162 | Streaming dispatch |
-| lib.cyr       |   150 | Include chain + public API + thread safety |
+| File           | Role                                                                                  | Profile |
+|----------------|---------------------------------------------------------------------------------------|---------|
+| types.cyr      | Enums: formats, errors, limits, magic bytes                                            | core    |
+| xxhash32.cyr   | xxHash32 batch (helpers + enum)                                                        | core    |
+| lz4_decode.cyr | LZ4 block + frame decompress + LZ4F enum                                               | core    |
+| checksum.cyr   | Adler-32, CRC-32, xxHash32 incremental state APIs (alloc-using)                        | full    |
+| bitreader.cyr  | LSB-first bit-stream reader                                                            | full    |
+| bitwriter.cyr  | LSB-first bit-stream writer                                                            | full    |
+| huffman.cyr    | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes                | full    |
+| lz77.cyr       | Sliding window match-finder, 8-byte word-compare match extend, rebase                  | full    |
+| lz4.cyr        | LZ4 block + frame compress + `lz4f_enc_*` + `lz4f_dec_*` streaming                     | full    |
+| deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict          | full    |
+| zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming                 | full    |
+| gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming          | full    |
+| stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
+| lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch                    | full    |
 
-**4,675 lines** of Cyrius. **116 test functions emitting 1,375,921
-assertions** across 2 test suites — most of the assertion count is
-per-byte round-trip verification on multi-KB streaming inputs, not
-distinct scenarios; see
-[`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
-for what the number actually measures. Plus **1,649 fuzz iterations**
-across 6 harnesses. Distlib: `dist/sankoch.cyr` at 4,824 lines (full)
-+ `dist/sankoch-core.cyr` at 315 lines (kernel-safe LZ4 decompress).
-Zero deps in either profile.
+`core` modules form the `[lib.core]` profile → `dist/sankoch-core.cyr` (kernel-safe LZ4 batch decompress; no `alloc`, no syscalls, no mutex). Verified by `programs/core_smoke.cyr` (a CI tripwire that links only the core subset and asserts decompress still works).
+
+Per-file line counts, test totals, and distlib sizes for the current release live in [`docs/development/state.md`](docs/development/state.md). Most of sankoch's headline assertion count is per-byte round-trip verification on multi-KB streaming inputs — see [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large) for what the number actually measures.
 
 ## Toolchain
 
-Cyrius 6.0.1 (pinned in `cyrius.cyml`).
+Cyrius — pinned in [`cyrius.cyml [package].cyrius`](cyrius.cyml). CI and release both read the pin from the manifest.
 
 ## Why
 

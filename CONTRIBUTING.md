@@ -1,6 +1,6 @@
 # Contributing to Sankoch
 
-See [AGNOS First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/applications/first-party-standards.md) for full development conventions.
+See [AGNOS First-Party Standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-standards.md) and [First-Party Documentation](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md) for full development and documentation conventions.
 
 ## Quick Start
 
@@ -12,7 +12,7 @@ cyrius fuzz                            # both fuzz harnesses
 cyrius bench tests/bcyr/sankoch.bcyr   # throughput + SIZE lines
 ```
 
-Full command reference: [`docs/development/cyrius-usage.md`](docs/development/cyrius-usage.md).
+Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md). Five-minute clone-to-built quickstart: [`docs/guides/getting-started.md`](docs/guides/getting-started.md).
 
 ## Key Rules
 
