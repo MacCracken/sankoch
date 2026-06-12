@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-06-12
+
+**cyrius pin `6.0.1` → `6.2.1` (ecosystem-wide stdlib pin sweep).** No source
+changes — sankoch's `[deps]` (syscalls/string/alloc/fmt/vec/fnptr/thread/assert)
+contains no carved-out modules, so it builds clean against the 6.2.1 snapshot.
+
+### Changed
+
+- **cyrius pin → 6.2.1.** Verified green on 6.2.1: `cyrius deps` resolves
+  cleanly, full `.tcyr` suite passes (1,361,935 assertions), bench 2/2,
+  `dist/sankoch.cyr` + `dist/sankoch-core.cyr` regenerated via `cyrius distlib`.
+
 ## [2.3.0] — 2026-05-23
 
 **True incremental decompression — closes the streaming arc opened
