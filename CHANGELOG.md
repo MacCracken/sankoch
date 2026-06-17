@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.5] — 2026-06-16
+
+**gzip streaming-decode hardening: FHCRC verify + concatenated members.**
+Two decode-only correctness/capability additions to the streaming gzip
+decoder (batch was already correct on both). Wire-format identical — all
+43 SIZE lines unchanged.
+
+### Added
+
+- **gzip FHCRC verification** (closes INFO-01, carried from 2.1.3). Both
+  the batch (`_gzip_decompress_member`) and streaming (`gzip_dec_write`)
+  decoders now validate the optional 2-byte header CRC when FLG bit 1 is
+  set, instead of skipping it. The streaming path folds header bytes into
+  an incremental CRC-32 as they are parsed and checks the low 16 bits at
+  the FHCRC field. **Spec correction:** RFC 1952 §2.3.1.2 defines FHCRC
+  as the low 2 bytes of the **CRC-32** of the header — *not* CRC-16-IBM
+  as the roadmap item supposed. Verified against reference `gunzip`
+  (which reports "header checksum … != computed checksum" on a corrupted
+  FHCRC). sankoch joins the enforce camp (zlib's gunzip 1.5+ behaviour).
+- **Concatenated-member gzip streaming** (RFC 1952 §2.2). `gzip_dec_write`
+  now decodes multiple gzip members in one stream — previously
+  single-member only, while batch `gzip_decompress` already handled them.
+  A new `GDEC_STATE_AFTER_TRAILER` probes for the next member's magic; on
+  a match it resets the inner DEFLATE decoder (new `deflate_dec_reset` —
+  keeps the output buffer + write offset so members append contiguously)
+  and the per-member CRC / ISIZE bookkeeping. Each member's back-
+  references can only reach its own emitted bytes, so the shared `dst` is
+  safe. Output, trailer CRC, and ISIZE are validated per member.
+- New tests: FHCRC round-trip (batch + streaming) + corruption rejection;
+  concatenated 2-member round-trip (whole / byte-at-a-time / batch cross-
+  check) + corrupt-2nd-member rejection. Suite: **3,862,108** assertions
+  (sankoch) + 346,583 (git_object).
+
+### Notes
+
+- The other two 2.3.5-roadmap items were split into their own slots so
+  each lands as a focused, well-tested release: **streaming FDICT zlib →
+  2.3.6** (it modifies the DEFLATE match-copy hot path) and **lazy-global
+  alloc-fail propagation → 2.3.7** (broad surface + large fault-injection
+  matrix). P(-1) closeout moves to 2.3.8.
+
 ## [2.3.4] — 2026-06-16
 
 **CRC-32 slice-by-8 (~2× throughput) + cyrius pin → 6.2.15.** Pure

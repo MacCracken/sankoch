@@ -757,6 +757,36 @@ fn deflate_dec_init(dst, dst_cap): i64 {
     return ctx;
 }
 
+# Reset a streaming DEFLATE decoder to start a fresh stream while
+# KEEPING the output buffer and current write offset (dst / dp / dst_cap
+# at +0/+8/+16). Used by the gzip streaming decoder for concatenated
+# members (2.3.5): each member is an independent DEFLATE stream, but its
+# decoded bytes append after the previous member's. Back-references in
+# the new member can only reach its own already-emitted bytes (a valid
+# DEFLATE distance never exceeds bytes-output-so-far in its stream), so
+# the contiguous dst is safe. Does NOT touch the mutex — the caller
+# still holds it across the whole multi-member decode.
+fn deflate_dec_reset(ctx): i64 {
+    store64(ctx + 24, DDEC_STATE_HEADER);
+    store64(ctx + 32, 0);    # hold
+    store64(ctx + 40, 0);    # bits
+    store64(ctx + 48, 0);    # bfinal
+    store64(ctx + 56, 0);    # btype
+    store64(ctx + 64, 0);    # stored_len
+    store64(ctx + 72, 0);    # stored_remaining
+    store64(ctx + 80, 0);    # err
+    store64(ctx + 88, 0);    # cur_length
+    store64(ctx + 96, 0);    # cur_distance
+    store64(ctx + 104, 0);   # cur_extra_count
+    store64(ctx + 112, 0);   # dyn_hlit
+    store64(ctx + 120, 0);   # dyn_hdist
+    store64(ctx + 128, 0);   # dyn_hclen
+    store64(ctx + 136, 0);   # dyn_idx
+    store64(ctx + 144, 0);   # dyn_prev
+    store64(ctx + 152, 0);   # dyn_rep_sym
+    return 0;
+}
+
 # Feed `in_len` compressed bytes from input. Drives the state machine
 # forward as far as the chunk allows; emits decoded bytes into the
 # caller's dst buffer as they become available. Returns the number of

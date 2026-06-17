@@ -2933,6 +2933,124 @@ fn test_gdec_fname_field() {
     return 0;
 }
 
+fn test_gdec_fhcrc_field() {
+    # 2.3.5: gzip stream with FHCRC set (FLG=2). FHCRC = low 16 bits of
+    # crc32 over the 10-byte header (RFC 1952 — not CRC-16-IBM). Splice
+    # the deflate + trailer from a gzip_compress base. Both batch and
+    # streaming must validate it, and reject a corrupted FHCRC byte.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var base = alloc(64);
+    var baselen = gzip_compress_level(src, 5, base, 64, 6);
+    assert(baselen > 18, "fhcrc base compress");
+
+    var c = alloc(96);
+    var i = 0;
+    while (i < 10) { store8(c + i, load8(base + i)); i = i + 1; }
+    store8(c + 3, 2);                      # FLG = FHCRC
+    crc32_init_table();
+    var hc = crc32(c, 10) & 65535;
+    store8(c + 10, hc & 255);
+    store8(c + 11, (hc >> 8) & 255);
+    var deflate_len = baselen - 10;
+    var j = 0;
+    while (j < deflate_len) {
+        store8(c + 12 + j, load8(base + 10 + j));
+        j = j + 1;
+    }
+    var clen = 12 + deflate_len;
+
+    # Batch decode.
+    var db = alloc(16);
+    assert(gzip_decompress(c, clen, db, 16) == 5, "fhcrc batch len");
+    i = 0;
+    while (i < 5) { assert(load8(db + i) == load8(src + i), "fhcrc batch content"); i = i + 1; }
+
+    # Streaming decode.
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "fhcrc decode init");
+    assert(gzip_dec_write(ctx, c, clen) >= 0, "fhcrc decode write");
+    assert(gzip_dec_finish(ctx) == 5, "fhcrc decode len");
+    i = 0;
+    while (i < 5) { assert(load8(d + i) == load8(src + i), "fhcrc decode content"); i = i + 1; }
+
+    # Corrupt the FHCRC low byte — both paths must reject.
+    store8(c + 10, load8(c + 10) ^ 1);
+    var db2 = alloc(16);
+    assert(gzip_decompress(c, clen, db2, 16) < 0, "fhcrc batch rejects corruption");
+    var d2 = alloc(16);
+    var ctx2 = gzip_dec_init(d2, 16);
+    var rc2 = gzip_dec_write(ctx2, c, clen);
+    var fin2 = gzip_dec_finish(ctx2);
+    assert(rc2 < 0 || fin2 < 0, "fhcrc stream rejects corruption");
+    return 0;
+}
+
+fn test_gdec_concatenated_members() {
+    # 2.3.5: two gzip members concatenated. The streaming decoder must
+    # decode both (resetting the inner DEFLATE at the boundary) and
+    # produce the concatenation — matching batch gzip_decompress.
+    var p1 = alloc(5);   # "Hello"
+    store8(p1 + 0, 72); store8(p1 + 1, 101); store8(p1 + 2, 108);
+    store8(p1 + 3, 108); store8(p1 + 4, 111);
+    var p2 = alloc(6);   # "World!"
+    store8(p2 + 0, 87); store8(p2 + 1, 111); store8(p2 + 2, 114);
+    store8(p2 + 3, 108); store8(p2 + 4, 100); store8(p2 + 5, 33);
+
+    var m1 = alloc(64);
+    var m1len = gzip_compress_level(p1, 5, m1, 64, 6);
+    var m2 = alloc(64);
+    var m2len = gzip_compress_level(p2, 6, m2, 64, 6);
+    assert(m1len > 0, "concat m1 compress");
+    assert(m2len > 0, "concat m2 compress");
+
+    var c = alloc(160);
+    var i = 0;
+    while (i < m1len) { store8(c + i, load8(m1 + i)); i = i + 1; }
+    var j = 0;
+    while (j < m2len) { store8(c + m1len + j, load8(m2 + j)); j = j + 1; }
+    var clen = m1len + m2len;
+
+    # Batch cross-check (already supports concatenation).
+    var db = alloc(16);
+    assert(gzip_decompress(c, clen, db, 16) == 11, "concat batch len");
+
+    # Streaming decode (whole input).
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "concat init");
+    assert(gzip_dec_write(ctx, c, clen) >= 0, "concat write");
+    assert(gzip_dec_finish(ctx) == 11, "concat len");
+    i = 0;
+    while (i < 5) { assert(load8(d + i) == load8(p1 + i), "concat content m1"); i = i + 1; }
+    i = 0;
+    while (i < 6) { assert(load8(d + 5 + i) == load8(p2 + i), "concat content m2"); i = i + 1; }
+
+    # Streaming byte-at-a-time — exercises the member boundary across chunks.
+    var d2 = alloc(16);
+    var ctx2 = gzip_dec_init(d2, 16);
+    assert(ctx2 != 0, "concat baat init");
+    var k = 0;
+    while (k < clen) {
+        assert(gzip_dec_write(ctx2, c + k, 1) >= 0, "concat baat write");
+        k = k + 1;
+    }
+    assert(gzip_dec_finish(ctx2) == 11, "concat baat len");
+    i = 0;
+    while (i < 11) { assert(load8(d2 + i) == load8(d + i), "concat baat content"); i = i + 1; }
+
+    # Corrupt member 2's trailer CRC — the streaming decoder must reject.
+    store8(c + m1len + m2len - 5, load8(c + m1len + m2len - 5) ^ 1);
+    var d3 = alloc(16);
+    var ctx3 = gzip_dec_init(d3, 16);
+    var rc3 = gzip_dec_write(ctx3, c, clen);
+    var fin3 = gzip_dec_finish(ctx3);
+    assert(rc3 < 0 || fin3 < 0, "concat rejects corrupt 2nd member");
+    return 0;
+}
+
 # ================================================================
 # 2.3.0 bite-5: streaming LZ4F decoder
 # ================================================================
@@ -3590,6 +3708,8 @@ fn main() {
     test_gdec_bad_crc_trailer();
     test_gdec_bad_isize();
     test_gdec_fname_field();
+    test_gdec_fhcrc_field();
+    test_gdec_concatenated_members();
 
     # 2.3.0 bite-5 — streaming LZ4F decoder
     test_ldec_short_roundtrip();

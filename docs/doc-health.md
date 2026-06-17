@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-06-16 (v2.3.4 cut — CRC-32 slice-by-8 + cyrius pin → 6.2.15) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-06-16 (v2.3.5 cut — gzip streaming hardening: FHCRC verify + concatenated members) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -52,13 +52,13 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-23 | ✅ Fresh | Architecture table refreshed to 6,299 source lines + 156 test functions + 1,708,518 assertions + 6,326-line distlib; stale "landing in next Cyrius lang release" line dropped (sankoch ships in 6.0.x stdlib); missing `xxhash32.cyr` + `lz4_decode.cyr` rows added. |
-| `CHANGELOG.md` | 2026-06-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.3.4] — 2026-06-16` (CRC-32 slice-by-8 + cyrius pin → 6.2.15; `good_match` investigated & dropped). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
+| `CHANGELOG.md` | 2026-06-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.3.5] — 2026-06-16` (gzip FHCRC verify + concatenated-member streaming; old bundled slot split — FDICT→2.3.6, alloc-fail→2.3.7). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-05-23 | ✅ Fresh | Supported Versions table updated for 2.3.x; audit list extended through 2026-05-23-pre-2.3.0-redux. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-06-16 | ✅ Fresh | `2.3.4`. Single source of truth per the standards. |
+| `VERSION` | 2026-06-16 | ✅ Fresh | `2.3.5`. Single source of truth per the standards. |
 | `cyrius.cyml` | 2026-06-16 | ✅ Fresh | Toolchain pin `cyrius = "6.2.15"` (bumped from 6.2.14 in 2.3.4, folded into the CRC-32 work; clears the prior box/pin drift). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-06-16 | ✅ Fresh | **2.3.4 shipped** (CRC-32 slice-by-8 + pin → 6.2.15) — removed from the forward ladder, which now opens at 2.3.5 (streaming hardening) → 2.3.6 (P(-1)) → 2.4.0/2.4.1 (takumi xz/bzip2). `good_match` dropped + PCLMULQDQ deferred captured in two deferred markers; checksum.cyr role notes slice-by-8. |
-| `state.md` | 2026-06-16 | ✅ Fresh | Refreshed for 2.3.4. Version 2.3.4, pin 6.2.15, recent-releases + in-flight slots (2.3.4 dropped). Source/test/dist counts unchanged from 2.3.3 (checksum.cyr stayed 424 lines; no new test fns — CRC correctness gated by gzip suites). |
+| `roadmap.md` | 2026-06-16 | ✅ Fresh | **2.3.5 shipped** (gzip FHCRC verify + concatenated members). The old bundled "2.3.5 streaming hardening" slot was split: FDICT streaming → 2.3.6, lazy-global alloc-fail → 2.3.7, P(-1) → 2.3.8. File Summary refreshed (src 6,503; gzip 596, deflate 2306; distlib 6,483/312). |
+| `state.md` | 2026-06-16 | ✅ Fresh | Refreshed for 2.3.5. Version 2.3.5, source 6,503, tests 179 fns / 4,208,691 assertions, dist 6,483/312, in-flight slots renumbered (2.3.6 FDICT / 2.3.7 alloc-fail / 2.3.8 P(-1)). INFO-01 (FHCRC) marked CLOSED; INFO-A rescoped to 2.3.7. |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
 

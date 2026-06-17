@@ -67,8 +67,16 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
         if (found == 0) { return 0 - ERR_CORRUPT_DATA; }
     }
 
-    # Skip optional FHCRC (2 bytes)
+    # Optional FHCRC (2 bytes). RFC 1952 §2.3.1.2: the two least-
+    # significant bytes of the CRC-32 of all header bytes up to (not
+    # including) the FHCRC field. 2.3.5: enforce it (was skipped —
+    # INFO-01). Note: this is low-16-of-CRC-32, NOT CRC-16-IBM.
     if ((flg & 2) != 0) {
+        if (offset + 2 > src_len) { return 0 - ERR_CORRUPT_DATA; }
+        crc32_init_table();
+        var hdr_crc = crc32(src, offset) & 65535;
+        var stored_fhcrc = load8(src + offset) | (load8(src + offset + 1) << 8);
+        if (stored_fhcrc != hdr_crc) { return 0 - ERR_CHECKSUM_MISMATCH; }
         offset = offset + 2;
     }
 
@@ -230,36 +238,41 @@ fn gzip_enc_finish(ctx): i64 {
 # inner deflate_dec_*. Preserves the LOW-02 (2.1.3) reserved-FLG-bit
 # reject.
 #
-# Bite-4 scope: SINGLE-MEMBER streams only. Concatenated members
-# (RFC 1952 §2.2 — multiple gzip members in one stream) are NOT
-# supported in the streaming path yet; the batch `gzip_decompress`
-# still handles them. Multi-member streaming support is deferred to
-# a follow-on 2.3.x patch release. Header CRC16 (FHCRC) bytes are
-# consumed but not validated (INFO-01 carried from 2.1.3).
+# Scope (2.3.5): concatenated members (RFC 1952 §2.2 — multiple gzip
+# members in one stream) ARE supported. After a member's trailer
+# validates, GDEC_STATE_AFTER_TRAILER peeks for the next member's magic;
+# if present, the inner DEFLATE decoder and the CRC / header state are
+# reset (output keeps appending in dst) and the next member decodes.
+# FHCRC (header CRC16) IS validated (INFO-01 closed): header bytes fold
+# into an incremental CRC-32 and the low 16 bits are checked against the
+# FHCRC field (per RFC 1952 — low-16-of-CRC-32, not CRC-16-IBM).
 #
-# ctx layout (10 i64 slots = 80 bytes):
+# ctx layout (12 i64 slots = 96 bytes):
 #   +0   inner_dctx       — pointer to deflate_dec ctx (also owns dst)
 #   +8   state            — GDEC_STATE_*
-#   +16  crc_state        — crc32 incremental state pointer
+#   +16  crc_state        — crc32 incremental state pointer (content CRC, per member)
 #   +24  hdr_idx          — bytes parsed in the current sub-section
 #   +32  flg              — parsed gzip FLG byte (retained for sub-state branching)
-#   +40  var_remaining    — bytes remaining for FEXTRA data section
+#   +40  var_remaining    — FEXTRA data bytes remaining / FHCRC LE accumulator
 #   +48  trailer_idx      — bytes parsed in the 8-byte trailer (0..8)
 #   +56  trailer_crc      — little-endian CRC-32 accumulated from trailer
 #   +64  trailer_isize    — little-endian ISIZE accumulated from trailer
 #   +72  err              — sticky error; 0 = OK
+#   +80  hdr_crc_state    — incremental CRC-32 over header bytes (for FHCRC)
+#   +88  member_start_dp  — inner dp at the current member's start (for per-member ISIZE)
 
 enum GzipDec {
-    GDEC_CTX_SIZE = 80;
+    GDEC_CTX_SIZE = 96;
     GDEC_STATE_HDR_FIXED = 0;        # 10-byte fixed header
     GDEC_STATE_HDR_FEXTRA_LEN = 1;   # 2-byte XLEN (LE)
     GDEC_STATE_HDR_FEXTRA_DATA = 2;  # XLEN bytes of FEXTRA payload
     GDEC_STATE_HDR_FNAME = 3;        # NUL-terminated filename
     GDEC_STATE_HDR_FCOMMENT = 4;     # NUL-terminated comment
-    GDEC_STATE_HDR_FHCRC = 5;        # 2-byte header CRC16 (not validated)
+    GDEC_STATE_HDR_FHCRC = 5;        # 2-byte header CRC16 (validated)
     GDEC_STATE_DEFLATE = 6;          # forward to inner DEFLATE
     GDEC_STATE_TRAILER = 7;          # 8-byte CRC-32 + ISIZE
     GDEC_STATE_DONE = 8;
+    GDEC_STATE_AFTER_TRAILER = 9;    # probe for a concatenated next member
 }
 
 fn _gdec_poison(ctx, code): i64 {
@@ -299,6 +312,8 @@ fn gzip_dec_init(dst, dst_cap): i64 {
     if (ctx == 0) { _sankoch_unlock(); return 0; }
     var crc_st = crc32_init();
     if (crc_st == 0) { _sankoch_unlock(); return 0; }
+    var hdr_crc_st = crc32_init();
+    if (hdr_crc_st == 0) { _sankoch_unlock(); return 0; }
 
     store64(ctx + 0, inner);
     store64(ctx + 8, GDEC_STATE_HDR_FIXED);
@@ -310,6 +325,8 @@ fn gzip_dec_init(dst, dst_cap): i64 {
     store64(ctx + 56, 0);
     store64(ctx + 64, 0);
     store64(ctx + 72, 0);
+    store64(ctx + 80, hdr_crc_st);
+    store64(ctx + 88, 0);
     return ctx;
 }
 
@@ -330,6 +347,7 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
 
         if (state == GDEC_STATE_HDR_FIXED) {
             var hi = load64(ctx + 24);
+            var hcf_start = cp;
             while (hi < 10 && cp < in_len) {
                 var b = load8(input + cp);
                 if (hi == 0 && b != GZIP_MAGIC_0) {
@@ -351,17 +369,21 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
                 cp = cp + 1;
                 hi = hi + 1;
             }
+            # Fold the header bytes consumed this pass into the FHCRC state.
+            crc32_update(load64(ctx + 80), input + hcf_start, cp - hcf_start);
             store64(ctx + 24, hi);
             if (hi < 10) { return cp; }
             _gdec_next_hdr_state(ctx, 0);
         } elif (state == GDEC_STATE_HDR_FEXTRA_LEN) {
             var xi = load64(ctx + 24);
             var xlen_acc = load64(ctx + 40);
+            var hce_start = cp;
             while (xi < 2 && cp < in_len) {
                 xlen_acc = xlen_acc | (load8(input + cp) << (xi * 8));
                 cp = cp + 1;
                 xi = xi + 1;
             }
+            crc32_update(load64(ctx + 80), input + hce_start, cp - hce_start);
             store64(ctx + 24, xi);
             store64(ctx + 40, xlen_acc);
             if (xi < 2) { return cp; }
@@ -372,6 +394,7 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
             var avail = in_len - cp;
             var skip = remaining;
             if (skip > avail) { skip = avail; }
+            crc32_update(load64(ctx + 80), input + cp, skip);
             cp = cp + skip;
             store64(ctx + 40, remaining - skip);
             if (remaining - skip > 0) { return cp; }
@@ -379,31 +402,45 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
         } elif (state == GDEC_STATE_HDR_FNAME) {
             # Skip bytes until NUL terminator. hdr_idx unused here —
             # the state itself is the cursor.
+            var hcn_start = cp;
             var found = 0;
             while (cp < in_len) {
                 var nb = load8(input + cp);
                 cp = cp + 1;
                 if (nb == 0) { found = 1; break; }
             }
+            crc32_update(load64(ctx + 80), input + hcn_start, cp - hcn_start);
             if (found == 0) { return cp; }
             _gdec_next_hdr_state(ctx, 12);
         } elif (state == GDEC_STATE_HDR_FCOMMENT) {
+            var hcc_start = cp;
             var fc_found = 0;
             while (cp < in_len) {
                 var cb = load8(input + cp);
                 cp = cp + 1;
                 if (cb == 0) { fc_found = 1; break; }
             }
+            crc32_update(load64(ctx + 80), input + hcc_start, cp - hcc_start);
             if (fc_found == 0) { return cp; }
             _gdec_next_hdr_state(ctx, 28);
         } elif (state == GDEC_STATE_HDR_FHCRC) {
+            # FHCRC = low 16 bits of CRC-32 over all header bytes before
+            # this field (RFC 1952 §2.3.1.2). Accumulate the 2 LE bytes
+            # in +40, then validate against the folded header CRC.
             var ci = load64(ctx + 24);
+            var fhcrc_acc = load64(ctx + 40);
             while (ci < 2 && cp < in_len) {
+                fhcrc_acc = fhcrc_acc | (load8(input + cp) << (ci * 8));
                 cp = cp + 1;
                 ci = ci + 1;
             }
             store64(ctx + 24, ci);
+            store64(ctx + 40, fhcrc_acc);
             if (ci < 2) { return cp; }
+            var computed_fhcrc = crc32_final(load64(ctx + 80)) & 65535;
+            if (fhcrc_acc != computed_fhcrc) {
+                return _gdec_poison(ctx, 0 - ERR_CHECKSUM_MISMATCH);
+            }
             store64(ctx + 8, GDEC_STATE_DEFLATE);
         } elif (state == GDEC_STATE_DEFLATE) {
             var inner = load64(ctx + 0);
@@ -454,17 +491,42 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
             store64(ctx + 56, crc_acc);
             store64(ctx + 64, isize_acc);
             if (ti < 8) { return cp; }
-            # Validate trailer.
+            # Validate trailer. CRC and ISIZE cover THIS member only —
+            # the content CRC was reset at the member start, and ISIZE is
+            # checked against (inner_dp - member_start_dp).
             var computed_crc = crc32_final(load64(ctx + 16));
             if (crc_acc != computed_crc) {
                 return _gdec_poison(ctx, 0 - ERR_CHECKSUM_MISMATCH);
             }
             var inner_dp = load64(load64(ctx + 0) + 8);
-            if ((inner_dp & 4294967295) != isize_acc) {
+            var member_len = inner_dp - load64(ctx + 88);
+            if ((member_len & 4294967295) != isize_acc) {
                 return _gdec_poison(ctx, 0 - ERR_CHECKSUM_MISMATCH);
             }
-            store64(ctx + 8, GDEC_STATE_DONE);
-            return cp;
+            store64(ctx + 8, GDEC_STATE_AFTER_TRAILER);
+        } elif (state == GDEC_STATE_AFTER_TRAILER) {
+            # A member just completed. If another gzip member follows
+            # (magic 0x1f), reset for it; otherwise the stream ends
+            # (trailing non-magic bytes are ignored, mirroring batch).
+            if (cp >= in_len) { return cp; }
+            if (load8(input + cp) != GZIP_MAGIC_0) {
+                store64(ctx + 8, GDEC_STATE_DONE);
+                return cp;
+            }
+            # Next member: reset inner DEFLATE (keeps dst/dp), content +
+            # header CRC states, and all header/trailer scratch. Record
+            # the member-start output offset for the next ISIZE check.
+            deflate_dec_reset(load64(ctx + 0));
+            store64(load64(ctx + 16), 4294967295);   # content CRC → 0xFFFFFFFF
+            store64(load64(ctx + 80), 4294967295);   # header CRC → 0xFFFFFFFF
+            store64(ctx + 88, load64(load64(ctx + 0) + 8));
+            store64(ctx + 24, 0);
+            store64(ctx + 32, 0);
+            store64(ctx + 40, 0);
+            store64(ctx + 48, 0);
+            store64(ctx + 56, 0);
+            store64(ctx + 64, 0);
+            store64(ctx + 8, GDEC_STATE_HDR_FIXED);
         } else {
             return _gdec_poison(ctx, 0 - ERR_INVALID_INPUT);
         }
@@ -477,7 +539,10 @@ fn gzip_dec_finish(ctx): i64 {
     var inner_result = deflate_dec_finish(inner);
     var gzip_err = load64(ctx + 72);
     if (gzip_err < 0) { return gzip_err; }
-    if (load64(ctx + 8) != GDEC_STATE_DONE) {
+    # AFTER_TRAILER is also an accepting state: the last member's trailer
+    # validated and no further member followed (clean EOF at a boundary).
+    var gstate = load64(ctx + 8);
+    if (gstate != GDEC_STATE_DONE && gstate != GDEC_STATE_AFTER_TRAILER) {
         return 0 - ERR_CORRUPT_DATA;
     }
     return inner_result;

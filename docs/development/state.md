@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-16 (v2.3.4 cut — CRC-32 slice-by-8 + cyrius pin → 6.2.15) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.3.5 cut — gzip streaming hardening: FHCRC verify + concatenated members) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.4` — single source of truth
-- **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin (bumped from 6.2.14, folded into 2.3.4; clears the prior box/pin drift)
-- **Tag**: `2.3.4` (bare semver, no `v` prefix)
+- **`VERSION`**: `2.3.5` — single source of truth
+- **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin
+- **Tag**: `2.3.5` (bare semver, no `v` prefix)
 - **Released**: 2026-06-16
 
 ## Distribution
@@ -28,16 +28,16 @@ type: state
 
 ## Source
 
-- **Source**: **6,408 lines** across 14 domain modules (`src/*.cyr`).
+- **Source**: **6,503 lines** across 14 domain modules (`src/*.cyr`).
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
 
 | Suite                          | Functions | Assertions |
 |--------------------------------|----------:|-----------:|
-| `tests/tcyr/sankoch.tcyr`      |       167 |  3,861,983 |
+| `tests/tcyr/sankoch.tcyr`      |       169 |  3,862,108 |
 | `tests/tcyr/git_object.tcyr`   |        10 |    346,583 |
-| **Total**                      |   **177** | **4,208,566** |
+| **Total**                      |   **179** | **4,208,691** |
 
 The assertion total is heavily inflated by per-byte content-loop checks on streaming round-trips (a single 128 KB round-trip contributes 131,072 assertions through one `while (i < N) assert(load8(d+i) == load8(s+i))` loop). Read as a coverage-**density** number, not a coverage-**breadth** number. See [`guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large) for the full explanation.
 
@@ -51,19 +51,22 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 6,388 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
+| `dist/sankoch.cyr`           | 6,483 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
 | `dist/sankoch-core.cyr`      |   312 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
 
 Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
 
 ## In-flight slots
 
-Empty at 2.3.4 cut. Next items per [`roadmap.md`](roadmap.md):
+Empty at 2.3.5 cut. Next items per [`roadmap.md`](roadmap.md) — the old
+bundled "2.3.5 streaming hardening" slot was split (FHCRC + concatenated
+shipped in 2.3.5; the two larger pieces get focused slots):
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.3.5**  | streaming-decode hardening (FDICT zlib, multi-member gzip, lazy-global alloc-fail, FHCRC verify) | medium-large |
-| **2.3.6**  | P(-1) closeout for the 2.3.x line                                                | medium       |
+| **2.3.6**  | streaming FDICT zlib (`deflate_dec_init_dict` + dict-scratch match-copy)         | medium-large |
+| **2.3.7**  | lazy-global alloc-failure propagation (INFO-A; 35 sites + fault-injection matrix) | large        |
+| **2.3.8**  | P(-1) closeout for the 2.3.x line                                                | medium       |
 | **2.4.0**  | xz / LZMA decode (`FORMAT_XZ`) — unblocks takumi `.tar.xz` extraction            | large        |
 | **2.4.1**  | bzip2 decode (`FORMAT_BZIP2`) — takumi `.tar.bz2` extraction                     | medium-large |
 
@@ -99,18 +102,19 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.3.5  | 2026-06-16 | gzip streaming hardening — FHCRC verify + concatenated-member decode |
 | 2.3.4  | 2026-06-16 | CRC-32 slice-by-8 (~2×, wire-identical) + cyrius pin → 6.2.15 |
 | 2.3.3  | 2026-06-16 | Configurable LZ4F block-max (64K/256K/1M/4M) + per-block checksum (`lz4f_enc_init_ex`) |
 | 2.3.2  | 2026-06-16 | Cyrius pin → 6.2.14 (stdlib pin sweep; no source change) |
 | 2.3.1  | 2026-06-12 | Cyrius pin → 6.2.1 (stdlib pin sweep; no source change) |
 | 2.3.0  | 2026-05-23 | True incremental decompression (DEFLATE / zlib / gzip / LZ4F `*_dec_*` + `stream_decompress_init_inc`) |
-| 2.2.7  | 2026-05-23 | P(-1) closeout against Cyrius 6.0.1                   |
 
 ## Open INFOs carried forward
 
-Tracked items the next P(-1) (2.3.6) should resolve or rebase. From the most recent audit ([`docs/audit/2026-05-23-pre-2.3.0-redux.md`](../audit/2026-05-23-pre-2.3.0-redux.md)):
+Tracked items the next P(-1) (2.3.8) should resolve or rebase. From the most recent audit ([`docs/audit/2026-05-23-pre-2.3.0-redux.md`](../audit/2026-05-23-pre-2.3.0-redux.md)):
 
-- **INFO-A** — 35 lazy-global alloc sites still abort on first-call OOM. Carried from 2.2.1 / 2.2.3. Scoped to 2.3.5.
+- **INFO-01** — gzip FHCRC validation. **CLOSED at 2.3.5** (batch + streaming validate the low-16-of-CRC-32 header checksum; verified vs `gunzip`).
+- **INFO-A** — 35 lazy-global alloc sites still abort on first-call OOM. Carried from 2.2.1 / 2.2.3. Scoped to 2.3.7.
 - **INFO-B** — `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len`. Already enforced at runtime; docstring-polish item.
 - **INFO-C** — aarch64 LZ77 8-byte word-compare uses unaligned `load64`. Permitted by ARMv6+ but some implementations pay a cycle penalty. Flagged for future investigation if aarch64 perf benchmarks surface this as hot.
 
