@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.4] — 2026-06-16
+
+**CRC-32 slice-by-8 (~2× throughput) + cyrius pin → 6.2.15.** Pure
+performance + toolchain release — wire-format identical, no API change.
+All 43 SIZE lines and every CRC-32 value are byte-for-byte unchanged
+(gated by the gzip round-trip suites + fuzz).
+
+### Changed
+
+- **CRC-32 slice-by-8.** The batch `crc32` and incremental `crc32_update`
+  paths now fold 8 bytes per iteration via one little-endian `load64` +
+  eight parallel table lookups (Kadatch & Jenkins), replacing the serial
+  byte-at-a-time table fold. The lookup table grew from one 256-entry
+  slice to eight (16 KB). Both paths share a new `_crc32_fold` core.
+  Pure integer, portable across x86_64 + aarch64. **~2.15×** on the
+  reliable 1 KB / 256 KB benches (crc32 1 KB 2,951 → 1,370 ns/op);
+  CRC-32 is now *faster* than Adler-32 at steady state, where it was
+  ~1.5× slower before. See
+  [`docs/benchmarks/2026-06-16-2.3.4-crc-sliceby8.md`](docs/benchmarks/2026-06-16-2.3.4-crc-sliceby8.md).
+- **cyrius pin `6.2.14` → `6.2.15`** (folded into this release rather
+  than a separate pin-bump patch). Clean rebuild + both `.tcyr` suites +
+  fuzz + `core_smoke` green on 6.2.15; `dist/*` regenerated.
+
+### Investigated, not adopted
+
+- **`good_match` chain-walk early-exit** (the roadmap's other 2.3.4
+  candidate). Implemented and measured: a no-op on every benchmarked
+  text input (SIZE and throughput both unchanged), reproducing the prior
+  revert. It's a speed/ratio tradeoff — wire-safe only where it gives no
+  speedup, and faster only where it changes the selected matches and
+  breaks the SIZE gate — so it cannot ship under the wire-identical
+  mandate. Dropped (roadmap option c). PCLMULQDQ CRC-32 stays deferred
+  (x86-only vs the aarch64 cross-build gate; the portable slice-by-8
+  already lifts CRC-32 off the hot path).
+
+### Added
+
+- New benchmark: `crc32 256K text` / `adler32 256K text` — steady-state
+  checksum throughput (the pre-2.3.4 benches were 4 KB / 1 KB only).
+
 ## [2.3.3] — 2026-06-16
 
 **Configurable LZ4F block-max + per-block checksum.** The streaming

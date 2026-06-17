@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-16 (v2.3.3 cut — configurable LZ4F block-max + per-block checksum) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.3.4 cut — CRC-32 slice-by-8 + cyrius pin → 6.2.15) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.3` — single source of truth
-- **`cyrius.cyml [package].cyrius`**: `6.2.14` — toolchain pin (release validated on the pin; box's active toolchain is 6.2.15)
-- **Tag**: `2.3.3` (bare semver, no `v` prefix)
+- **`VERSION`**: `2.3.4` — single source of truth
+- **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin (bumped from 6.2.14, folded into 2.3.4; clears the prior box/pin drift)
+- **Tag**: `2.3.4` (bare semver, no `v` prefix)
 - **Released**: 2026-06-16
 
 ## Distribution
@@ -58,15 +58,18 @@ Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at ev
 
 ## In-flight slots
 
-Empty at 2.3.3 cut. Next items per [`roadmap.md`](roadmap.md):
+Empty at 2.3.4 cut. Next items per [`roadmap.md`](roadmap.md):
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.3.4**  | DEFLATE throughput round 2 (good_length retry + PCLMULQDQ CRC-32)               | medium       |
 | **2.3.5**  | streaming-decode hardening (FDICT zlib, multi-member gzip, lazy-global alloc-fail, FHCRC verify) | medium-large |
 | **2.3.6**  | P(-1) closeout for the 2.3.x line                                                | medium       |
 | **2.4.0**  | xz / LZMA decode (`FORMAT_XZ`) — unblocks takumi `.tar.xz` extraction            | large        |
 | **2.4.1**  | bzip2 decode (`FORMAT_BZIP2`) — takumi `.tar.bz2` extraction                     | medium-large |
+
+DEFLATE throughput round 2 (the old 2.3.4 slot) partially delivered as
+CRC-32 slice-by-8; `good_match` dropped and PCLMULQDQ deferred — see the
+two deferred markers in [`roadmap.md`](roadmap.md).
 
 ## Consumers
 
@@ -96,12 +99,12 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.3.4  | 2026-06-16 | CRC-32 slice-by-8 (~2×, wire-identical) + cyrius pin → 6.2.15 |
 | 2.3.3  | 2026-06-16 | Configurable LZ4F block-max (64K/256K/1M/4M) + per-block checksum (`lz4f_enc_init_ex`) |
 | 2.3.2  | 2026-06-16 | Cyrius pin → 6.2.14 (stdlib pin sweep; no source change) |
 | 2.3.1  | 2026-06-12 | Cyrius pin → 6.2.1 (stdlib pin sweep; no source change) |
 | 2.3.0  | 2026-05-23 | True incremental decompression (DEFLATE / zlib / gzip / LZ4F `*_dec_*` + `stream_decompress_init_inc`) |
 | 2.2.7  | 2026-05-23 | P(-1) closeout against Cyrius 6.0.1                   |
-| 2.2.6  | 2026-05-20 | Cyrius 6.0.1 toolchain bump + `cycc_aarch64` rename   |
 
 ## Open INFOs carried forward
 

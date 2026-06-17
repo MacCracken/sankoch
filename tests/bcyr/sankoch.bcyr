@@ -294,6 +294,11 @@ fn main() {
     fill_text(src1k, 1024);
     bench_checksum("adler32 1KB text", src1k, 1024, 500);
     bench_checksum("crc32   1KB text", src1k, 1024, 500);
+    # 256K — steady-state CRC-32 throughput (slice-by-8 hot loop, v2.3.4).
+    var csrc256 = alloc(262144);
+    fill_text(csrc256, 262144);
+    bench_checksum("adler32 256K text", csrc256, 262144, 200);
+    bench_checksum("crc32   256K text", csrc256, 262144, 200);
     println("");
 
     # ---- LZ4 ----

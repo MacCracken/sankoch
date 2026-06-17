@@ -7,10 +7,14 @@
 # - Deferred modulo: % 65521 every NMAX (5552) bytes instead of every byte
 # - 16-byte unrolled inner loop accumulating s2 in closed form
 # - Scalar fallback for the tail
-# True SIMD (SSE2/AVX2, PCLMULQDQ for CRC-32) is feasible on 5.5.22
-# (raw `asm` blocks are exposed) but deferred on priority grounds —
-# the scalar unroll already puts checksums off the hot path for the
-# consumers we have today.
+# CRC-32 uses a slice-by-8 table (2.3.4): 8 bytes folded per iteration
+# via one little-endian load64 + eight parallel table lookups (~2×
+# the old serial byte-at-a-time table). Pure integer, portable across
+# x86_64 + aarch64. True SIMD (SSE2/AVX2 for Adler, PCLMULQDQ for
+# CRC-32) is feasible on 5.5.22+ (raw `asm` blocks are exposed) but
+# stays deferred — it is x86-only (the aarch64 cross-build gate would
+# need a PMULL path or a scalar fallback) and the slice-by-8 + scalar
+# unrolls already put checksums off the hot path for today's consumers.
 
 enum Checksum {
     ADLER_MOD = 65521;   # largest prime < 2^16
@@ -170,11 +174,16 @@ fn adler32_final(st): i64 {
 # CRC-32: table-driven, polynomial 0xEDB88320 (reflected).
 # Source: RFC 1952, Section 8
 # Table must be initialized once via crc32_init_table().
-var crc32_table = 0;  # heap-allocated: 256 entries * 8 bytes
+var crc32_table = 0;  # heap-allocated: slice-by-8 table, 8 × 256 entries × 8 bytes
 
-# Initialize the CRC-32 lookup table (must be called before crc32).
+# Initialize the slice-by-8 CRC-32 lookup table (must be called before
+# crc32). 2.3.4: grew from a single 256-entry table to eight slices so
+# the hot loop folds 8 bytes per iteration (Kadatch & Jenkins). Slice 0
+# is the classic reflected-0xEDB88320 table (also used by the scalar
+# tail); slices 1..7 are derived. Same CRC output — wire-identical.
 fn crc32_init_table(): i64 {
-    if (crc32_table == 0) { crc32_table = alloc(2048); }
+    if (crc32_table == 0) { crc32_table = alloc(16384); }   # 8 × 256 × 8
+    # Slice 0: standard reflected CRC-32 table.
     var i = 0;
     while (i < 256) {
         var c = i;
@@ -191,45 +200,62 @@ fn crc32_init_table(): i64 {
         store64(crc32_table + i * 8, c);
         i = i + 1;
     }
+    # Slices 1..7: table[k][n] = (table[k-1][n] >> 8) ^ table[0][table[k-1][n] & 0xFF].
+    var k = 1;
+    while (k < 8) {
+        var n = 0;
+        while (n < 256) {
+            var prev = load64(crc32_table + ((k - 1) * 256 + n) * 8);
+            var v = (prev >> 8) ^ load64(crc32_table + (prev & 255) * 8);
+            store64(crc32_table + (k * 256 + n) * 8, v);
+            n = n + 1;
+        }
+        k = k + 1;
+    }
     return 0;
+}
+
+# Slice-by-8 core: fold `len` bytes of `data` into the running (pre-
+# inversion) CRC and return it. One load64 per 8 bytes — both x86_64 and
+# aarch64 are little-endian, so the low/high 32-bit halves of the word
+# are exactly the reference's load32_le(buf) / load32_le(buf+4). Assumes
+# crc32_init_table() has populated crc32_table. Shared by batch + stream.
+fn _crc32_fold(crc, data, len): i64 {
+    var t0 = crc32_table;
+    var t1 = crc32_table + 2048;
+    var t2 = crc32_table + 4096;
+    var t3 = crc32_table + 6144;
+    var t4 = crc32_table + 8192;
+    var t5 = crc32_table + 10240;
+    var t6 = crc32_table + 12288;
+    var t7 = crc32_table + 14336;
+    var i = 0;
+    while (i + 8 <= len) {
+        var w = load64(data + i);
+        var lo = (crc ^ w) & 4294967295;        # crc XOR low 4 bytes (LE)
+        var hi = (w >> 32) & 4294967295;        # high 4 bytes (LE)
+        crc = load64(t7 + (lo & 255) * 8)
+        ^ load64(t6 + ((lo >> 8) & 255) * 8)
+        ^ load64(t5 + ((lo >> 16) & 255) * 8)
+        ^ load64(t4 + ((lo >> 24) & 255) * 8)
+        ^ load64(t3 + (hi & 255) * 8)
+        ^ load64(t2 + ((hi >> 8) & 255) * 8)
+        ^ load64(t1 + ((hi >> 16) & 255) * 8)
+        ^ load64(t0 + ((hi >> 24) & 255) * 8);
+        i = i + 8;
+    }
+    while (i < len) {
+        var index = (crc ^ load8(data + i)) & 255;
+        crc = (crc >> 8) ^ load64(t0 + index * 8);
+        i = i + 1;
+    }
+    return crc;
 }
 
 # Compute CRC-32 of data[0..len). Call crc32_init_table() first.
 fn crc32(data, len): i64 {
-    # CRC starts inverted
-    var crc = 4294967295;  # 0xFFFFFFFF
-    var i = 0;
-
-    # Unrolled: process 8 bytes per iteration
-    while (i + 8 <= len) {
-        var index = (crc ^ load8(data + i)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 1)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 2)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 3)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 4)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 5)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 6)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        index = (crc ^ load8(data + i + 7)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        i = i + 8;
-    }
-
-    # Scalar tail
-    while (i < len) {
-        var index = (crc ^ load8(data + i)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + index * 8);
-        i = i + 1;
-    }
-
-    # Final inversion, masked to 32 bits
-    return (crc ^ 4294967295) & 4294967295;
+    # CRC starts inverted; fold via slice-by-8, then final inversion.
+    return (_crc32_fold(4294967295, data, len) ^ 4294967295) & 4294967295;
 }
 
 # Incremental CRC-32 API — used by gzip streaming. State is a single
@@ -250,33 +276,7 @@ fn crc32_init(): i64 {
 
 fn crc32_update(st, data, len): i64 {
     if (len <= 0) { return 0; }
-    var crc = load64(st);
-    var i = 0;
-    while (i + 8 <= len) {
-        var idx = (crc ^ load8(data + i)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 1)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 2)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 3)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 4)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 5)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 6)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        idx = (crc ^ load8(data + i + 7)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        i = i + 8;
-    }
-    while (i < len) {
-        var idx = (crc ^ load8(data + i)) & 255;
-        crc = (crc >> 8) ^ load64(crc32_table + idx * 8);
-        i = i + 1;
-    }
-    store64(st, crc);
+    store64(st, _crc32_fold(load64(st), data, len));
     return 0;
 }
 

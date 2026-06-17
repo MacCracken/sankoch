@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.3.3) | **Last Updated**: 2026-06-16
+> **Status**: Stable (v2.3.4) | **Last Updated**: 2026-06-16
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
@@ -10,56 +10,32 @@ in. Items further down can be re-ordered against new information.
 > **Numbering note.** 2.3.1 and 2.3.2 shipped as cyrius pin-bump
 > releases (→ 6.2.1, → 6.2.14) with no source change, consuming the
 > two patch slots the feature ladder originally planned. The feature
-> items were renumbered to 2.3.3+ accordingly; 2.3.3 (configurable
-> LZ4F block-max + per-block checksum) has now shipped — see
+> items were renumbered to 2.3.3+ accordingly. Shipped since:
+> **2.3.3** (configurable LZ4F block-max + per-block checksum),
+> **2.3.4** (CRC-32 slice-by-8 + cyrius pin → 6.2.15) — see
 > `CHANGELOG.md`. xz/bzip2 decode (takumi-driven) opens the 2.4.x
 > line — additive `FORMAT_*` APIs are a minor bump.
 
 ---
 
-## v2.3.x ladder (sequenced, post-2.3.3)
+## v2.3.x ladder (sequenced, post-2.3.4)
 
 The 2.3.x line continues from the streaming-decompression cut (2.3.0)
-through two pin-bump patches (2.3.1, 2.3.2) and the configurable-
-block-max cut (2.3.3). The remaining pre-2.3.0 item (DEFLATE
-throughput round 2) keeps its slot; the follow-on item rolls up the
-deferred work from the 2.3.0 bite ladder plus carried INFOs from the
-2.1.3 / 2.2.3 audits. P(-1) closes the line before 2.4.0 opens.
+through two pin-bump patches (2.3.1, 2.3.2), the configurable-block-max
+cut (2.3.3), and the CRC-32 throughput cut (2.3.4). The remaining items
+roll up the deferred work from the 2.3.0 bite ladder plus carried INFOs
+from the 2.1.3 / 2.2.3 audits. P(-1) closes the line before 2.4.0 opens.
 
-### 🎯 2.3.4 — DEFLATE throughput round 2
-
-Continues the throughput investigation surfaced by sit v0.6.4
-(2026-04-25). The three foundational down-payments landed in 2.1.0
-(pre-reversed dynamic Huffman codes, 8-byte word-compare match
-extension, ring-buffer match-finder); this release picks up what
-was deferred or reverted.
-
-**Scope:**
-- Retry `good_length` early-exit in the chain walk at level ≥ 6.
-  First attempt 2026-04-25 was reverted because sankoch's L6 chain
-  depth of 64 was too shallow for the cut to bite on benchmarkable
-  inputs. Retry options: (a) widen the bench input set with
-  long-locality inputs that push deeper chain walks, (b) raise L6
-  chain depth to 128 first and re-bench, (c) drop the early-exit and
-  pick a different micro-optimization (e.g. tighter inner-loop
-  scheduling). Decision lives in the P(-1) writeup.
-- PCLMULQDQ CRC-32 via Cyrius inline asm. Cyrius 5.5.22+ exposes raw
-  `asm { byte; byte; … }` blocks (see `lib/thread.cyr`
-  `_thread_spawn`), so the toolchain gate has been clear since the
-  5.6.x line. Reference: Intel "Fast CRC Computation for Generic
-  Polynomials Using PCLMULQDQ Instruction" (whitepaper, Dec 2009).
-  4–10× CRC-32 speedup on x86_64 expected.
-- Wire-format identical — every change has to pass the byte-for-byte
-  SIZE-line gate against the previous baseline.
-
-**Target:** sit's `add-1MB` (currently ~150ms in `zlib_compress(1MB)`
-out of 208ms total) wants a 5× zlib speedup to put `sit add` of a
-1MB file under 100ms. Round 1 (2.1.0 down-payments) bought ~7-12%
-on the streaming path; round 2 + PCLMULQDQ together should double
-that.
-
-**Sizing:** medium. PCLMULQDQ is contained; the L≥6 retry is a
-think-first job.
+> **2.3.4 note — "DEFLATE throughput round 2" partially delivered.**
+> The CRC-32 throughput goal landed as a portable **slice-by-8** rewrite
+> (~2×, wire-identical) rather than PCLMULQDQ. The `good_match`
+> chain-walk early-exit was implemented, measured (a no-op on the bench
+> inputs — same prior-revert outcome), and **dropped**: it is wire-safe
+> only where it gives no speedup and faster only where it changes the
+> selected matches (breaking the SIZE gate), so it cannot ship under the
+> wire-identical mandate. See the 2.3.4 benchmark note. The deeper
+> DEFLATE match-finder throughput question (and PCLMULQDQ) carries to
+> the deferred marker below.
 
 ### 🎯 2.3.5 — streaming-decode hardening (deferred 2.3.0 items + carried INFOs)
 
@@ -152,10 +128,24 @@ before 2.4.0 starts.
 
 ## ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
-Folded into the 2.3.4 scope above. Kept here as an explicit marker
-in case 2.3.4 splits the L≥6 chain-walk work out from the SIMD
-work (then PCLMULQDQ lands in 2.3.4 and the chain-walk retry moves
-to its own slot).
+2.3.4 covered the CRC-32 throughput goal with a portable **slice-by-8**
+table fold (~2×, x86_64 + aarch64, wire-identical), so PCLMULQDQ is no
+longer on the critical path. It stays deferred as an x86-only further
+optimization: the aarch64 cross-build gate would need a parallel PMULL
+path or a scalar fallback, and hand-assembled CRC-folding bytes carry a
+silent-corruption risk that has to clear a high bar to be worth it over
+the slice-by-8 baseline. Revisit only if a consumer's profile shows
+CRC-32 back on the hot path. Reference: Intel "Fast CRC Computation …
+Using PCLMULQDQ" (whitepaper, Dec 2009).
+
+## ⏸ Deferred — DEFLATE match-finder throughput
+
+The wire-identical mandate blocks the obvious match-finder speedups
+(`good_match` and friends are speed/ratio tradeoffs that change output).
+A genuine win here needs an optimization that finds the *same* matches
+faster — e.g. tighter chain-walk scheduling, a better hash, or a
+lazy-match restructure that provably preserves output. Open-ended;
+pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 
 ---
 
@@ -253,13 +243,13 @@ self-contained but spec-dense.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.3.3**.
+> Current as of **2.3.4**.
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
 | types.cyr        |   37 | Enums: formats (incl. FORMAT_LZ4F), errors, limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
-| checksum.cyr     |  424 | Adler-32 / CRC-32 + incremental state APIs (alloc-using) | full |
+| checksum.cyr     |  424 | Adler-32 / CRC-32 (slice-by-8) + incremental state APIs (alloc-using) | full |
 | bitreader.cyr    |   99 | LSB-first bit-stream reader | full |
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes | full |
@@ -294,14 +284,14 @@ the four streaming variants and the tree-shape / skewed-freq
 harnesses).
 
 Distlib: `dist/sankoch.cyr` at 6,388 lines (full) +
-`dist/sankoch-core.cyr` at 312 lines (kernel-safe) — at 2.3.3.
+`dist/sankoch-core.cyr` at 312 lines (kernel-safe) — at 2.3.4.
 
 ## Dependencies
 
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; pin is 6.2.14).
+ship with Cyrius ≥ 6.0.1; pin is 6.2.15).
 
 ## Key References
 
@@ -316,4 +306,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.14).
 
 ---
 
-*Last Updated: 2026-06-16 (2.3.3 cut — configurable LZ4F block-max + per-block checksum)*
+*Last Updated: 2026-06-16 (2.3.4 cut — CRC-32 slice-by-8 + cyrius pin → 6.2.15)*
