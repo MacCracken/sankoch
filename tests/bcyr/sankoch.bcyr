@@ -437,6 +437,23 @@ fn main() {
     clen = compress(FORMAT_XZ, src4k, 4096, c, 16384);
     _print("  xz       "); _print_int(4096); _print(" -> "); _print_int(clen); _nl();
 
+    clen = compress(FORMAT_BZIP2, src4k, 4096, c, 16384);
+    _print("  bzip2    "); _print_int(4096); _print(" -> "); _print_int(clen); _nl();
+
+    println("");
+
+    # ---- bzip2 encode throughput (2.4.3) — informational, not SIZE-gated.
+    # Byte-identical to `bzip2 -9`; the BWT block-sort dominates the time.
+    println("--- bzip2 encode (BWT block-sort, 10 iters) ---");
+    fill_text(src4k, 4096);
+    bench_c("bz2 c text  4K", FORMAT_BZIP2, src4k, 4096, c, 16384, 10);
+    fill_zeros(src4k, 4096);
+    bench_c("bz2 c zeros 4K", FORMAT_BZIP2, src4k, 4096, c, 16384, 10);
+    fill_random(src4k, 4096);
+    bench_c("bz2 c rand  4K", FORMAT_BZIP2, src4k, 4096, c, 16384, 10);
+    fill_text(src4k, 4096);
+    clen = compress(FORMAT_BZIP2, src4k, 4096, c, 16384);
+    bench_d("bz2 d text  4K", FORMAT_BZIP2, c, clen, d, 16384, iters);
     println("");
 
     # ---- xz encode throughput (2.4.1) — informational, not SIZE-gated.

@@ -168,6 +168,10 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
         # optimal parse); the parameter is accepted for API uniformity.
         return _xz_compress_inner(src, src_len, dst, dst_cap);
     }
+    if (format == FORMAT_BZIP2) {
+        # bzip2 maps the level (1..9) to the block size (100..900 KB).
+        return _bz2_compress_inner(src, src_len, dst, dst_cap, level);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 

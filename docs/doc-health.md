@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-06-17 (v2.4.2 cut — bzip2 decode shipped) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-06-17 (v2.4.3 cut — bzip2 encode shipped; bzip2 codec + v2.4.x arc complete) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -52,13 +52,13 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-23 | ✅ Fresh | Architecture table refreshed to 6,299 source lines + 156 test functions + 1,708,518 assertions + 6,326-line distlib; stale "landing in next Cyrius lang release" line dropped (sankoch ships in 6.0.x stdlib); missing `xxhash32.cyr` + `lz4_decode.cyr` rows added. |
-| `CHANGELOG.md` | 2026-06-17 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.4.2] — 2026-06-17` (bzip2 decode — `bzip2_decompress` + `FORMAT_BZIP2` + CRC-32/BZIP2; test-split note folded in). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
+| `CHANGELOG.md` | 2026-06-17 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.4.3] — 2026-06-17` (bzip2 encode — `bzip2_compress`; byte-identical to `bzip2 -9`). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-05-23 | ✅ Fresh | Supported Versions table updated for 2.3.x; audit list extended through 2026-05-23-pre-2.3.0-redux. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-06-17 | ✅ Fresh | `2.4.2`. Single source of truth per the standards. |
+| `VERSION` | 2026-06-17 | ✅ Fresh | `2.4.3`. Single source of truth per the standards. |
 | `cyrius.cyml` | 2026-06-16 | ✅ Fresh | Toolchain pin `cyrius = "6.2.15"` (bumped from 6.2.14 in 2.3.4, folded into the CRC-32 work; clears the prior box/pin drift). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-06-17 | ✅ Fresh | **2.4.2 shipped — bzip2 decode.** Ladder: 2.4.0/2.4.1/2.4.2 ✅, 2.4.3 bzip2 encode next. File Summary refreshed (`src/bzip2.cyr` 503; total 9,126). Test/fuzz/distlib figures updated. |
-| `state.md` | 2026-06-17 | ✅ Fresh | Refreshed for 2.4.2. Version 2.4.2, in-flight = 2.4.3. Source 9,126 / 16 modules; tests 209 fns / 4,332,708 asserts; fuzz 2,949 / 4 files; dist 9,104 + 315. takumi now a bzip2 consumer. |
+| `roadmap.md` | 2026-06-17 | ✅ Fresh | **2.4.3 shipped — bzip2 encode; v2.4.x arc complete.** Ladder 2.4.0–2.4.3 all ✅. File Summary refreshed (`src/bzip2.cyr` 1,239; total 9,866). Test/fuzz/distlib figures updated. |
+| `state.md` | 2026-06-17 | ✅ Fresh | Refreshed for 2.4.3. Version 2.4.3, no committed in-flight slot. Source 9,866 / 16 modules; tests 218 fns / 4,483,768 asserts; fuzz 3,249 / 4 files; dist 9,844 + 315. |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
 

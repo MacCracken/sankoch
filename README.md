@@ -17,12 +17,13 @@ release in [`VERSION`](VERSION)).
 | zlib            | `FORMAT_ZLIB`    | ✓     | ✓         | Python `zlib.decompress` |
 | gzip            | `FORMAT_GZIP`    | ✓     | ✓         | `gunzip`               |
 | xz / LZMA2      | `FORMAT_XZ`      | ✓     | —         | `xz -dc` / `xz -d`     |
-| bzip2           | `FORMAT_BZIP2`   | decode | —        | `bzip2 -dc`            |
+| bzip2           | `FORMAT_BZIP2`   | ✓     | —         | `bzip2 -dc` / `bzip2 -d` |
 
-bzip2 is **decode-only** (`bzip2_decompress` / `FORMAT_BZIP2`, v2.4.2+) —
-BWT + MTF/RLE + Huffman pipeline with per-block CRC-32/BZIP2; handles
-concatenated streams. No bzip2 encoder yet (the forward BWT block-sort
-is v2.4.3).
+bzip2 is a **full codec** — decode (`bzip2_decompress` / `FORMAT_BZIP2`,
+v2.4.2+) and encode (`bzip2_compress` / `compress(FORMAT_BZIP2, …)`,
+v2.4.3+): BWT + MTF/RLE + multi-table Huffman, per-block CRC-32/BZIP2,
+concatenated streams. The encoder's output is byte-identical to
+`bzip2 -9` on the validation corpus.
 
 xz is a **full codec** — decode (`xz_decompress` / `FORMAT_XZ`, v2.4.0+)
 and encode (`xz_compress` / `compress(FORMAT_XZ, …)`, v2.4.1+). `.xz`
@@ -118,7 +119,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming                 | full    |
 | gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming          | full    |
 | xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder        | full    |
-| bzip2.cyr      | `.bz2` decode — bit reader + Huffman + MTF/RLE2 + inverse BWT + RLE1 (`bzip2_decompress`) | full  |
+| bzip2.cyr      | `.bz2` de/compress — bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 | full  |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
 | lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch                    | full    |
 

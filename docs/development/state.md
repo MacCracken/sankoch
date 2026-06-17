@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-17 (v2.4.2 cut — bzip2 decode shipped) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-17 (v2.4.3 cut — bzip2 encode shipped; bzip2 codec + v2.4.x arc complete) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.4.2` — single source of truth
+- **`VERSION`**: `2.4.3` — single source of truth
 - **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin
-- **Tag**: `2.4.2` (bare semver, no `v` prefix)
+- **Tag**: `2.4.3` (bare semver, no `v` prefix)
 - **Released**: 2026-06-17
 
 ## Distribution
@@ -28,25 +28,25 @@ type: state
 
 ## Source
 
-- **Source**: **9,126 lines** across 16 domain modules (`src/*.cyr`) — `src/bzip2.cyr` (**503**, decode) new at 2.4.2.
+- **Source**: **9,866 lines** across 16 domain modules (`src/*.cyr`) — `src/bzip2.cyr` is **1,239** (de/compress) after the 2.4.3 encoder.
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
 
-The suite is split into **16 per-codec × direction suites** under
+The suite is split into **17 per-codec × direction suites** under
 `tests/tcyr/`, sharing `_harness.tcyr` (includes + 4 MB heap setup +
 cross-cutting helpers).
 
 | Suite group                                   | Functions | Assertions |
 |-----------------------------------------------|----------:|-----------:|
-| `tests/tcyr/*.tcyr` (16 split suites)         |       199 |  3,986,125 |
+| `tests/tcyr/*.tcyr` (17 split suites)         |       208 |  4,137,185 |
 | `tests/tcyr/git_object.tcyr`                  |        10 |    346,583 |
-| **Total**                                     |   **209** | **4,332,708** |
+| **Total**                                     |   **218** | **4,483,768** |
 
 Split suites: `checksum`, `lz4_{compress,decompress}`,
 `lz4f_{compress,decompress}`, `deflate_{compress,decompress}`,
 `zlib_{compress,decompress}`, `gzip_{compress,decompress}`,
-`xz_{compress,decompress}`, `bzip2_decompress`, `stream`,
+`xz_{compress,decompress}`, `bzip2_{compress,decompress}`, `stream`,
 `detect_error`. Run one with `cyrius test tests/tcyr/<name>.tcyr`, or
 all with bare `cyrius test`.
 
@@ -54,38 +54,41 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 ## Fuzz totals
 
-- **2,949 iterations** across 16 harness functions in 4 files:
+- **3,249 iterations** across 17 harness functions in 4 files:
   - `fuzz/fuzz_lz4.fcyr`: 700 (round-trip 500 + malformed 200)
   - `fuzz/fuzz_deflate.fcyr`: 949 (deflate batch 340 + zlib 160 + gzip 160 + 4 streaming variants 204 + tree-shape 55 + skewed-freq 30)
   - `fuzz/fuzz_xz.fcyr`: 800 (random-input 300 + corruption 200 + encode→decode round-trip 300)
-  - `fuzz/fuzz_bzip2.fcyr`: 500 (random-input 300 + corruption 200) — new at 2.4.2
+  - `fuzz/fuzz_bzip2.fcyr`: 800 (random-input 300 + corruption 200 + encode→decode round-trip 300)
 
 ## Dist bundles
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 9,104 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F + xz de/compress + bzip2 decode, batch + streaming |
+| `dist/sankoch.cyr`           | 9,844 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F + xz de/compress + bzip2 de/compress, batch + streaming |
 | `dist/sankoch-core.cyr`      |   315 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
 
 Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
 
 ## In-flight slots
 
-**2.4.2 (bzip2 decode) shipped** 2026-06-17 — `bzip2_decompress` +
-`FORMAT_BZIP2` extract `.bz2` / `.tar.bz2` (BWT + Huffman + MTF/RLE
-chain), validated against `bzip2 -dc`. The 2.4.x arc closes with the
-bzip2 encoder per [`roadmap.md`](roadmap.md):
+**2.4.3 (bzip2 encode) shipped** 2026-06-17 — `bzip2_compress` +
+`compress(FORMAT_BZIP2, …)` emit `.bz2` that `bzip2 -d` decodes;
+**byte-identical to `bzip2 -9`** on the corpus. The bzip2 codec and the
+entire **v2.4.x arc are complete** (xz + bzip2, both directions):
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
 | ✅ 2.4.0   | xz / LZMA decode (`FORMAT_XZ`) — **shipped**; unblocks takumi `.tar.xz`          | large        |
 | ✅ 2.4.1   | xz / LZMA **encode** (`xz_compress`, optimal parse) — **shipped**               | large        |
 | ✅ 2.4.2   | bzip2 decode (`FORMAT_BZIP2`) — **shipped**; unblocks takumi `.tar.bz2`          | medium-large |
-| **2.4.3**  | bzip2 encode (`bzip2_compress`) — forward BWT block-sort ← next                 | large        |
+| ✅ 2.4.3   | bzip2 **encode** (`bzip2_compress`, BWT block-sort) — **shipped**               | large        |
 
-DEFLATE throughput round 2 (the old 2.3.4 slot) partially delivered as
-CRC-32 slice-by-8; `good_match` dropped and PCLMULQDQ deferred — see the
-two deferred markers in [`roadmap.md`](roadmap.md).
+Next minor is open (no committed slot). Candidate follow-ons: bzip2/xz
+encoder throughput passes; the Future bucket (Zstandard, Brotli) per
+[`roadmap.md`](roadmap.md). DEFLATE throughput round 2 (old 2.3.4 slot)
+partially delivered as CRC-32 slice-by-8; `good_match` dropped and
+PCLMULQDQ deferred — see the two deferred markers in
+[`roadmap.md`](roadmap.md).
 
 ## Consumers
 
@@ -96,13 +99,13 @@ two deferred markers in [`roadmap.md`](roadmap.md).
 | AGNOS kernel       | LZ4              | initrd, snapshots                    |
 | shravan / tarang   | DEFLATE, gzip    | Embedded compressed streams          |
 | sit                | zlib             | Git-object reads (post-v2.0.3)       |
-| takumi             | gzip, **xz**, **bzip2** | `.tar.gz` + `.tar.xz` (2.4.0) + `.tar.bz2` (2.4.2) source extraction (decode); xz encode available post-2.4.1 |
+| takumi             | gzip, **xz**, **bzip2** | `.tar.gz` + `.tar.xz` (2.4.0) + `.tar.bz2` (2.4.2) extraction; xz encode (2.4.1) + bzip2 encode (2.4.3) also available |
 | Any crate          | All              | Replaces zlib FFI / shelling to gzip |
 
 ## CI / release gates
 
 - **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (21 deps, 0 untrusted, 0 missing).
-- **Tests**: all tcyr suites green (16 split codec×direction suites + `git_object`, auto-discovered by the CI Test loop); all 16 fuzz harness functions green.
+- **Tests**: all tcyr suites green (17 split codec×direction suites + `git_object`, auto-discovered by the CI Test loop); all 17 fuzz harness functions green.
 - **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The 2.4.1 xz encoder is **deliberately excluded** from this gate — its output will keep being tuned, so it ships an informational ratio line in `bench` instead.
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
@@ -116,6 +119,7 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.4.3  | 2026-06-17 | bzip2 encode (`bzip2_compress`; forward BWT block-sort; byte-identical to `bzip2 -9`) |
 | 2.4.2  | 2026-06-17 | bzip2 decode (`bzip2_decompress` + `FORMAT_BZIP2` + CRC-32/BZIP2; BWT pipeline) |
 | 2.4.1  | 2026-06-16 | xz / LZMA encode (`xz_compress`, optimal parse; `xz -d` round-trips) |
 | 2.4.0  | 2026-06-16 | xz / LZMA decode (`FORMAT_XZ` + `xz_decompress` + CRC-64/XZ; decode-only) |

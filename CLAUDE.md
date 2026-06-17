@@ -68,7 +68,7 @@ src/
   zlib.cyr         — zlib wrapper + FDICT batch + zlib_enc_* + zlib_dec_*
   gzip.cyr         — gzip wrapper + concatenated batch + gzip_enc_* + gzip_dec_*
   xz.cyr           — .xz de/compress: container + LZMA2 + LZMA range coder, optimal-parse encoder (xz_decompress / xz_compress)
-  bzip2.cyr        — .bz2 decode: bit reader + Huffman + MTF/RLE2 + inverse BWT + RLE1 (bzip2_decompress) — decode only
+  bzip2.cyr        — .bz2 de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (bzip2_decompress / bzip2_compress)
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
 programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules

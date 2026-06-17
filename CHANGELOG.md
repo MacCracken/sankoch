@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.4.2] — 2026-06-17
+## [2.4.3] — 2026-06-17
+
+**bzip2 encode (`bzip2_compress` + `compress(FORMAT_BZIP2, …)`).** Closes
+the bzip2 codec — sankoch now emits `.bz2` that `bzip2 -d` decodes and
+our own `bzip2_decompress` round-trips. On the validation corpus the
+output is **byte-identical to `bzip2 -9`**. Zero new dependencies.
+
+### Added
+
+- **`bzip2_compress(src, src_len, dst, dst_cap)`** (level 9) +
+  `compress(FORMAT_BZIP2, …)` (the level 1–9 maps to the 100–900 KB block
+  size). Encoder appended to [`src/bzip2.cyr`](src/bzip2.cyr) (~740
+  lines): RLE1 → **forward BWT block-sort** (prefix-doubling suffix sort,
+  counting-sort rounds, O(n log n)) → MTF + RLE2 → **multi-table Huffman**
+  (libbzip2 `sendMTFValues`: 2–6 tables, 4 refinement passes, per-50-symbol
+  group selectors, length-limited code construction capped at 20) →
+  MSB-first bit packing → `.bz2` container (`BZh` header, per-block magic
+  / CRC-32-BZIP2 / origPtr / symbol map, EOS magic + combined CRC).
+  Multi-block by level.
+
+### Tests / fuzz / bench
+
+- New suite [`tests/tcyr/bzip2_compress.tcyr`](tests/tcyr/bzip2_compress.tcyr)
+  (9 tests: empty / small / all-same / periodic / text / RLE-runs /
+  pseudo-random / ~120 KB / public-API path) — our encode → our decode,
+  byte-for-byte.
+- [`fuzz/fuzz_bzip2.fcyr`](fuzz/fuzz_bzip2.fcyr): +300 encode→decode
+  round-trip iterations (random / periodic / mostly-constant shapes).
+- `bench`: a bzip2 compress/decompress section + a ratio line
+  (informational — not in the SIZE gate).
+
+### Conformance / ratio
+
+- `bzip2 -d` decodes every fixture we emit; our own `bzip2_decompress`
+  round-trips. Validated out-of-band across 0–1.2 MB (multi-block),
+  random/zero/text/sequential/RLE-heavy content. **Byte-identical to
+  `bzip2 -9`** on the corpus (faithful BWT + `sendMTFValues` port), so
+  ratio is at parity.
+
+### Notes
+
+- The BWT block-sort dominates encode time (~0.7 ms/KB); fine for the
+  archival/one-shot use this targets. The wire-format SIZE gate is
+  unchanged at 43 lines (bzip2 encode is not gated).
 
 **bzip2 decode (`bzip2_decompress` + `FORMAT_BZIP2`) — decode only.**
 Rounds out the source-tarball codecs alongside the 2.4.0 xz decode path:

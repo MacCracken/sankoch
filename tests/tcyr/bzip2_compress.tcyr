@@ -1,0 +1,160 @@
+# sankoch — bzip2 — compress (round-trip: our encode → our decode)
+#
+# Reference conformance (bzip2 -d decodes our output) is verified
+# out-of-band against the `bzip2` CLI, per CLAUDE.md. Our encoder in fact
+# produces byte-identical output to `bzip2 -9` on the validation corpus.
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/bzip2_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+# Compress src[0..n) then decompress; assert byte-identical recovery.
+# Returns the compressed length.
+fn _bz_rt(src, n, label) {
+    var cap = n + 8192;
+    var comp = alloc(cap);
+    var clen = bzip2_compress(src, n, comp, cap);
+    assert(clen > 0, label);
+    var out = alloc(n + 16);
+    var dlen = bzip2_decompress(comp, clen, out, n + 16);
+    assert(dlen == n, label);
+    var i = 0;
+    while (i < n) {
+        assert(load8(out + i) == load8(src + i), label);
+        i = i + 1;
+    }
+    return clen;
+}
+
+fn test_bzip2_enc_empty() {
+    var src = alloc(1);
+    var clen = _bz_rt(src, 0, "bzip2_enc empty");
+    assert(clen > 0, "bzip2_enc empty produces a stream");
+    return 0;
+}
+
+fn test_bzip2_enc_small() {
+    var src = alloc(64);
+    var s = "Hello, bzip2 encoder! Hello, bzip2!!";
+    var i = 0;
+    while (i < 36) { store8(src + i, load8(s + i)); i = i + 1; }
+    _bz_rt(src, 36, "bzip2_enc small");
+    return 0;
+}
+
+fn test_bzip2_enc_allsame() {
+    var n = 5000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 65); i = i + 1; }
+    var clen = _bz_rt(src, n, "bzip2_enc allsame");
+    assert(clen < 100, "bzip2_enc allsame ratio");
+    return 0;
+}
+
+fn test_bzip2_enc_periodic() {
+    var n = 6000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 97 + (i % 7)); i = i + 1; }
+    var clen = _bz_rt(src, n, "bzip2_enc periodic");
+    assert(clen < n / 4, "bzip2_enc periodic compresses");
+    return 0;
+}
+
+fn test_bzip2_enc_text() {
+    var n = 5000;
+    var src = alloc(n);
+    var w = "the quick brown fox jumps over the lazy dog ";
+    var i = 0;
+    while (i < n) { store8(src + i, load8(w + (i % 44))); i = i + 1; }
+    var clen = _bz_rt(src, n, "bzip2_enc text");
+    assert(clen < n / 2, "bzip2_enc text compresses");
+    return 0;
+}
+
+fn test_bzip2_enc_rle() {
+    # long runs exercise the RLE1 path + count bytes
+    var n = 8000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 66 + ((i / 300) % 4)); i = i + 1; }
+    _bz_rt(src, n, "bzip2_enc rle");
+    return 0;
+}
+
+fn test_bzip2_enc_pseudorandom() {
+    var n = 4000;
+    var src = alloc(n);
+    var st = 2463534242;
+    var i = 0;
+    while (i < n) {
+        st = st ^ (st << 13);
+        st = st ^ ((st >> 7) & 0x1FFFFFFFFFFFFFF);
+        st = st ^ (st << 17);
+        store8(src + i, st & 255);
+        i = i + 1;
+    }
+    _bz_rt(src, n, "bzip2_enc pseudorandom");
+    return 0;
+}
+
+fn test_bzip2_enc_large() {
+    # ~120 KB single block; mixed structure
+    var n = 120000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var v = (i % 251);
+        if ((i % 5) == 0) { v = 88; }
+        store8(src + i, v & 255);
+        i = i + 1;
+    }
+    var clen = _bz_rt(src, n, "bzip2_enc large");
+    assert(clen < n, "bzip2_enc large compresses");
+    return 0;
+}
+
+fn test_bzip2_enc_public_api() {
+    var n = 3000;
+    var src = alloc(n);
+    var w = "AGNOS sankoch bzip2 public api round trip ";
+    var i = 0;
+    while (i < n) { store8(src + i, load8(w + (i % 42))); i = i + 1; }
+    var cap = n + 8192;
+    var comp = alloc(cap);
+    var clen = compress(FORMAT_BZIP2, src, n, comp, cap);
+    assert(clen > 0, "bzip2 public compress");
+    assert(detect_format(comp, clen) == FORMAT_BZIP2, "bzip2 public detect");
+    var out = alloc(n + 16);
+    var dlen = decompress(FORMAT_BZIP2, comp, clen, out, n + 16);
+    assert(dlen == n, "bzip2 public decompress len");
+    i = 0;
+    while (i < n) {
+        assert(load8(out + i) == load8(src + i), "bzip2 public byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_bzip2_enc_empty();
+    test_bzip2_enc_small();
+    test_bzip2_enc_allsame();
+    test_bzip2_enc_periodic();
+    test_bzip2_enc_text();
+    test_bzip2_enc_rle();
+    test_bzip2_enc_pseudorandom();
+    test_bzip2_enc_large();
+    test_bzip2_enc_public_api();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
