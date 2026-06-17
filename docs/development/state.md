@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-05-23 (v2.3.0 cut — true incremental decompression) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.3.2 cut — cyrius pin → 6.2.14) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,14 +14,14 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.0` — single source of truth
-- **`cyrius.cyml [package].cyrius`**: `6.0.1` — toolchain pin
-- **Tag**: `2.3.0` (bare semver, no `v` prefix)
-- **Released**: 2026-05-23
+- **`VERSION`**: `2.3.2` — single source of truth
+- **`cyrius.cyml [package].cyrius`**: `6.2.14` — toolchain pin
+- **Tag**: `2.3.2` (bare semver, no `v` prefix)
+- **Released**: 2026-06-16
 
 ## Distribution
 
-- **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius 6.0.x toolchain releases (full profile).
+- **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius 6.2.x toolchain releases (full profile).
 - **Kernel-safe subset**: `lib/sankoch-core.cyr` ships alongside since the 2.1.2 cut (LZ4 batch decompress only; no alloc / no syscalls / no mutex).
 - **Consumers import via**: `include "lib/sankoch.cyr"` — no separate `[deps]` declaration in their `cyrius.cyml`.
 - **Stdlib fold-in history**: 2.0.2 in Cyrius 5.6.34; 2.0.3 in 5.6.35; 2.1.0 in the 5.6.42 era; 2.1.1 / 2.1.2 in 5.7.x; 2.2.4 in 5.8.65 (foldin manifest pre-req); 2.2.5 in the 5.11.x line; 2.2.6 / 2.3.0 in the 6.0.x line.
@@ -51,21 +51,25 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 6,326 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
-| `dist/sankoch-core.cyr`      |   315 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
+| `dist/sankoch.cyr`           | 6,279 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
+| `dist/sankoch-core.cyr`      |   300 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
 
 Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
 
 ## In-flight slots
 
-Empty at 2.3.0 cut. Next items per [`roadmap.md`](roadmap.md):
+Empty at 2.3.2 cut (2.3.1 / 2.3.2 were pin-bump patches, no source
+change). Next items per [`roadmap.md`](roadmap.md) — feature ladder
+renumbered to 2.3.3+ after the two pin-bump slots:
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.3.1**  | configurable LZ4F block-max + streaming per-block checksum                      | medium       |
-| **2.3.2**  | DEFLATE throughput round 2 (good_length retry + PCLMULQDQ CRC-32)               | medium       |
-| **2.3.3**  | streaming-decode hardening (FDICT zlib, multi-member gzip, lazy-global alloc-fail, FHCRC verify) | medium-large |
-| **2.3.4**  | P(-1) closeout for the 2.3.x line                                                | medium       |
+| **2.3.3**  | configurable LZ4F block-max + streaming per-block checksum                      | medium       |
+| **2.3.4**  | DEFLATE throughput round 2 (good_length retry + PCLMULQDQ CRC-32)               | medium       |
+| **2.3.5**  | streaming-decode hardening (FDICT zlib, multi-member gzip, lazy-global alloc-fail, FHCRC verify) | medium-large |
+| **2.3.6**  | P(-1) closeout for the 2.3.x line                                                | medium       |
+| **2.4.0**  | xz / LZMA decode (`FORMAT_XZ`) — unblocks takumi `.tar.xz` extraction            | large        |
+| **2.4.1**  | bzip2 decode (`FORMAT_BZIP2`) — takumi `.tar.bz2` extraction                     | medium-large |
 
 ## Consumers
 
@@ -95,18 +99,18 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.3.2  | 2026-06-16 | Cyrius pin → 6.2.14 (stdlib pin sweep; no source change) |
+| 2.3.1  | 2026-06-12 | Cyrius pin → 6.2.1 (stdlib pin sweep; no source change) |
 | 2.3.0  | 2026-05-23 | True incremental decompression (DEFLATE / zlib / gzip / LZ4F `*_dec_*` + `stream_decompress_init_inc`) |
 | 2.2.7  | 2026-05-23 | P(-1) closeout against Cyrius 6.0.1                   |
 | 2.2.6  | 2026-05-20 | Cyrius 6.0.1 toolchain bump + `cycc_aarch64` rename   |
 | 2.2.5  | 2026-05-11 | Stdlib `: i64` annotation pass; Cyrius 5.11.4         |
-| 2.2.4  | 2026-05-05 | Cyrius 5.8.64 toolchain bump                          |
-| 2.2.3  | 2026-05-01 | P(-1) closeout for the 2.2.x line                     |
 
 ## Open INFOs carried forward
 
-Tracked items the next P(-1) (2.3.4) should resolve or rebase. From the most recent audit ([`docs/audit/2026-05-23-pre-2.3.0-redux.md`](../audit/2026-05-23-pre-2.3.0-redux.md)):
+Tracked items the next P(-1) (2.3.6) should resolve or rebase. From the most recent audit ([`docs/audit/2026-05-23-pre-2.3.0-redux.md`](../audit/2026-05-23-pre-2.3.0-redux.md)):
 
-- **INFO-A** — 35 lazy-global alloc sites still abort on first-call OOM. Carried from 2.2.1 / 2.2.3. Scoped to 2.3.3.
+- **INFO-A** — 35 lazy-global alloc sites still abort on first-call OOM. Carried from 2.2.1 / 2.2.3. Scoped to 2.3.5.
 - **INFO-B** — `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len`. Already enforced at runtime; docstring-polish item.
 - **INFO-C** — aarch64 LZ77 8-byte word-compare uses unaligned `load64`. Permitted by ARMv6+ but some implementations pay a cycle penalty. Flagged for future investigation if aarch64 perf benchmarks surface this as hot.
 

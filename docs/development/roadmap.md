@@ -1,23 +1,31 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.3.0) | **Last Updated**: 2026-05-23
+> **Status**: Stable (v2.3.2) | **Last Updated**: 2026-06-16
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
 contract — adjust if a P(-1) pass surfaces something that has to slot
 in. Items further down can be re-ordered against new information.
 
+> **Numbering note.** 2.3.1 and 2.3.2 shipped as cyrius pin-bump
+> releases (→ 6.2.1, → 6.2.14) with no source change, consuming the
+> two patch slots the feature ladder below originally planned. The
+> feature items have been renumbered to 2.3.3+ accordingly. xz/bzip2
+> decode (takumi-driven) opens the 2.4.x line — additive `FORMAT_*`
+> APIs are a minor bump.
+
 ---
 
-## v2.3.x ladder (sequenced, post-2.3.0)
+## v2.3.x ladder (sequenced, post-2.3.2)
 
-The 2.3.x line continues from the streaming-decompression cut. The
-two pre-2.3.0 items (configurable LZ4F block-max, DEFLATE throughput
-round 2) keep their slots; the new follow-on item rolls up the
-deferred work from the 2.3.0 bite ladder plus carried INFOs from
-the 2.1.3 / 2.2.3 audits. P(-1) closes the line before 2.4.0 opens.
+The 2.3.x line continues from the streaming-decompression cut (2.3.0)
+through two pin-bump patches (2.3.1, 2.3.2). The two pre-2.3.0 items
+(configurable LZ4F block-max, DEFLATE throughput round 2) keep their
+slots; the follow-on item rolls up the deferred work from the 2.3.0
+bite ladder plus carried INFOs from the 2.1.3 / 2.2.3 audits. P(-1)
+closes the line before 2.4.0 opens.
 
-### 🎯 2.3.1 — configurable LZ4F block-max + streaming per-block checksum
+### 🎯 2.3.3 — configurable LZ4F block-max + streaming per-block checksum
 
 Adds public API → minor bump. BD byte spec (LZ4 Block Format §1.2)
 defines four block-max values: 64K (4), 256K (5), 1M (6), 4M (7).
@@ -49,7 +57,7 @@ decoder shipped with.
 machine work for the per-block checksum; the BD parameter plumbing
 is well-scoped.
 
-### 🎯 2.3.2 — DEFLATE throughput round 2
+### 🎯 2.3.4 — DEFLATE throughput round 2
 
 Continues the throughput investigation surfaced by sit v0.6.4
 (2026-04-25). The three foundational down-payments landed in 2.1.0
@@ -84,7 +92,7 @@ that.
 **Sizing:** medium. PCLMULQDQ is contained; the L≥6 retry is a
 think-first job.
 
-### 🎯 2.3.3 — streaming-decode hardening (deferred 2.3.0 items + carried INFOs)
+### 🎯 2.3.5 — streaming-decode hardening (deferred 2.3.0 items + carried INFOs)
 
 Rolls up the items the 2.3.0 bite ladder deferred plus three INFO
 observations carried across the 2.1.3 / 2.2.3 audits. No single item
@@ -135,7 +143,7 @@ multi-member gzip is medium; FHCRC verify and lazy-global hardening
 are small individually but the test matrix for the alloc-fail
 expansion is substantial.
 
-### 🎯 2.3.4 — P(-1) closeout for the 2.3.x line
+### 🎯 2.3.6 — P(-1) closeout for the 2.3.x line
 
 CLAUDE.md's P(-1) pre-feature checklist; closes the 2.3.x line and
 is the entry door to 2.4.0+ work. Same template as the 2.1.3 / 2.2.3
@@ -149,7 +157,7 @@ is the entry door to 2.4.0+ work. Same template as the 2.1.3 / 2.2.3
 - Benchmark baseline: full `cyrius bench tests/bcyr/sankoch.bcyr`
   CSV archived to `docs/benchmarks/` — reference for 2.4.0+.
 - Internal deep review — gaps, optimization candidates, correctness
-  questions surfaced during 2.3.0 / 2.3.1 / 2.3.2 / 2.3.3 work that
+  questions surfaced during 2.3.0 / 2.3.3 / 2.3.4 / 2.3.5 work that
   didn't rise to a release on their own.
 - External research — RFC errata sweep, zlib / reference `lz4` /
   reference gzip changes since the 2.2.3-era audit.
@@ -158,9 +166,9 @@ is the entry door to 2.4.0+ work. Same template as the 2.1.3 / 2.2.3
   bypasses (mirror of the HIGH-01 fix from 2.1.3); the
   bit-accumulator overpull rewind in zlib/gzip wrappers; the
   streaming-LZ4F block-buffer sizing under varied BD values
-  (post-2.3.1); the new alloc-fail propagation paths (post-2.3.3).
+  (post-2.3.3); the new alloc-fail propagation paths (post-2.3.5).
 - Follow-up on the three INFO observations carried into 2.3.x —
-  most should be closed by 2.3.3 (lazy-global alloc-fail, FHCRC
+  most should be closed by 2.3.5 (lazy-global alloc-fail, FHCRC
   verify). Document remaining INFOs.
 - Additional tests / benchmarks from findings.
 - Documentation audit — CLAUDE.md, roadmap, CHANGELOG, README,
@@ -168,19 +176,84 @@ is the entry door to 2.4.0+ work. Same template as the 2.1.3 / 2.2.3
 
 **Sizing:** medium. Mostly process; no API or source change
 expected unless the audit surfaces something. If a finding wants
-a non-trivial fix, P(-1) calls it out and 2.3.5 picks it up
+a non-trivial fix, P(-1) calls it out and 2.3.7 picks it up
 before 2.4.0 starts.
 
 ---
 
 ## ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
-Folded into the 2.3.2 scope above. Kept here as an explicit marker
-in case 2.3.2 splits the L≥6 chain-walk work out from the SIMD
-work (then PCLMULQDQ lands in 2.3.2 and the chain-walk retry moves
+Folded into the 2.3.4 scope above. Kept here as an explicit marker
+in case 2.3.4 splits the L≥6 chain-walk work out from the SIMD
+work (then PCLMULQDQ lands in 2.3.4 and the chain-walk retry moves
 to its own slot).
 
 ---
+
+## v2.4.x ladder — decode-only xz / bzip2 (takumi-driven)
+
+Opens after the 2.3.x line closes (P(-1) at 2.3.6). Driven by
+**takumi** source extraction: `extract_archive` in takumi handles
+`.tar` and `.tar.gz` today (via `gzip_decompress`), but `.tar.xz`
+and `.tar.bz2` are rejected because sankoch has no LZMA or bzip2
+path. Many upstream source releases ship `.tar.xz`, so this is the
+practical gap.
+
+Scope is **decompression only** (extracting downloaded tarballs) —
+the encoder side is *not* required and stays in the full-codec
+Future bucket below. Decode-only is a much smaller effort than a
+complete codec. Each new `FORMAT_*` + public `*_decompress` entry
+point is additive API → **minor bump** (hence 2.4.x, not patch).
+
+Consumer/conformance reference: takumi `src/source.cyr`
+(`extract_archive` sniff + dispatch) and [takumi ADR 0002](https://github.com/MacCracken/takumi)
+(`docs/adr/0002-source-extraction-safety.md`). Once each lands,
+takumi adds the matching `FORMAT_*` sniff branch and lifts the
+corresponding `.tar.xz` / `.tar.bz2` rejection.
+
+### 🎯 2.4.0 — xz / LZMA decode
+
+**Priority** (xz is the common modern source-tarball format; this is
+what unblocks takumi). Adds `xz_decompress` / `lzma_decompress` +
+`FORMAT_XZ`. Promotes the entropy/prediction stages noted under LZMA
+in Future to a concrete decode-only deliverable.
+
+**Scope:**
+- `.xz` container parse (stream header magic `FD 37 7A 58 5A 00`,
+  block headers, index, stream footer) + the LZMA2 chunk framing
+  inside. CRC-32 / CRC-64 check fields validated against the inline
+  checksums (CRC-64 is new — ~30 LoC table primitive alongside the
+  existing CRC-32).
+- LZMA decode core: range decoder (entropy stage) + LZ77-style
+  match/literal model with the position/state context bits.
+  Primitive starting points per the table below — Opus range coder
+  for entropy, FLAC LPC for prediction scaffolding.
+- Decode-only: no encoder, no `.lzma` (legacy alone-format) unless a
+  consumer surfaces it.
+- Conformance: round-trip reference `.tar.xz` source tarballs against
+  `xz -dc`; takumi adds the `FORMAT_XZ` sniff branch.
+
+**Sizing:** large. The range decoder + LZMA state model is the bulk;
+take it in bites (container parse → range decoder → LZMA core →
+takumi wiring), per CLAUDE.md large-task discipline.
+
+### 🎯 2.4.1 — bzip2 decode
+
+Lower priority (legacy; rare for new releases, but still in the wild).
+Adds `bzip2_decompress` + `FORMAT_BZIP2`.
+
+**Scope:**
+- `.bz2` stream parse (magic `BZh` + block magic
+  `31 41 59 26 53 59`) + per-block CRC validation.
+- Decode pipeline: Huffman decode → MTF (move-to-front) inverse →
+  RLE2 → inverse BWT (Burrows-Wheeler) → RLE1. The inverse BWT is the
+  non-obvious piece (build the transform vector, walk it).
+- Decode-only; no encoder.
+- Conformance: round-trip reference `.tar.bz2` against `bzip2 -dc`;
+  takumi adds the `FORMAT_BZIP2` sniff branch.
+
+**Sizing:** medium-large. Inverse BWT + the MTF/RLE chain is
+self-contained but spec-dense.
 
 ## Future (separate crate or major version)
 
@@ -247,15 +320,15 @@ Fuzz: 1,649 iterations across 6 harnesses (`fuzz_lz4` 700,
 the four streaming variants and the tree-shape / skewed-freq
 harnesses).
 
-Distlib: `dist/sankoch.cyr` at 6,326 lines (full) +
-`dist/sankoch-core.cyr` at 315 lines (kernel-safe).
+Distlib: `dist/sankoch.cyr` at 6,279 lines (full) +
+`dist/sankoch-core.cyr` at 300 lines (kernel-safe) — at 2.3.2.
 
 ## Dependencies
 
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1, which is the current pin).
+ship with Cyrius ≥ 6.0.1; pin is 6.2.14).
 
 ## Key References
 
@@ -270,4 +343,4 @@ ship with Cyrius ≥ 6.0.1, which is the current pin).
 
 ---
 
-*Last Updated: 2026-05-23 (2.3.0 cut — true incremental decompression)*
+*Last Updated: 2026-06-16 (2.3.2 cut — cyrius pin → 6.2.14; ladder renumbered, 2.4.x xz/bzip2 sequenced)*
