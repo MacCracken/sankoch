@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.3.7) | **Last Updated**: 2026-06-16
+> **Status**: Stable (v2.3.8 — 2.3.x line closed) | **Last Updated**: 2026-06-16
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
@@ -15,75 +15,38 @@ in. Items further down can be re-ordered against new information.
 > **2.3.4** (CRC-32 slice-by-8 + cyrius pin → 6.2.15), **2.3.5** (gzip
 > streaming hardening — FHCRC verify + concatenated members), **2.3.6**
 > (streaming FDICT zlib), **2.3.7** (lazy-global alloc-fail propagation,
-> INFO-A) — see `CHANGELOG.md`. The old bundled "2.3.5 streaming
-> hardening" slot was fully unwound across 2.3.5–2.3.7; only the P(-1)
-> closeout (2.3.8) remains before 2.4.0. xz/bzip2 decode (takumi-driven)
-> opens the 2.4.x line — additive `FORMAT_*` APIs are a minor bump.
+> INFO-A), **2.3.8** (P(-1) closeout — 2.3.x line closed) — see
+> `CHANGELOG.md`. **The 2.3.x line is complete.** Next is the 2.4.x
+> decode-only xz/bzip2 (takumi-driven) arc — additive `FORMAT_*` APIs,
+> a minor bump.
 
 ---
 
-## v2.3.x ladder (sequenced, post-2.3.7)
+## ✅ v2.3.x line — COMPLETE
 
-The 2.3.x line continues from the streaming-decompression cut (2.3.0)
-through two pin-bump patches (2.3.1, 2.3.2), configurable-block-max
-(2.3.3), CRC-32 throughput (2.3.4), gzip streaming hardening (2.3.5),
-streaming FDICT zlib (2.3.6), and lazy-global alloc-fail propagation
-(2.3.7 — INFO-A closed). Only the P(-1) closeout remains before 2.4.0.
+Shipped, in order: **2.3.0** streaming decompression · **2.3.1 / 2.3.2**
+cyrius pin bumps (6.2.1, 6.2.14) · **2.3.3** configurable LZ4F block-max
++ per-block checksum · **2.3.4** CRC-32 slice-by-8 + pin 6.2.15 ·
+**2.3.5** gzip FHCRC verify + concatenated-member streaming · **2.3.6**
+streaming FDICT zlib · **2.3.7** lazy-global alloc-fail propagation
+(INFO-A closed) · **2.3.8** P(-1) closeout. Per-cut detail is in
+`CHANGELOG.md`; the 2.3.8 audit + benchmark baseline are in
+[`docs/audit/2026-06-16-pre-2.4.0.md`](../audit/2026-06-16-pre-2.4.0.md)
+and [`docs/benchmarks/2026-06-16-pre-2.4.0.md`](../benchmarks/2026-06-16-pre-2.4.0.md).
 
-> **2.3.4 note — "DEFLATE throughput round 2" partially delivered.**
-> The CRC-32 throughput goal landed as a portable **slice-by-8** rewrite
-> (~2×, wire-identical) rather than PCLMULQDQ. The `good_match`
-> chain-walk early-exit was implemented, measured (a no-op on the bench
-> inputs — same prior-revert outcome), and **dropped**: it is wire-safe
-> only where it gives no speedup and faster only where it changes the
-> selected matches (breaking the SIZE gate), so it cannot ship under the
-> wire-identical mandate. See the 2.3.4 benchmark note. The deeper
-> DEFLATE match-finder throughput question (and PCLMULQDQ) carries to
-> the deferred marker below.
+Two scope calls worth remembering when the relevant work resurfaces:
 
-> **The old bundled "2.3.5 streaming-decode hardening" slot was fully
-> unwound** across 2.3.5 (FHCRC + concatenated gzip), 2.3.6 (FDICT zlib),
-> and 2.3.7 (lazy-global alloc-fail propagation — INFO-A closed; added
-> `ERR_OOM`, a `_sankoch_reset_tables` test hook, an OOM fault-injection
-> sweep, and fixed a pre-existing batch-encoder bitwriter-OOM segfault).
-> See `CHANGELOG.md`. Only the P(-1) closeout remains.
-
-### 🎯 2.3.8 — P(-1) closeout for the 2.3.x line
-
-CLAUDE.md's P(-1) pre-feature checklist; closes the 2.3.x line and
-is the entry door to 2.4.0+ work. Same template as the 2.1.3 / 2.2.3
-/ 2.2.7 closeouts.
-
-**Scope (per CLAUDE.md "P(-1): Scaffold Hardening"):**
-- Cleanliness gates: `cyrius build` 0 warnings on the library path,
-  `cyrius lint` 0 warnings, `cyrfmt --check` clean,
-  `cyrius vet src/lib.cyr` clean.
-- Test sweep: both tcyr suites green, all fuzz harnesses green.
-- Benchmark baseline: full `cyrius bench tests/bcyr/sankoch.bcyr`
-  CSV archived to `docs/benchmarks/` — reference for 2.4.0+.
-- Internal deep review — gaps, optimization candidates, correctness
-  questions surfaced during 2.3.0 / 2.3.3–2.3.7 work that didn't rise
-  to a release on their own.
-- External research — RFC errata sweep, zlib / reference `lz4` /
-  reference gzip changes since the 2.2.3-era audit.
-- Security audit — `docs/audit/2026-MM-DD-pre-2.4.0.md`. Specifically
-  re-checks: the new `*_dec_*` state-machine paths for source-bounds
-  bypasses (mirror of the HIGH-01 fix from 2.1.3); the
-  bit-accumulator overpull rewind in zlib/gzip wrappers; the
-  streaming-LZ4F block-buffer sizing under varied BD values
-  (post-2.3.3); the new alloc-fail propagation paths (post-2.3.7);
-  the streaming FDICT dict-scratch match-copy (post-2.3.6).
-- Follow-up on the three INFO observations carried into 2.3.x —
-  FHCRC verify closed at 2.3.5, lazy-global alloc-fail at 2.3.7.
-  Document remaining INFOs.
-- Additional tests / benchmarks from findings.
-- Documentation audit — CLAUDE.md, roadmap, CHANGELOG, README,
-  cyrius-usage.md.
-
-**Sizing:** medium. Mostly process; no API or source change
-expected unless the audit surfaces something. If a finding wants
-a non-trivial fix, P(-1) calls it out and 2.3.9 picks it up
-before 2.4.0 starts.
+- **2.3.4 "DEFLATE throughput round 2" was partially delivered.** CRC-32
+  throughput landed as a portable **slice-by-8** rewrite (~2×, wire-
+  identical) rather than PCLMULQDQ. The `good_match` chain-walk early-
+  exit was implemented, measured, and **dropped** — it is wire-safe only
+  where it gives no speedup and faster only where it changes the selected
+  matches (breaking the SIZE gate). The deeper DEFLATE match-finder
+  throughput question (and PCLMULQDQ) carries to the deferred markers
+  below.
+- The original bundled "2.3.5 streaming hardening" slot was unwound
+  across 2.3.5 / 2.3.6 / 2.3.7 (small-bites rule) rather than shipped as
+  one large release.
 
 ---
 
@@ -204,7 +167,7 @@ self-contained but spec-dense.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.3.7**.
+> Current as of **2.3.8** (P(-1) closeout — no source change vs 2.3.7).
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -245,7 +208,8 @@ the four streaming variants and the tree-shape / skewed-freq
 harnesses).
 
 Distlib: `dist/sankoch.cyr` at 6,709 lines (full) +
-`dist/sankoch-core.cyr` at 313 lines (kernel-safe) — at 2.3.7.
+`dist/sankoch-core.cyr` at 313 lines (kernel-safe) — at 2.3.8
+(version-line only vs 2.3.7).
 
 ## Dependencies
 
@@ -267,4 +231,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.15).
 
 ---
 
-*Last Updated: 2026-06-16 (2.3.7 cut — lazy-global alloc-fail propagation; INFO-A closed)*
+*Last Updated: 2026-06-16 (2.3.8 cut — P(-1) closeout; 2.3.x line complete, 2.4.0 next)*

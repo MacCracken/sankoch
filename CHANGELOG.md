@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.8] — 2026-06-16
+
+**P(-1) closeout for the 2.3.x line.** Process release — no source
+changes. Verifies the 2.3.3–2.3.7 feature cuts before the 2.4.x
+decode-only xz/bzip2 (takumi) arc opens.
+
+### Audit
+
+- **Security audit** [`docs/audit/2026-06-16-pre-2.4.0.md`](docs/audit/2026-06-16-pre-2.4.0.md):
+  **zero HIGH / MEDIUM / LOW findings.** Re-checked the new `*_dec_*`
+  state-machine source-bounds, the streaming-LZ4F block-buffer sizing
+  under varied BD, the per-block checksum paths, the FDICT dict-scratch
+  match-copy bounds, the bit-accumulator overpull rewind, and the
+  alloc-fail propagation paths — all clean / in bounds. INFO-01 (FHCRC)
+  and INFO-A (alloc-fail) confirmed CLOSED; INFO-B / INFO-C carried;
+  one minor INFO-D noted (orphaned lazy-table memory on OOM-retry).
+- **Benchmark baseline** [`docs/benchmarks/2026-06-16-pre-2.4.0.md`](docs/benchmarks/2026-06-16-pre-2.4.0.md):
+  the 2.4.0 reference. All 43 SIZE wire-format lines byte-for-byte
+  identical to the 2.3.4 baseline; no encode-hot-path throughput
+  regression across the 2.3.5–2.3.7 decode/robustness work.
+- **Gates:** clean rebuild 0 warnings, lint 0 warnings/file,
+  `cyrfmt --check` clean, `vet` clean, both `.tcyr` suites + all fuzz
+  harnesses + `core_smoke` + aarch64 cross-build all green.
+
 ## [2.3.7] — 2026-06-16
 
 **Lazy-global alloc-failure propagation (INFO-A).** The ~33 lazy-global /

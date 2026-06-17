@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-16 (v2.3.7 cut — lazy-global alloc-fail propagation; INFO-A closed) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.3.8 cut — P(-1) closeout; 2.3.x line complete) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.7` — single source of truth
+- **`VERSION`**: `2.3.8` — single source of truth
 - **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin
-- **Tag**: `2.3.7` (bare semver, no `v` prefix)
+- **Tag**: `2.3.8` (bare semver, no `v` prefix)
 - **Released**: 2026-06-16
 
 ## Distribution
@@ -58,13 +58,12 @@ Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at ev
 
 ## In-flight slots
 
-Empty at 2.3.7 cut. The old bundled "2.3.5 streaming hardening" slot is
-fully unwound (2.3.5 FHCRC + concatenated, 2.3.6 FDICT, 2.3.7 alloc-fail).
-Next items per [`roadmap.md`](roadmap.md):
+**The 2.3.x line is complete** (2.3.8 P(-1) closeout shipped, zero audit
+findings). Next is the 2.4.x decode-only xz/bzip2 (takumi-driven) arc per
+[`roadmap.md`](roadmap.md):
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.3.8**  | P(-1) closeout for the 2.3.x line                                                | medium       |
 | **2.4.0**  | xz / LZMA decode (`FORMAT_XZ`) — unblocks takumi `.tar.xz` extraction            | large        |
 | **2.4.1**  | bzip2 decode (`FORMAT_BZIP2`) — takumi `.tar.bz2` extraction                     | medium-large |
 
@@ -100,21 +99,22 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.3.8  | 2026-06-16 | P(-1) closeout — 2.3.x line complete (zero audit findings) |
 | 2.3.7  | 2026-06-16 | Lazy-global alloc-fail propagation (INFO-A; `ERR_OOM`, OOM sweep, batch-encoder bw-OOM fix) |
 | 2.3.6  | 2026-06-16 | Streaming FDICT zlib (`zlib_dec_init_dict`; dict-scratch match-copy) |
 | 2.3.5  | 2026-06-16 | gzip streaming hardening — FHCRC verify + concatenated-member decode |
 | 2.3.4  | 2026-06-16 | CRC-32 slice-by-8 (~2×, wire-identical) + cyrius pin → 6.2.15 |
 | 2.3.3  | 2026-06-16 | Configurable LZ4F block-max (64K/256K/1M/4M) + per-block checksum (`lz4f_enc_init_ex`) |
-| 2.3.2  | 2026-06-16 | Cyrius pin → 6.2.14 (stdlib pin sweep; no source change) |
 
 ## Open INFOs carried forward
 
-Tracked items the next P(-1) (2.3.8) should resolve or rebase. From the most recent audit ([`docs/audit/2026-05-23-pre-2.3.0-redux.md`](../audit/2026-05-23-pre-2.3.0-redux.md)):
+Tracked items the next P(-1) (the 2.4.x closeout) should resolve or rebase. From the most recent audit ([`docs/audit/2026-06-16-pre-2.4.0.md`](../audit/2026-06-16-pre-2.4.0.md), zero HIGH/MED/LOW findings):
 
 - **INFO-01** — gzip FHCRC validation. **CLOSED at 2.3.5** (batch + streaming validate the low-16-of-CRC-32 header checksum; verified vs `gunzip`).
 - **INFO-A** — lazy-global alloc sites aborting on first-call OOM. Carried from 2.2.1 / 2.2.3. **CLOSED at 2.3.7** (~33 sites route through `_sankoch_alloc` + propagate `ERR_OOM`; OOM fault-injection sweep added; a pre-existing batch-encoder bitwriter-OOM segfault was fixed in the process).
-- **INFO-B** — `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len`. Already enforced at runtime; docstring-polish item.
-- **INFO-C** — aarch64 LZ77 8-byte word-compare uses unaligned `load64`. Permitted by ARMv6+ but some implementations pay a cycle penalty. Flagged for future investigation if aarch64 perf benchmarks surface this as hot.
+- **INFO-B** — batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len` (dict staged in `dst`). The 2.3.6 *streaming* FDICT path removed this for the streaming variant (dict in scratch); the batch constraint stands. Already enforced at runtime; docstring-polish item.
+- **INFO-C** — aarch64 LZ77 / FDICT match-copy use unaligned `load64`. Permitted by ARMv6+ but some implementations pay a cycle penalty. Flagged for future investigation if aarch64 perf benchmarks surface this as hot.
+- **INFO-D** (new, 2026-06-16) — on a *retried* OOM, partially-allocated lazy tables orphan their bump-allocated memory (`_sankoch_alloc` arena does not free). OOM-path only; minor.
 
 ---
 

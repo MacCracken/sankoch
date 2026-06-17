@@ -48,9 +48,14 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
 - `docs/audit/2026-05-23-pre-2.3.0-redux.md` — P(-1) closeout at
   2.2.7 against Cyrius 6.0.1, immediately before opening the
   2.3.0 streaming-decomp arc.
+- `docs/audit/2026-06-16-pre-2.4.0.md` — 2.3.8 P(-1) closeout for the
+  2.3.x line against Cyrius 6.2.15. Zero HIGH/MEDIUM/LOW findings;
+  re-checked the 2.3.3–2.3.7 paths (LZ4F block-max + per-block
+  checksum, gzip FHCRC + concatenated streaming, FDICT dict-scratch
+  match-copy, alloc-fail propagation).
 
-Next periodic audit: **2.3.4 P(-1) closeout** for the 2.3.x line
-(per [`docs/development/roadmap.md`](docs/development/roadmap.md)).
+Next periodic audit: **2.4.x P(-1) closeout** (after the decode-only
+xz/bzip2 arc), per [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Supported Versions
 
