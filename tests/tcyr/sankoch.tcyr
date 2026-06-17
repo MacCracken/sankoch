@@ -3105,19 +3105,147 @@ fn test_ldec_bad_version() {
     return 0;
 }
 
-fn test_ldec_bd_too_large_rejected() {
-    # BD = 0x50 → block-max-ID = 5 (256K), which bite-5 doesn't support.
+fn test_ldec_bd_invalid_rejected() {
+    # BD = 0x00 → block-max-ID = 0, which is reserved/invalid per the
+    # LZ4 frame spec (only 4..7 are legal). 2.3.3 accepts 4..7 but must
+    # still reject < 4.
     var src = alloc(6);
     store8(src + 0, 4); store8(src + 1, 34); store8(src + 2, 77); store8(src + 3, 24);
     store8(src + 4, 100);   # FLG = sankoch-style (version=1, content cksum on)
-    store8(src + 5, 80);    # BD = 0x50 → 256K blocks, rejected
+    store8(src + 5, 0);     # BD = 0x00 → block-max-ID 0, invalid
     var dst = alloc(8);
     var ctx = lz4f_dec_init(dst, 8);
-    assert(ctx != 0, "ldec BD too large init");
+    assert(ctx != 0, "ldec BD invalid init");
     var rc = lz4f_dec_write(ctx, src, 6);
     var fin = lz4f_dec_finish(ctx);
-    assert(rc < 0 || fin < 0, "ldec BD > 4 rejected");
+    assert(rc < 0 || fin < 0, "ldec BD < 4 rejected");
     return 0;
+}
+
+# 2.3.3 — round-trip a frame at a configured block-max ID through both
+# the streaming decoder and the batch decoder. block_max_id ∈ {5,6,7}
+# exercises the decoder's grown block buffer (>64K). Returns 0.
+fn _lz4f_bm_rt(block_max_id, n) {
+    var src = alloc(n);
+    var k = 0;
+    while (k < n) {
+        store8(src + k, 65 + (k % 26));   # compressible repeating pattern
+        k = k + 1;
+    }
+    var c = alloc(n + 65536);
+    var ec = lz4f_enc_init_ex(c, n + 65536, block_max_id, 0);
+    assert(ec != 0, "bm rt enc init");
+    assert(lz4f_enc_write(ec, src, n) >= 0, "bm rt enc write");
+    var clen = lz4f_enc_finish(ec);
+    assert(clen > 0, "bm rt enc finish");
+
+    # Streaming decode.
+    var d = alloc(n);
+    var ctx = lz4f_dec_init(d, n);
+    assert(ctx != 0, "bm rt dec init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "bm rt dec write");
+    var sn = lz4f_dec_finish(ctx);
+    assert(sn == n, "bm rt stream len");
+    var i = 0;
+    while (i < n) {
+        assert(load8(d + i) == load8(src + i), "bm rt stream content");
+        i = i + 1;
+    }
+
+    # Batch decode.
+    var d2 = alloc(n);
+    var bn = lz4f_decompress(c, clen, d2, n);
+    assert(bn == n, "bm rt batch len");
+    i = 0;
+    while (i < n) {
+        assert(load8(d2 + i) == load8(src + i), "bm rt batch content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_lz4f_blockmax_256k_single() {
+    # 100K input in a 256K-max frame → one block > 64K (grown buffer).
+    return _lz4f_bm_rt(5, 100000);
+}
+
+fn test_lz4f_blockmax_256k_multi() {
+    # 300K input in a 256K-max frame → 256K block + 44K block.
+    return _lz4f_bm_rt(5, 300000);
+}
+
+fn test_lz4f_blockmax_1m() {
+    # 1M-max frame, single 200K block (exercises the 1M buffer alloc).
+    return _lz4f_bm_rt(6, 200000);
+}
+
+fn test_lz4f_blockmax_4m() {
+    # 4M-max frame, single 200K block (exercises the 4M buffer alloc).
+    return _lz4f_bm_rt(7, 200000);
+}
+
+# 2.3.3 — per-block checksum round-trip + corruption rejection. Encodes
+# with FLG bit 4 set; both decoders must validate the per-block xxHash32
+# and reject a flipped block-data byte. Returns 0.
+fn _lz4f_bc_rt(block_max_id, n) {
+    var src = alloc(n);
+    var k = 0;
+    while (k < n) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var cap = n + 65536;
+    var c = alloc(cap);
+    var ec = lz4f_enc_init_ex(c, cap, block_max_id, 1);   # block_checksum = 1
+    assert(ec != 0, "bc rt enc init");
+    assert(lz4f_enc_write(ec, src, n) >= 0, "bc rt enc write");
+    var clen = lz4f_enc_finish(ec);
+    assert(clen > 0, "bc rt enc finish");
+
+    # Streaming decode — block checksum validated before emit.
+    var d = alloc(n);
+    var ctx = lz4f_dec_init(d, n);
+    assert(ctx != 0, "bc rt dec init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "bc rt dec write");
+    var sn = lz4f_dec_finish(ctx);
+    assert(sn == n, "bc rt stream len");
+    var i = 0;
+    while (i < n) {
+        assert(load8(d + i) == load8(src + i), "bc rt stream content");
+        i = i + 1;
+    }
+
+    # Batch decode — per-block checksum validated.
+    var d2 = alloc(n);
+    var bn = lz4f_decompress(c, clen, d2, n);
+    assert(bn == n, "bc rt batch len");
+    i = 0;
+    while (i < n) {
+        assert(load8(d2 + i) == load8(src + i), "bc rt batch content");
+        i = i + 1;
+    }
+
+    # Corrupt a block-data byte (past the 7-byte header + 4-byte size).
+    # Both decoders must reject via per-block checksum mismatch.
+    store8(c + 15, load8(c + 15) ^ 1);
+    var d3 = alloc(n);
+    var ctx2 = lz4f_dec_init(d3, n);
+    assert(ctx2 != 0, "bc rt corrupt init");
+    var rc = lz4f_dec_write(ctx2, c, clen);
+    var fin = lz4f_dec_finish(ctx2);
+    assert(rc < 0 || fin < 0, "bc rt stream rejects corruption");
+    assert(lz4f_decompress(c, clen, d3, n) < 0, "bc rt batch rejects corruption");
+    return 0;
+}
+
+fn test_lz4f_blockcksum_64k() {
+    # Default 64K block-max with per-block checksum (multi-block).
+    return _lz4f_bc_rt(4, 150000);
+}
+
+fn test_lz4f_blockcksum_256k() {
+    # 256K block-max with per-block checksum (multi-block).
+    return _lz4f_bc_rt(5, 300000);
 }
 
 fn test_ldec_bad_content_checksum() {
@@ -3471,8 +3599,16 @@ fn main() {
     test_ldec_uncompressed_block_roundtrip();
     test_ldec_bad_magic();
     test_ldec_bad_version();
-    test_ldec_bd_too_large_rejected();
+    test_ldec_bd_invalid_rejected();
     test_ldec_bad_content_checksum();
+
+    # 2.3.3 — configurable LZ4F block-max round-trips (enc_ex → stream/batch dec)
+    test_lz4f_blockmax_256k_single();
+    test_lz4f_blockmax_256k_multi();
+    test_lz4f_blockmax_1m();
+    test_lz4f_blockmax_4m();
+    test_lz4f_blockcksum_64k();
+    test_lz4f_blockcksum_256k();
 
     # 2.3.0 bite-6 — stream.cyr incremental decompress dispatch
     test_stream_dec_inc_deflate();

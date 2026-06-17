@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-16 (v2.3.2 cut — cyrius pin → 6.2.14) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.3.3 cut — configurable LZ4F block-max + per-block checksum) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.2` — single source of truth
-- **`cyrius.cyml [package].cyrius`**: `6.2.14` — toolchain pin
-- **Tag**: `2.3.2` (bare semver, no `v` prefix)
+- **`VERSION`**: `2.3.3` — single source of truth
+- **`cyrius.cyml [package].cyrius`**: `6.2.14` — toolchain pin (release validated on the pin; box's active toolchain is 6.2.15)
+- **Tag**: `2.3.3` (bare semver, no `v` prefix)
 - **Released**: 2026-06-16
 
 ## Distribution
@@ -28,16 +28,16 @@ type: state
 
 ## Source
 
-- **Source**: **6,299 lines** across 14 domain modules (`src/*.cyr`).
+- **Source**: **6,408 lines** across 14 domain modules (`src/*.cyr`).
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
 
 | Suite                          | Functions | Assertions |
 |--------------------------------|----------:|-----------:|
-| `tests/tcyr/sankoch.tcyr`      |       146 |  1,361,935 |
+| `tests/tcyr/sankoch.tcyr`      |       167 |  3,861,983 |
 | `tests/tcyr/git_object.tcyr`   |        10 |    346,583 |
-| **Total**                      |   **156** | **1,708,518** |
+| **Total**                      |   **177** | **4,208,566** |
 
 The assertion total is heavily inflated by per-byte content-loop checks on streaming round-trips (a single 128 KB round-trip contributes 131,072 assertions through one `while (i < N) assert(load8(d+i) == load8(s+i))` loop). Read as a coverage-**density** number, not a coverage-**breadth** number. See [`guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large) for the full explanation.
 
@@ -51,20 +51,17 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 6,279 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
-| `dist/sankoch-core.cyr`      |   300 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
+| `dist/sankoch.cyr`           | 6,388 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
+| `dist/sankoch-core.cyr`      |   312 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
 
 Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
 
 ## In-flight slots
 
-Empty at 2.3.2 cut (2.3.1 / 2.3.2 were pin-bump patches, no source
-change). Next items per [`roadmap.md`](roadmap.md) — feature ladder
-renumbered to 2.3.3+ after the two pin-bump slots:
+Empty at 2.3.3 cut. Next items per [`roadmap.md`](roadmap.md):
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.3.3**  | configurable LZ4F block-max + streaming per-block checksum                      | medium       |
 | **2.3.4**  | DEFLATE throughput round 2 (good_length retry + PCLMULQDQ CRC-32)               | medium       |
 | **2.3.5**  | streaming-decode hardening (FDICT zlib, multi-member gzip, lazy-global alloc-fail, FHCRC verify) | medium-large |
 | **2.3.6**  | P(-1) closeout for the 2.3.x line                                                | medium       |
@@ -86,7 +83,7 @@ renumbered to 2.3.3+ after the two pin-bump slots:
 
 - **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (20 deps, 0 untrusted, 0 missing).
 - **Tests**: both tcyr suites green; all 12 fuzz harness functions green.
-- **Wire-format gate**: 38 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry.
+- **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.)
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
 - **aarch64 cross-build**: hard gate in both ci.yml and release.yml; `cyrius build --aarch64 src/lib.cyr` must succeed and produce a valid ARM aarch64 ELF. Workflows expect `cycc_aarch64` in the Cyrius bundle (renamed from `cc5_aarch64` at Cyrius 6.0).
@@ -99,12 +96,12 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.3.3  | 2026-06-16 | Configurable LZ4F block-max (64K/256K/1M/4M) + per-block checksum (`lz4f_enc_init_ex`) |
 | 2.3.2  | 2026-06-16 | Cyrius pin → 6.2.14 (stdlib pin sweep; no source change) |
 | 2.3.1  | 2026-06-12 | Cyrius pin → 6.2.1 (stdlib pin sweep; no source change) |
 | 2.3.0  | 2026-05-23 | True incremental decompression (DEFLATE / zlib / gzip / LZ4F `*_dec_*` + `stream_decompress_init_inc`) |
 | 2.2.7  | 2026-05-23 | P(-1) closeout against Cyrius 6.0.1                   |
 | 2.2.6  | 2026-05-20 | Cyrius 6.0.1 toolchain bump + `cycc_aarch64` rename   |
-| 2.2.5  | 2026-05-11 | Stdlib `: i64` annotation pass; Cyrius 5.11.4         |
 
 ## Open INFOs carried forward
 

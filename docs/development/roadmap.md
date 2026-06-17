@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.3.2) | **Last Updated**: 2026-06-16
+> **Status**: Stable (v2.3.3) | **Last Updated**: 2026-06-16
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
@@ -9,53 +9,22 @@ in. Items further down can be re-ordered against new information.
 
 > **Numbering note.** 2.3.1 and 2.3.2 shipped as cyrius pin-bump
 > releases (→ 6.2.1, → 6.2.14) with no source change, consuming the
-> two patch slots the feature ladder below originally planned. The
-> feature items have been renumbered to 2.3.3+ accordingly. xz/bzip2
-> decode (takumi-driven) opens the 2.4.x line — additive `FORMAT_*`
-> APIs are a minor bump.
+> two patch slots the feature ladder originally planned. The feature
+> items were renumbered to 2.3.3+ accordingly; 2.3.3 (configurable
+> LZ4F block-max + per-block checksum) has now shipped — see
+> `CHANGELOG.md`. xz/bzip2 decode (takumi-driven) opens the 2.4.x
+> line — additive `FORMAT_*` APIs are a minor bump.
 
 ---
 
-## v2.3.x ladder (sequenced, post-2.3.2)
+## v2.3.x ladder (sequenced, post-2.3.3)
 
 The 2.3.x line continues from the streaming-decompression cut (2.3.0)
-through two pin-bump patches (2.3.1, 2.3.2). The two pre-2.3.0 items
-(configurable LZ4F block-max, DEFLATE throughput round 2) keep their
-slots; the follow-on item rolls up the deferred work from the 2.3.0
-bite ladder plus carried INFOs from the 2.1.3 / 2.2.3 audits. P(-1)
-closes the line before 2.4.0 opens.
-
-### 🎯 2.3.3 — configurable LZ4F block-max + streaming per-block checksum
-
-Adds public API → minor bump. BD byte spec (LZ4 Block Format §1.2)
-defines four block-max values: 64K (4), 256K (5), 1M (6), 4M (7).
-Sankoch hardcodes 64K today on both encoder and streaming decoder.
-While this release is touching the BD plumbing it also lifts the
-two FLG-bit-4 (per-block checksum) restrictions the 2.3.0 streaming
-decoder shipped with.
-
-**Scope:**
-- Extend `lz4f_enc_init` with a block-max parameter (decide signature
-  during P(-1) — extension vs new `lz4f_enc_init_block_max` overload).
-  BD byte encoding: bits 4-6 carry block-max ID; update header emit
-  + HC checksum + block buffer sizing in the encoder.
-- Streaming decoder side: parse BD bits 4-6 and size the per-frame
-  block buffer accordingly (currently hardcoded to LZ4F_BLOCK_MAX).
-  Drop the `bms != 4 → -ERR_UNSUPPORTED_FORMAT` reject in
-  `lz4f_dec_write`'s BD-state arm.
-- Streaming LZ4F per-block checksum (FLG bit 4): add a new
-  `LDEC_STATE_BLOCK_CHECKSUM` between BLOCK_DATA and the next
-  BLOCK_SIZE; consume 4 bytes LE, validate against
-  `xxhash32(block_buf, block_size)`. Drop the `(fb >> 4) & 1 →
-  -ERR_UNSUPPORTED_FORMAT` reject in `lz4f_dec_write`'s FLG-state arm.
-  Encoder companion: add a corresponding emit option (gated by a new
-  `lz4f_enc_init_*` parameter or a separate API).
-- New benchmarks: same input, four block sizes, ratio + throughput
-  per size. Verify each size's output against reference `lz4` CLI.
-
-**Sizing:** medium. Encoder/decoder symmetry needs careful state-
-machine work for the per-block checksum; the BD parameter plumbing
-is well-scoped.
+through two pin-bump patches (2.3.1, 2.3.2) and the configurable-
+block-max cut (2.3.3). The remaining pre-2.3.0 item (DEFLATE
+throughput round 2) keeps its slot; the follow-on item rolls up the
+deferred work from the 2.3.0 bite ladder plus carried INFOs from the
+2.1.3 / 2.2.3 audits. P(-1) closes the line before 2.4.0 opens.
 
 ### 🎯 2.3.4 — DEFLATE throughput round 2
 
@@ -282,6 +251,10 @@ self-contained but spec-dense.
 
 ## File Summary (at 2.3.0)
 
+> Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
+> and state.md cross-links; figures below are refreshed every release.
+> Current as of **2.3.3**.
+
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
 | types.cyr        |   37 | Enums: formats (incl. FORMAT_LZ4F), errors, limits | core |
@@ -291,23 +264,23 @@ self-contained but spec-dense.
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  661 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes | full |
 | lz77.cyr         |  179 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
-| lz4_decode.cyr   |  169 | LZ4 block + frame decompress + LZ4F enum (kernel-safe) | core |
-| lz4.cyr          |  835 | LZ4 block + frame compress + `lz4f_enc_*` + `lz4f_dec_*` streaming | full |
+| lz4_decode.cyr   |  181 | LZ4 block + frame decompress (incl. per-block checksum) + LZ4F enum (kernel-safe) | core |
+| lz4.cyr          |  932 | LZ4 block + frame compress + `lz4f_enc_*` (configurable block-max + checksum) + `lz4f_dec_*` streaming | full |
 | deflate.cyr      | 2276 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming, dict | full |
 | zlib.cyr         |  406 | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming | full |
 | gzip.cyr         |  531 | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming | full |
 | lib.cyr          |  193 | Public API, `_sankoch_mtx`, two-tier lock dispatch | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| **Total**        | **6299** | | |
+| **Total**        | **6408** | | |
 
-`core` modules (types + xxhash32 + lz4_decode = 300 source lines)
+`core` modules (types + xxhash32 + lz4_decode = 312 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **156 distinct test functions** (146 sankoch.tcyr + 10
-git_object.tcyr) producing **1,708,518 assertions** total
-(1,361,935 + 346,583). Most of the assertion count comes from
+Tests: **177 distinct test functions** (167 sankoch.tcyr + 10
+git_object.tcyr) producing **4,208,566 assertions** total
+(3,861,983 + 346,583). Most of the assertion count comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -320,8 +293,8 @@ Fuzz: 1,649 iterations across 6 harnesses (`fuzz_lz4` 700,
 the four streaming variants and the tree-shape / skewed-freq
 harnesses).
 
-Distlib: `dist/sankoch.cyr` at 6,279 lines (full) +
-`dist/sankoch-core.cyr` at 300 lines (kernel-safe) — at 2.3.2.
+Distlib: `dist/sankoch.cyr` at 6,388 lines (full) +
+`dist/sankoch-core.cyr` at 312 lines (kernel-safe) — at 2.3.3.
 
 ## Dependencies
 
@@ -343,4 +316,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.14).
 
 ---
 
-*Last Updated: 2026-06-16 (2.3.2 cut — cyrius pin → 6.2.14; ladder renumbered, 2.4.x xz/bzip2 sequenced)*
+*Last Updated: 2026-06-16 (2.3.3 cut — configurable LZ4F block-max + per-block checksum)*

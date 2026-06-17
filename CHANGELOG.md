@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] — 2026-06-16
+
+**Configurable LZ4F block-max + per-block checksum.** The streaming
+LZ4F encoder can now emit any of the four BD block-max sizes (64K /
+256K / 1M / 4M) and optionally append a per-block xxHash32; both the
+streaming and batch decoders parse the BD block-max ID and validate
+per-block checksums. Additive API (new `lz4f_enc_init_ex`) → minor-
+within-line bump. Default `lz4f_enc_init` output is byte-identical to
+2.3.2 — all pre-existing SIZE lines unchanged.
+
+### Added
+
+- **`lz4f_enc_init_ex(dst, dst_cap, block_max_id, block_checksum)`** —
+  configurable streaming encoder. `block_max_id` ∈ {4,5,6,7} selects
+  64K/256K/1M/4M blocks (BD bits 4-6); `block_checksum != 0` sets FLG
+  bit 4 and appends a 4-byte xxHash32 of each block's on-wire data.
+  `lz4f_enc_init(dst, dst_cap)` is preserved as the default
+  (id 4, no checksum) and delegates to the new entry point.
+- **Streaming decoder: configurable block-max.** `lz4f_dec_write`
+  parses BD bits 4-6, sizes its block buffer to the declared block-max
+  (64K allocated at init; grown in the BD state only when the frame
+  declares larger, so the common path never re-allocs), and rejects
+  reserved IDs < 4. The old `block-max-ID != 4 → -ERR_UNSUPPORTED_FORMAT`
+  reject is gone.
+- **Per-block checksum validation** (both decoders). The streaming
+  decoder adds `LDEC_STATE_BLOCK_CHECKSUM` between block data and the
+  next block size, validating xxHash32 of the buffered block before
+  emitting. Batch `lz4f_decompress` parses FLG bit 4 and validates the
+  trailing 4-byte checksum after each block. The old FLG-bit-4 reject
+  is gone.
+- New tests: round-trips at 256K (single + multi-block), 1M, 4M through
+  both decoders; per-block-checksum round-trips at 64K and 256K with
+  corruption-rejection checks. Suite grows to **3,861,983** assertions
+  (sankoch) + 346,583 (git_object).
+- New benchmarks: LZ4F block-max sweep (256K text at each of the four
+  block sizes) — throughput per size + four `SIZE lz4f_bm{4,5,6,7}`
+  lines. Larger block-max compresses the 256K text input from 1279 →
+  1102 bytes (cross-block match locality + fewer block headers).
+
+### Verified
+
+- **Reference-CLI conformance.** Frames at all four block sizes (single
+  and multi-block) and with per-block checksums decode byte-for-byte via
+  `lz4 -dc` (reference `lz4` v1.10.0).
+- Built + tested green on the pinned toolchain (6.2.14): both `.tcyr`
+  suites, all fuzz harnesses, `core_smoke`, `cyrfmt --check`,
+  `cyrius vet`, `cyrius distlib` (full + core).
+
 ## [2.3.2] — 2026-06-16
 
 **cyrius pin `6.2.1` → `6.2.14` (stdlib pin sweep).** No source changes —

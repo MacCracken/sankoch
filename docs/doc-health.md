@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-06-16 (v2.3.2 cut — cyrius pin → 6.2.14; ladder renumber + 2.4.x xz/bzip2 sequenced) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-06-16 (v2.3.3 cut — configurable LZ4F block-max + per-block checksum) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -52,14 +52,14 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-23 | ✅ Fresh | Architecture table refreshed to 6,299 source lines + 156 test functions + 1,708,518 assertions + 6,326-line distlib; stale "landing in next Cyrius lang release" line dropped (sankoch ships in 6.0.x stdlib); missing `xxhash32.cyr` + `lz4_decode.cyr` rows added. |
-| `CHANGELOG.md` | 2026-06-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.3.2] — 2026-06-16` (cyrius pin → 6.2.14; 2.3.1 → 6.2.1 — both pin-bump patches, no source change). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
+| `CHANGELOG.md` | 2026-06-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.3.3] — 2026-06-16` (configurable LZ4F block-max + per-block checksum; `lz4f_enc_init_ex`). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-05-23 | ✅ Fresh | Supported Versions table updated for 2.3.x; audit list extended through 2026-05-23-pre-2.3.0-redux. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-06-16 | ✅ Fresh | `2.3.2`. Single source of truth per the standards. |
-| `cyrius.cyml` | 2026-06-16 | ✅ Fresh | Toolchain pin `cyrius = "6.2.14"`. |
+| `VERSION` | 2026-06-16 | ✅ Fresh | `2.3.3`. Single source of truth per the standards. |
+| `cyrius.cyml` | 2026-06-16 | ✅ Fresh | Toolchain pin `cyrius = "6.2.14"` (unchanged at 2.3.3; box's active toolchain drifted to 6.2.15, release validated on the pin). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
 ---
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-06-16 | ✅ Fresh | **Renumbered 2026-06-16**: 2.3.1 / 2.3.2 shipped as pin-bump patches, so the feature ladder shifted to 2.3.3 (LZ4F block-max) / 2.3.4 (DEFLATE throughput) / 2.3.5 (streaming hardening) / 2.3.6 (P(-1) closeout). takumi xz/bzip2 decode promoted from floating "Requested by consumers" into a sequenced **2.4.x ladder** (2.4.0 xz/LZMA, 2.4.1 bzip2). |
-| `state.md` | 2026-06-16 | ✅ Fresh | Refreshed for 2.3.2 (pin → 6.2.14; never refreshed at 2.3.1, brought current here). Version / pin / dist line counts / recent-releases table / in-flight slots / INFO slot refs all synced to the renumbered ladder. |
+| `roadmap.md` | 2026-06-16 | ✅ Fresh | **2.3.3 shipped** (configurable LZ4F block-max + per-block checksum) — removed from the forward ladder, which now opens at 2.3.4 (DEFLATE throughput) → 2.3.5 (streaming hardening) → 2.3.6 (P(-1)) → 2.4.0/2.4.1 (takumi xz/bzip2). File Summary figures refreshed (src 6,408; core 312; distlib 6,388/312). |
+| `state.md` | 2026-06-16 | ✅ Fresh | Refreshed for 2.3.3. Version 2.3.3, source 6,408, tests 177 fns / 4,208,566 assertions, dist 6,388/312, wire gate 43 SIZE lines, in-flight slots (2.3.3 dropped), recent-releases table. |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
 
@@ -130,7 +130,7 @@ Next periodic audit: **2.3.4 P(-1) closeout** for the 2.3.x line per [`developme
 | `2026-04-15-size-comparison.md` | 2026-04-15 | 🔵 Dated artifact (size baseline) |
 | `2026-05-23-pre-2.3.0.md` | 2026-05-23 | 🔵 Dated artifact (pre-2.3.0 throughput baseline; SIZE-line gate reference) |
 
-Pattern: every P(-1) closeout captures a new bench reference. The wire-format gate (38 SIZE lines) must remain byte-for-byte stable across patch / minor releases.
+Pattern: every P(-1) closeout captures a new bench reference. The wire-format gate (43 SIZE lines) must remain byte-for-byte stable across patch / minor releases.
 
 ---
 

@@ -151,6 +151,38 @@ fn bench_lz4f_c(name, src, slen, dst, dcap, iters) {
     return clen;
 }
 
+# Run the streaming LZ4F encoder once at a given block-max ID (4..7) and
+# return compressed length. Used for the block-max SIZE sweep.
+fn _lz4f_bm_sz(block_max_id, src, slen, dst, dcap) {
+    var ec = lz4f_enc_init_ex(dst, dcap, block_max_id, 0);
+    if (ec == 0) { return 0 - 1; }
+    if (lz4f_enc_write(ec, src, slen) < 0) { lz4f_enc_finish(ec); return 0 - 1; }
+    return lz4f_enc_finish(ec);
+}
+
+# Throughput benchmark for the streaming LZ4F encoder at a given block-max
+# ID. Reports out= and ns/op over `iters` init/write/finish cycles.
+fn bench_lz4f_bm(name, block_max_id, src, slen, dst, dcap, iters) {
+    var clen = _lz4f_bm_sz(block_max_id, src, slen, dst, dcap);
+    if (clen < 0) { _print("  SKIP "); _print(name); _nl(); return 0 - 1; }
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) {
+        var ec = lz4f_enc_init_ex(dst, dcap, block_max_id, 0);
+        lz4f_enc_write(ec, src, slen);
+        lz4f_enc_finish(ec);
+        i = i + 1;
+    }
+    var elapsed = time_ns() - start;
+    var ns_per = elapsed / iters;
+    _print("  "); _print(name);
+    _print("  in="); _print_int(slen);
+    _print("  out="); _print_int(clen);
+    _print("  ns/op="); _print_int(ns_per);
+    _nl();
+    return clen;
+}
+
 # Run streaming compression once and return compressed length (no timing).
 # Used to get SIZE lines for streaming output.
 fn _bench_stream_sz(format, level, src, slen, dst, dcap, chunk_sz) {
@@ -314,6 +346,20 @@ fn main() {
     bench_stream("stream lz4f       rand 128K", FORMAT_LZ4F,    0, lsrc128, 131072, slc, 262144, 4096, 50);
     println("");
 
+    # ---- LZ4F block-max sweep (v2.3.3) ----
+    # Same 256K text input at each BD block-max ID: 64K = 4 blocks,
+    # 256K = 1, 1M = 1, 4M = 1. Fewer/larger blocks trade frame overhead
+    # for match locality; this reports throughput per size.
+    println("--- LZ4F block-max sweep (256K text, 50 iters) ---");
+    var bmsrc = alloc(262144);
+    var bmdst = alloc(270336);
+    fill_text(bmsrc, 262144);
+    bench_lz4f_bm("lz4f bm 64K  text 256K", 4, bmsrc, 262144, bmdst, 270336, 50);
+    bench_lz4f_bm("lz4f bm 256K text 256K", 5, bmsrc, 262144, bmdst, 270336, 50);
+    bench_lz4f_bm("lz4f bm 1M   text 256K", 6, bmsrc, 262144, bmdst, 270336, 50);
+    bench_lz4f_bm("lz4f bm 4M   text 256K", 7, bmsrc, 262144, bmdst, 270336, 50);
+    println("");
+
     # ---- DEFLATE per-level ----
     println("--- DEFLATE levels (4KB text, 50 iters) ---");
     fill_text(src4k, 4096);
@@ -463,6 +509,15 @@ fn main() {
     size_line("zlib6_text_256K",    262144, zlib_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("gzip6_text_256K",    262144, gzip_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("lz4f_text_256K",     262144, lz4f_compress(lsrc, 262144, lc, 270336));
+
+    # ---- LZ4F block-max sweep sizes (v2.3.3) ----
+    # Same 256K text input at each BD block-max ID. Output shrinks as the
+    # block-max grows (fewer 4-byte block headers + longer match windows).
+    fill_text(lsrc, 262144);
+    size_line("lz4f_bm4_text_256K", 262144, _lz4f_bm_sz(4, lsrc, 262144, lc, 270336));
+    size_line("lz4f_bm5_text_256K", 262144, _lz4f_bm_sz(5, lsrc, 262144, lc, 270336));
+    size_line("lz4f_bm6_text_256K", 262144, _lz4f_bm_sz(6, lsrc, 262144, lc, 270336));
+    size_line("lz4f_bm7_text_256K", 262144, _lz4f_bm_sz(7, lsrc, 262144, lc, 270336));
 
     # ---- Streaming SIZE comparison (v1.7.0) ----
     # Verifies that streaming output is in the same ballpark as batch.
