@@ -6784,7 +6784,7 @@ fn _xz_lzma2_run(): i64 {
             }
             if (_xz_in_pos + 2 > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
             var usize = ((load8(_xz_in + _xz_in_pos) << 8)
-                | load8(_xz_in + _xz_in_pos + 1)) + 1;
+            | load8(_xz_in + _xz_in_pos + 1)) + 1;
             _xz_in_pos = _xz_in_pos + 2;
             if (_xz_in_pos + usize > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
             var i = 0;
@@ -6805,10 +6805,10 @@ fn _xz_lzma2_run(): i64 {
         # LZMA chunk. ctrl bits: [7]=1, [6:5]=reset mode, [4:0]=usize hi.
         if (_xz_in_pos + 4 > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
         var unpacked = (((ctrl & 31) << 16)
-            | (load8(_xz_in + _xz_in_pos) << 8)
-            | load8(_xz_in + _xz_in_pos + 1)) + 1;
+        | (load8(_xz_in + _xz_in_pos) << 8)
+        | load8(_xz_in + _xz_in_pos + 1)) + 1;
         var packed = ((load8(_xz_in + _xz_in_pos + 2) << 8)
-            | load8(_xz_in + _xz_in_pos + 3)) + 1;
+        | load8(_xz_in + _xz_in_pos + 3)) + 1;
         _xz_in_pos = _xz_in_pos + 4;
         var reset = (ctrl >> 5) & 3;
 
@@ -6869,7 +6869,7 @@ fn _xz_varint(): i64 {
 # Read a 4-byte little-endian field at `off`.
 fn _xz_le32(off): i64 {
     return load8(_xz_in + off) | (load8(_xz_in + off + 1) << 8)
-        | (load8(_xz_in + off + 2) << 16) | (load8(_xz_in + off + 3) << 24);
+    | (load8(_xz_in + off + 2) << 16) | (load8(_xz_in + off + 3) << 24);
 }
 
 # Validate the block check field over this block's output slice
@@ -6975,8 +6975,8 @@ fn _xz_decode_stream(s): i64 {
 
     # Stream header: magic FD 37 7A 58 5A 00.
     if (load8(src + s) != 0xFD || load8(src + s + 1) != 0x37
-        || load8(src + s + 2) != 0x7A || load8(src + s + 3) != 0x58
-        || load8(src + s + 4) != 0x5A || load8(src + s + 5) != 0x00) {
+    || load8(src + s + 2) != 0x7A || load8(src + s + 3) != 0x58
+    || load8(src + s + 4) != 0x5A || load8(src + s + 5) != 0x00) {
         return 0 - ERR_CORRUPT_DATA;
     }
     # Stream flags: byte 6 reserved (0), byte 7 = check type.
@@ -7558,7 +7558,7 @@ fn detect_format(src, src_len): i64 {
     if (b0 == 0xFD) {
         if (b1 == 0x37 && src_len >= 6) {
             if (load8(src + 2) == 0x7A && load8(src + 3) == 0x58
-                && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
+            && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
                 return FORMAT_XZ;
             }
         }

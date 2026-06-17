@@ -219,7 +219,7 @@ fn detect_format(src, src_len): i64 {
     if (b0 == 0xFD) {
         if (b1 == 0x37 && src_len >= 6) {
             if (load8(src + 2) == 0x7A && load8(src + 3) == 0x58
-                && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
+            && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
                 return FORMAT_XZ;
             }
         }
