@@ -351,8 +351,14 @@ fn deflate_decompress(src, src_len, dst, dst_cap): i64 {
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
 fn _deflate_decompress_inner(src, src_len, dst, dst_cap): i64 {
     _deflate_init_tables();
+    # 2.3.7: pre-build all decode tables so the in-loop lazy-init calls
+    # (huff_build_*, huff_build_fixed, _ddec_alloc_dyn_ws) never alloc.
+    if (_huff_alloc_tables() < 0) { return 0 - ERR_OOM; }
+    if (huff_build_fixed() < 0) { return 0 - ERR_OOM; }
+    if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
 
     var br = br_init(src, src_len);
+    if (br == 0) { return 0 - ERR_OOM; }
     var dp = 0;
     var bfinal = 0;
 
@@ -440,7 +446,11 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len): i
     }
 
     _deflate_init_tables();
+    if (_huff_alloc_tables() < 0) { return 0 - ERR_OOM; }
+    if (huff_build_fixed() < 0) { return 0 - ERR_OOM; }
+    if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
     var br = br_init(src, src_len);
+    if (br == 0) { return 0 - ERR_OOM; }
     var dp = dict_len;
     var bfinal = 0;
 
@@ -565,10 +575,17 @@ var _ddec_cl_lens = 0;             # 19 i64 — code-length-code lengths
 var _ddec_all_lens = 0;            # 584 i64 — litlen+dist code lengths
 
 fn _ddec_alloc_dyn_ws(): i64 {
-    if (_ddec_cl_lens == 0) { _ddec_cl_lens = alloc(152); }
-    if (_ddec_all_lens == 0) { _ddec_all_lens = alloc(4672); }
+    if (_ddec_cl_lens == 0) {
+        _ddec_cl_lens = _sankoch_alloc(152);
+        if (_ddec_cl_lens == 0) { return 0 - ERR_OOM; }
+    }
+    if (_ddec_all_lens == 0) {
+        _ddec_all_lens = _sankoch_alloc(4672);
+        if (_ddec_all_lens == 0) { return 0 - ERR_OOM; }
+    }
     if (_ddec_cl_order == 0) {
-        _ddec_cl_order = alloc(152);
+        _ddec_cl_order = _sankoch_alloc(152);
+        if (_ddec_cl_order == 0) { return 0 - ERR_OOM; }
         store64(_ddec_cl_order +  0 * 8, 16);
         store64(_ddec_cl_order +  1 * 8, 17);
         store64(_ddec_cl_order +  2 * 8, 18);
@@ -758,6 +775,11 @@ fn deflate_dec_init(dst, dst_cap): i64 {
     store64(ctx + 168, 0);   # dict_len (0 → fast match-copy path)
 
     _deflate_init_tables();
+    # 2.3.7: pre-build decode tables so the hot dec_write loop never
+    # allocs; release the lock + return null on OOM.
+    if (_huff_alloc_tables() < 0) { _sankoch_unlock(); return 0; }
+    if (huff_build_fixed() < 0) { _sankoch_unlock(); return 0; }
+    if (_ddec_alloc_dyn_ws() < 0) { _sankoch_unlock(); return 0; }
     return ctx;
 }
 
@@ -1205,8 +1227,10 @@ var _deflate_enc_lit_lens = 0;   # heap: 288 * 8
 fn _deflate_build_enc_fixed(): i64 {
     if (_deflate_enc_fixed_built == 1) { return 0; }
     if (_deflate_enc_lit_codes == 0) {
-        _deflate_enc_lit_codes = alloc(2304);
-        _deflate_enc_lit_lens = alloc(2304);
+        _deflate_enc_lit_codes = _sankoch_alloc(2304);
+        if (_deflate_enc_lit_codes == 0) { return 0 - ERR_OOM; }
+        _deflate_enc_lit_lens = _sankoch_alloc(2304);
+        if (_deflate_enc_lit_lens == 0) { return 0 - ERR_OOM; }
     }
     var i = 0;
     while (i <= 143) {
@@ -1279,7 +1303,8 @@ var _deflate_enc_dist_codes = 0;  # heap: 30 * 8
 
 fn _deflate_build_enc_dist(): i64 {
     if (_deflate_enc_dist_codes == 0) {
-        _deflate_enc_dist_codes = alloc(240);
+        _deflate_enc_dist_codes = _sankoch_alloc(240);
+        if (_deflate_enc_dist_codes == 0) { return 0 - ERR_OOM; }
     }
     var i = 0;
     while (i < 30) {
@@ -1305,7 +1330,10 @@ var _deflate_len_lookup_built = 0;
 
 fn _deflate_build_len_lookup(): i64 {
     if (_deflate_len_lookup_built == 1) { return 0; }
-    if (_deflate_len_lookup == 0) { _deflate_len_lookup = alloc(2048); }
+    if (_deflate_len_lookup == 0) {
+        _deflate_len_lookup = _sankoch_alloc(2048);
+        if (_deflate_len_lookup == 0) { return 0 - ERR_OOM; }
+    }
     _deflate_init_tables();
     # Length-code bases are monotonically increasing, so walk both arrays
     # in lockstep: ~285 comparisons instead of 256 × 29 = ~7424.
@@ -1330,7 +1358,10 @@ var _deflate_dist_lookup_built = 0;
 
 fn _deflate_build_dist_lookup(): i64 {
     if (_deflate_dist_lookup_built == 1) { return 0; }
-    if (_deflate_dist_lookup == 0) { _deflate_dist_lookup = alloc(2048); }
+    if (_deflate_dist_lookup == 0) {
+        _deflate_dist_lookup = _sankoch_alloc(2048);
+        if (_deflate_dist_lookup == 0) { return 0 - ERR_OOM; }
+    }
     _deflate_init_tables();
     # Distance-code bases are monotonically increasing. For d ≤ 256 the
     # highest reachable code is 15 (base[16]=257), so the code pointer
@@ -1458,7 +1489,10 @@ var _dh_ws = 0;
 fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist): i64 {
     # Heap workspace: all_lens(2560) + cl_syms(2560) + cl_extra(2560) + cl_ebits(2560)
     #   + cl_freqs(152) + cl_lens_opt(152) + cl_codes_opt(152) + cl_order(152) = 10848
-    if (_dh_ws == 0) { _dh_ws = alloc(10848); }
+    if (_dh_ws == 0) {
+        _dh_ws = _sankoch_alloc(10848);
+        if (_dh_ws == 0) { return 0 - ERR_OOM; }
+    }
     var all_lens = _dh_ws;
     var total = hlit + hdist;
     var i = 0;
@@ -1715,9 +1749,10 @@ fn deflate_compress_level(src, src_len, dst, dst_cap, level): i64 {
 fn _deflate_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
     _deflate_init_tables();
     lz77_set_level(level);
-    lz77_init();
+    if (lz77_init() < 0) { return 0 - ERR_OOM; }
 
     var bw = bw_init(dst, dst_cap);
+    if (bw == 0) { return 0 - ERR_OOM; }
     var sp = 0;
 
     while (sp < src_len || sp == 0) {
@@ -1743,8 +1778,12 @@ fn _deflate_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
 # Emit one fixed Huffman block covering src[sp_start..sp_end).
 # LZ77 match-finder operates on the full src (back-refs can span blocks).
 fn _deflate_compress_fixed_block(bw, src, src_len, sp_start, sp_end, bfinal): i64 {
-    _deflate_build_enc_fixed();
-    _deflate_build_enc_dist();
+    if (_deflate_build_enc_fixed() < 0) { return 0 - ERR_OOM; }
+    if (_deflate_build_enc_dist() < 0) { return 0 - ERR_OOM; }
+    # Pre-build the len/dist lookups so the hot `_deflate_len_code` /
+    # `_deflate_dist_code` calls during symbol writing never alloc.
+    if (_deflate_build_len_lookup() < 0) { return 0 - ERR_OOM; }
+    if (_deflate_build_dist_lookup() < 0) { return 0 - ERR_OOM; }
 
     var rc = bw_write(bw, bfinal, 1);
     if (rc < 0) { return rc; }
@@ -1842,17 +1881,29 @@ var _dyn_dist_fast_tmp = 0;
 
 fn _deflate_alloc_dynamic_ws(): i64 {
     if (_dyn_sym_buf == 0) {
-        _dyn_sym_buf = alloc(DYN_SYM_MAX * 8);
+        _dyn_sym_buf = _sankoch_alloc(DYN_SYM_MAX * 8);
+        if (_dyn_sym_buf == 0) { return 0 - ERR_OOM; }
     }
+    # This block allocs 8 slabs under one guard (_dyn_lit_freq). On any
+    # mid-block OOM, zero the guard so a later retry re-enters and
+    # re-allocs the whole set instead of skipping it with null ptrs.
     if (_dyn_lit_freq == 0) {
-        _dyn_lit_freq = alloc(2304);
-        _dyn_dist_freq = alloc(240);
-        _dyn_opt_lit_lens = alloc(2304);
-        _dyn_opt_dist_lens = alloc(240);
-        _dyn_opt_lit_codes = alloc(2304);
-        _dyn_opt_dist_codes = alloc(240);
-        _dyn_lit_fast_tmp = alloc(4096);
-        _dyn_dist_fast_tmp = alloc(4096);
+        _dyn_lit_freq = _sankoch_alloc(2304);
+        if (_dyn_lit_freq == 0) { return 0 - ERR_OOM; }
+        _dyn_dist_freq = _sankoch_alloc(240);
+        if (_dyn_dist_freq == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
+        _dyn_opt_lit_lens = _sankoch_alloc(2304);
+        if (_dyn_opt_lit_lens == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
+        _dyn_opt_dist_lens = _sankoch_alloc(240);
+        if (_dyn_opt_dist_lens == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
+        _dyn_opt_lit_codes = _sankoch_alloc(2304);
+        if (_dyn_opt_lit_codes == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
+        _dyn_opt_dist_codes = _sankoch_alloc(240);
+        if (_dyn_opt_dist_codes == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
+        _dyn_lit_fast_tmp = _sankoch_alloc(4096);
+        if (_dyn_lit_fast_tmp == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
+        _dyn_dist_fast_tmp = _sankoch_alloc(4096);
+        if (_dyn_dist_fast_tmp == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
     }
     return 0;
 }
@@ -1982,7 +2033,13 @@ fn _dyn_flush_subblock(bw, bfinal): i64 {
 # BFINAL only fires on the very last sub-block, and only if the caller
 # requested it.
 fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal): i64 {
-    _deflate_alloc_dynamic_ws();
+    if (_deflate_alloc_dynamic_ws() < 0) { return 0 - ERR_OOM; }
+    # Pre-build the len/dist lookups (hot `_deflate_len_code` /
+    # `_deflate_dist_code` during symbol writing must never alloc) and the
+    # optimal-Huffman workspace (deep `huff_compute_lengths` calls).
+    if (_deflate_build_len_lookup() < 0) { return 0 - ERR_OOM; }
+    if (_deflate_build_dist_lookup() < 0) { return 0 - ERR_OOM; }
+    if (_huff_ensure_hcl_ws() < 0) { return 0 - ERR_OOM; }
 
     var sp = sp_start;
     while (1) {
@@ -2131,13 +2188,18 @@ fn deflate_enc_init_dict(level, dst, dst_cap, dict, dict_len): i64 {
 
     _deflate_init_tables();
     lz77_set_level(level);
-    lz77_init();
+    if (lz77_init() < 0) { _sankoch_unlock(); return 0; }
+    # Pre-build the len/dist lookups so the streaming symbol emitters
+    # never alloc on the hot path.
+    if (_deflate_build_len_lookup() < 0) { _sankoch_unlock(); return 0; }
+    if (_deflate_build_dist_lookup() < 0) { _sankoch_unlock(); return 0; }
     if (level >= 4) {
-        _deflate_alloc_dynamic_ws();
+        if (_deflate_alloc_dynamic_ws() < 0) { _sankoch_unlock(); return 0; }
+        if (_huff_ensure_hcl_ws() < 0) { _sankoch_unlock(); return 0; }
         _dyn_reset();
     } else {
-        _deflate_build_enc_fixed();
-        _deflate_build_enc_dist();
+        if (_deflate_build_enc_fixed() < 0) { _sankoch_unlock(); return 0; }
+        if (_deflate_build_enc_dist() < 0) { _sankoch_unlock(); return 0; }
     }
 
     # Preload the dictionary at the start of the window. wptr and cptr

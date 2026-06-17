@@ -73,7 +73,7 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
     # INFO-01). Note: this is low-16-of-CRC-32, NOT CRC-16-IBM.
     if ((flg & 2) != 0) {
         if (offset + 2 > src_len) { return 0 - ERR_CORRUPT_DATA; }
-        crc32_init_table();
+        if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
         var hdr_crc = crc32(src, offset) & 65535;
         var stored_fhcrc = load8(src + offset) | (load8(src + offset + 1) << 8);
         if (stored_fhcrc != hdr_crc) { return 0 - ERR_CHECKSUM_MISMATCH; }
@@ -92,7 +92,7 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
     var trailer = src + offset + consumed;
     if (offset + consumed + 8 > src_len) { return 0 - ERR_CORRUPT_DATA; }
 
-    crc32_init_table();
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
     var stored_crc = load8(trailer) | (load8(trailer + 1) << 8) |
     (load8(trailer + 2) << 16) | (load8(trailer + 3) << 24);
     var computed_crc = crc32(dst, dlen);
@@ -578,7 +578,7 @@ fn _gzip_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
     if (clen < 0) { return clen; }
 
     # Write trailer: CRC-32 (little-endian) + ISIZE (little-endian)
-    crc32_init_table();
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
     var c = crc32(src, src_len);
     var pos = 10 + clen;
     store8(dst + pos, c & 255);

@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.7] — 2026-06-16
+
+**Lazy-global alloc-failure propagation (INFO-A).** The ~33 lazy-global /
+arena table allocations (Huffman tables, LZ77 hash, DEFLATE workspaces,
+`_dyn_*` slabs, len/dist lookups, `crc32_table`, LZ4 hash, etc.) now
+route through the fault-injectable `_sankoch_alloc` and propagate
+allocation failure as a clean error instead of aborting on first-call
+OOM. Closes the last item carried from the 2.2.1 / 2.2.3 audits.
+Wire-format identical (all 43 SIZE lines unchanged).
+
+### Added
+
+- **`ERR_OOM` (code 10)** — a dedicated allocation-failure error code.
+  Batch APIs return `0 - ERR_OOM`; streaming/ctx APIs return `0` (null
+  ctx) with the mutex released, matching the 2.2.1 pattern.
+
+### Changed
+
+- **Lazy-init helpers return on OOM.** `crc32_init_table`,
+  `_huff_alloc_tables`, `huff_build_fixed`, `_hcl_ws`, `lz77_init`,
+  `_lz4_htab`, `_ddec_alloc_dyn_ws`, `_deflate_build_enc_fixed/_dist`,
+  `_deflate_build_len/dist_lookup`, `_dh_ws`, `_deflate_alloc_dynamic_ws`,
+  and `br_init` now check `_sankoch_alloc` and return a negative/null on
+  failure. Public entry points (batch + streaming, encode + decode)
+  check and propagate, releasing the mutex. Hot-path lazy-inits (the
+  decode-loop Huffman builds, the encoder len/dist lookups + optimal-
+  Huffman workspace) are pre-built at the public entry with a checked
+  call, so the bit-by-bit state machines never allocate.
+- `_deflate_alloc_dynamic_ws`'s 8-slab block is now retry-safe: a
+  mid-block OOM zeroes the guard pointer so a later retry re-allocates
+  the whole set instead of skipping it with null pointers.
+
+### Fixed
+
+- **Batch DEFLATE encoder segfault on bitwriter OOM.** `bw_init`'s
+  allocation-failure return (`0`) was never checked on the batch
+  compress path, so an OOM there dereferenced a null bitwriter. Now
+  returns `0 - ERR_OOM`. (Pre-existing latent bug, surfaced by the new
+  fault-injection sweep — exactly the kind of crash this work removes.)
+
+### Added (tests)
+
+- **OOM sweep fault-injection** (`test_oom_compress_sweep` /
+  `test_oom_decompress_sweep`) + a test-only `_sankoch_reset_tables()`
+  that zeroes the lazy globals so first-call OOM can be re-triggered.
+  Each sweep injects a failure at every allocation offset along a public
+  encode/decode path and asserts a clean result — completing the sweep
+  proves both no-crash **and** no-deadlock (a path that OOMed without
+  unlocking would hang the next iteration's lock). Suite: **3,862,492**
+  assertions (sankoch) + 346,583 (git_object).
+
 ## [2.3.6] — 2026-06-16
 
 **Streaming FDICT zlib.** The streaming zlib decoder can now decode

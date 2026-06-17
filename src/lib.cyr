@@ -98,6 +98,36 @@ fn _sankoch_alloc_set_fail_at(n): i64 {
     return 0;
 }
 
+# Test-only: zero every lazy-global table pointer + its "built" flag so
+# the next public-API call re-allocates them from scratch. Lets the
+# fault-injection suite (2.3.7) re-trigger first-call OOM at each
+# lazy-init site even after earlier tests warmed the globals. All these
+# live in one flat namespace after the include concatenation.
+fn _sankoch_reset_tables(): i64 {
+    crc32_table = 0;
+    _lz77_head = 0; _lz77_prev = 0;
+    _lz4_htab = 0;
+    _huff_tables_allocd = 0;
+    _huff_litlen_fast = 0; _huff_litlen_lens = 0; _huff_litlen_codes = 0;
+    _huff_dist_fast = 0; _huff_dist_lens = 0; _huff_dist_codes = 0;
+    _huff_cl_fast = 0; _huff_cl_lens = 0; _huff_cl_codes = 0;
+    _huff_fixed_built = 0; _huff_fixed_litlen_lens = 0;
+    _hcl_ws = 0;
+    _deflate_enc_fixed_built = 0;
+    _deflate_enc_lit_codes = 0; _deflate_enc_lit_lens = 0;
+    _deflate_enc_dist_codes = 0;
+    _deflate_len_lookup_built = 0; _deflate_len_lookup = 0;
+    _deflate_dist_lookup_built = 0; _deflate_dist_lookup = 0;
+    _dh_ws = 0;
+    _ddec_cl_lens = 0; _ddec_all_lens = 0; _ddec_cl_order = 0;
+    _dyn_sym_buf = 0;
+    _dyn_lit_freq = 0; _dyn_dist_freq = 0;
+    _dyn_opt_lit_lens = 0; _dyn_opt_dist_lens = 0;
+    _dyn_opt_lit_codes = 0; _dyn_opt_dist_codes = 0;
+    _dyn_lit_fast_tmp = 0; _dyn_dist_fast_tmp = 0;
+    return 0;
+}
+
 # Compress data using the specified format at default level (6).
 fn compress(format, src, src_len, dst, dst_cap): i64 {
     return compress_level(format, src, src_len, dst, dst_cap, 6);

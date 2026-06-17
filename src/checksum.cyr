@@ -182,7 +182,10 @@ var crc32_table = 0;  # heap-allocated: slice-by-8 table, 8 × 256 entries × 8 
 # is the classic reflected-0xEDB88320 table (also used by the scalar
 # tail); slices 1..7 are derived. Same CRC output — wire-identical.
 fn crc32_init_table(): i64 {
-    if (crc32_table == 0) { crc32_table = alloc(16384); }   # 8 × 256 × 8
+    if (crc32_table == 0) {
+        crc32_table = _sankoch_alloc(16384);   # 8 × 256 × 8
+        if (crc32_table == 0) { return 0 - ERR_OOM; }
+    }
     # Slice 0: standard reflected CRC-32 table.
     var i = 0;
     while (i < 256) {
@@ -267,7 +270,7 @@ fn crc32(data, len): i64 {
 #   +0: running CRC (pre-inversion)
 
 fn crc32_init(): i64 {
-    crc32_init_table();
+    if (crc32_init_table() < 0) { return 0; }   # 2.3.7: table OOM → null state
     var st = _sankoch_alloc(8);
     if (st == 0) { return 0; }   # 2.2.1: caller checks for alloc failure
     store64(st, 4294967295);   # 0xFFFFFFFF

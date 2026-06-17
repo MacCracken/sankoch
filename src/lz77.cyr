@@ -165,8 +165,10 @@ fn lz77_rebase(delta): i64 {
 # (abs_pos == win_pos in batch mode — no behavior change vs pre-2.x).
 fn lz77_init(): i64 {
     if (_lz77_head == 0) {
-        _lz77_head = alloc(262144);
-        _lz77_prev = alloc(262144);
+        _lz77_head = _sankoch_alloc(262144);
+        if (_lz77_head == 0) { return 0 - ERR_OOM; }
+        _lz77_prev = _sankoch_alloc(262144);
+        if (_lz77_prev == 0) { return 0 - ERR_OOM; }
     }
     var i = 0;
     while (i < LZ77_HASH_SIZE) {

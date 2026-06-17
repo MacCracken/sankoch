@@ -22,6 +22,7 @@ enum Error {
     ERR_INVALID_BLOCK_TYPE = 7;
     ERR_INVALID_HUFFMAN = 8;
     ERR_MATCH_OUT_OF_RANGE = 9;
+    ERR_OOM = 10;             # allocation failure (2.3.7: lazy-global / arena allocs)
 }
 
 # Limits and magic bytes

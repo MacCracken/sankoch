@@ -44,15 +44,24 @@ var _huff_tables_allocd = 0;
 
 fn _huff_alloc_tables(): i64 {
     if (_huff_tables_allocd == 1) { return 0; }
-    _huff_litlen_fast = alloc(4096);
-    _huff_litlen_lens = alloc(2304);   # 288 * 8
-    _huff_litlen_codes = alloc(2304);  # 288 * 8
-    _huff_dist_fast = alloc(4096);
-    _huff_dist_lens = alloc(256);      # 32 * 8
-    _huff_dist_codes = alloc(256);     # 32 * 8
-    _huff_cl_fast = alloc(4096);
-    _huff_cl_lens = alloc(152);
-    _huff_cl_codes = alloc(152);
+    _huff_litlen_fast = _sankoch_alloc(4096);
+    if (_huff_litlen_fast == 0) { return 0 - ERR_OOM; }
+    _huff_litlen_lens = _sankoch_alloc(2304);   # 288 * 8
+    if (_huff_litlen_lens == 0) { return 0 - ERR_OOM; }
+    _huff_litlen_codes = _sankoch_alloc(2304);  # 288 * 8
+    if (_huff_litlen_codes == 0) { return 0 - ERR_OOM; }
+    _huff_dist_fast = _sankoch_alloc(4096);
+    if (_huff_dist_fast == 0) { return 0 - ERR_OOM; }
+    _huff_dist_lens = _sankoch_alloc(256);      # 32 * 8
+    if (_huff_dist_lens == 0) { return 0 - ERR_OOM; }
+    _huff_dist_codes = _sankoch_alloc(256);     # 32 * 8
+    if (_huff_dist_codes == 0) { return 0 - ERR_OOM; }
+    _huff_cl_fast = _sankoch_alloc(4096);
+    if (_huff_cl_fast == 0) { return 0 - ERR_OOM; }
+    _huff_cl_lens = _sankoch_alloc(152);
+    if (_huff_cl_lens == 0) { return 0 - ERR_OOM; }
+    _huff_cl_codes = _sankoch_alloc(152);
+    if (_huff_cl_codes == 0) { return 0 - ERR_OOM; }
     _huff_tables_allocd = 1;
     return 0;
 }
@@ -334,7 +343,8 @@ var _huff_fixed_litlen_lens = 0;
 fn huff_build_fixed(): i64 {
     if (_huff_fixed_built == 1) { return 0; }
     if (_huff_fixed_litlen_lens == 0) {
-        _huff_fixed_litlen_lens = alloc(2304);
+        _huff_fixed_litlen_lens = _sankoch_alloc(2304);
+        if (_huff_fixed_litlen_lens == 0) { return 0 - ERR_OOM; }
     }
     var i = 0;
     while (i <= 143) {
@@ -383,6 +393,17 @@ var _hcl_ws = 0;
 # Σ 2^(-len_i) = 1. Symbol-to-length assignment is then redone in
 # descending frequency order so the most frequent symbols get the shortest
 # codes — preserving optimality up to the cap.
+# Pre-allocate the optimal-length workspace (2.3.7) so the deep
+# huff_compute_lengths() calls on the dynamic encode path never alloc.
+# Returns 0, or 0 - ERR_OOM on allocation failure.
+fn _huff_ensure_hcl_ws(): i64 {
+    if (_hcl_ws == 0) {
+        _hcl_ws = _sankoch_alloc(33600);
+        if (_hcl_ws == 0) { return 0 - ERR_OOM; }
+    }
+    return 0;
+}
+
 fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes, max_bits): i64 {
     var count = 0;
     var i = 0;
@@ -427,7 +448,8 @@ fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes, max_bits): i64 
     # Workspace — allocated once, reused across calls.
     # 7 arrays, each 600 entries * 8 bytes = 4800 bytes. Total = 33600.
     if (_hcl_ws == 0) {
-        _hcl_ws = alloc(33600);
+        _hcl_ws = _sankoch_alloc(33600);
+        if (_hcl_ws == 0) { return 0 - ERR_OOM; }
     }
     var sorted_sym = _hcl_ws;
     var sorted_freq = _hcl_ws + 4800;

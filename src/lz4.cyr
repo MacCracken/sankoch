@@ -136,7 +136,10 @@ fn _lz4_compress_inner(src, src_len, dst, dst_cap): i64 {
     }
 
     # Heap-allocate hash table on first use, then clear
-    if (_lz4_htab == 0) { _lz4_htab = alloc(32768); }
+    if (_lz4_htab == 0) {
+        _lz4_htab = _sankoch_alloc(32768);
+        if (_lz4_htab == 0) { return 0 - ERR_OOM; }
+    }
     var i = 0;
     while (i < LZ4_HTAB_SIZE) {
         store64(_lz4_htab + i * 8, 0 - 1);  # -1 = no entry

@@ -13,7 +13,8 @@
 # Each br_init allocates a fresh 32-byte context on the heap.
 # No shared static state — safe for repeat and nested calls.
 fn br_init(data, len): i64 {
-    var br = alloc(32);
+    var br = _sankoch_alloc(32);
+    if (br == 0) { return 0; }   # 2.3.7: OOM → null; callers check
     store64(br, data);
     store64(br + 8, 0);
     store64(br + 16, 0);
