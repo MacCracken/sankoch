@@ -24,7 +24,7 @@ type: state
 - **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius 6.2.x toolchain releases (full profile).
 - **Kernel-safe subset**: `lib/sankoch-core.cyr` ships alongside since the 2.1.2 cut (LZ4 batch decompress only; no alloc / no syscalls / no mutex).
 - **Consumers import via**: `include "lib/sankoch.cyr"` — no separate `[deps]` declaration in their `cyrius.cyml`.
-- **Stdlib fold-in history**: 2.0.2 in Cyrius 5.6.34; 2.0.3 in 5.6.35; 2.1.0 in the 5.6.42 era; 2.1.1 / 2.1.2 in 5.7.x; 2.2.4 in 5.8.65 (foldin manifest pre-req); 2.2.5 in the 5.11.x line; 2.2.6 / 2.3.0 in the 6.0.x line.
+- **Stdlib fold-in**: folded into the Cyrius stdlib since 2.0.2 (Cyrius 5.6.34); tracks the toolchain pin in `cyrius.cyml`. Per-version fold-in chronology lives in `CHANGELOG.md`.
 
 ## Source
 
@@ -71,24 +71,16 @@ Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at ev
 
 ## In-flight slots
 
-**2.4.3 (bzip2 encode) shipped** 2026-06-17 — `bzip2_compress` +
-`compress(FORMAT_BZIP2, …)` emit `.bz2` that `bzip2 -d` decodes;
-**byte-identical to `bzip2 -9`** on the corpus. The bzip2 codec and the
-entire **v2.4.x arc are complete** (xz + bzip2, both directions):
+**None committed.** The v2.4.x arc (xz + bzip2, both directions) is
+complete as of 2.4.3 — see [Recent releases](#recent-releases). Candidate
+follow-ons, none scheduled:
 
-| Slot       | Theme                                                                           | Sizing       |
-|------------|---------------------------------------------------------------------------------|--------------|
-| ✅ 2.4.0   | xz / LZMA decode (`FORMAT_XZ`) — **shipped**; unblocks takumi `.tar.xz`          | large        |
-| ✅ 2.4.1   | xz / LZMA **encode** (`xz_compress`, optimal parse) — **shipped**               | large        |
-| ✅ 2.4.2   | bzip2 decode (`FORMAT_BZIP2`) — **shipped**; unblocks takumi `.tar.bz2`          | medium-large |
-| ✅ 2.4.3   | bzip2 **encode** (`bzip2_compress`, BWT block-sort) — **shipped**               | large        |
-
-Next minor is open (no committed slot). Candidate follow-ons: bzip2/xz
-encoder throughput passes; the Future bucket (Zstandard, Brotli) per
-[`roadmap.md`](roadmap.md). DEFLATE throughput round 2 (old 2.3.4 slot)
-partially delivered as CRC-32 slice-by-8; `good_match` dropped and
-PCLMULQDQ deferred — see the two deferred markers in
-[`roadmap.md`](roadmap.md).
+- xz / bzip2 **encoder throughput** passes (the optimal-parse DP and the
+  BWT block-sort dominate their encode time).
+- The deferred markers in [`roadmap.md`](roadmap.md) — SIMD CRC-32
+  (`PCLMULQDQ`) and a wire-identical DEFLATE match-finder speedup.
+- The Future bucket (Zstandard, Brotli, GPU texture) per
+  [`roadmap.md`](roadmap.md).
 
 ## Consumers
 
@@ -104,9 +96,9 @@ PCLMULQDQ deferred — see the two deferred markers in
 
 ## CI / release gates
 
-- **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (21 deps, 0 untrusted, 0 missing).
+- **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (22 deps, 0 untrusted, 0 missing).
 - **Tests**: all tcyr suites green (17 split codec×direction suites + `git_object`, auto-discovered by the CI Test loop); all 17 fuzz harness functions green.
-- **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The 2.4.1 xz encoder is **deliberately excluded** from this gate — its output will keep being tuned, so it ships an informational ratio line in `bench` instead.
+- **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The **xz and bzip2 encoders** (2.4.1 / 2.4.3) are **deliberately excluded** from this gate — they ship informational ratio lines in `bench` instead.
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
 - **aarch64 cross-build**: hard gate in both ci.yml and release.yml; `cyrius build --aarch64 src/lib.cyr` must succeed and produce a valid ARM aarch64 ELF. Workflows expect `cycc_aarch64` in the Cyrius bundle (renamed from `cc5_aarch64` at Cyrius 6.0).
@@ -132,13 +124,12 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 ## Open INFOs carried forward
 
-Tracked items the next P(-1) (the 2.4.x closeout) should resolve or rebase. From the most recent audit ([`docs/audit/2026-06-16-pre-2.4.0.md`](../audit/2026-06-16-pre-2.4.0.md), zero HIGH/MED/LOW findings):
+Minor tracked items for the next P(-1) / audit pass to resolve or rebase. From the most recent audit ([`docs/audit/2026-06-16-pre-2.4.0.md`](../audit/2026-06-16-pre-2.4.0.md), zero HIGH/MED/LOW findings). Closed items live in `CHANGELOG.md`.
 
-- **INFO-01** — gzip FHCRC validation. **CLOSED at 2.3.5** (batch + streaming validate the low-16-of-CRC-32 header checksum; verified vs `gunzip`).
-- **INFO-A** — lazy-global alloc sites aborting on first-call OOM. Carried from 2.2.1 / 2.2.3. **CLOSED at 2.3.7** (~33 sites route through `_sankoch_alloc` + propagate `ERR_OOM`; OOM fault-injection sweep added; a pre-existing batch-encoder bitwriter-OOM segfault was fixed in the process).
 - **INFO-B** — batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len` (dict staged in `dst`). The 2.3.6 *streaming* FDICT path removed this for the streaming variant (dict in scratch); the batch constraint stands. Already enforced at runtime; docstring-polish item.
 - **INFO-C** — aarch64 LZ77 / FDICT match-copy use unaligned `load64`. Permitted by ARMv6+ but some implementations pay a cycle penalty. Flagged for future investigation if aarch64 perf benchmarks surface this as hot.
-- **INFO-D** (new, 2026-06-16) — on a *retried* OOM, partially-allocated lazy tables orphan their bump-allocated memory (`_sankoch_alloc` arena does not free). OOM-path only; minor.
+- **INFO-D** — on a *retried* OOM, partially-allocated lazy tables orphan their bump-allocated memory (`_sankoch_alloc` arena does not free). OOM-path only; minor.
+- **INFO-E** — the xz and bzip2 encoders allocate large working buffers (xz prob/DP ~0.6 MB; bzip2 BWT + Huffman ~44 MB at level 9) as lazy singletons. Acceptable for userspace encode, but a future audit should confirm the OOM-propagation paths on first-call failure.
 
 ---
 

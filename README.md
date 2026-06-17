@@ -67,8 +67,9 @@ var total = <fmt>_dec_finish(ctx)              # validate trailer, return total 
 ```
 
 Output bytes flow into `dst` as compressed input arrives. Available for
-DEFLATE, zlib, gzip, and LZ4F. FDICT zlib + concatenated-member gzip
-streaming are deferred to a 2.3.x patch (see roadmap).
+DEFLATE, zlib (incl. FDICT preset-dict, v2.3.6+), gzip (incl.
+concatenated members, v2.3.5+), and LZ4F. xz and bzip2 are batch-only
+(no streaming path).
 
 ### Format-agnostic dispatch (in `stream.cyr`)
 
