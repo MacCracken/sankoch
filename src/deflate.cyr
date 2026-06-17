@@ -525,7 +525,7 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len): i
 # and land in bites 2 and 3 of the 2.3.0 arc.
 
 enum DeflateDec {
-    DDEC_CTX_SIZE = 160;           # 20 i64 slots
+    DDEC_CTX_SIZE = 176;           # 22 i64 slots (+160 dict scratch, +168 dict_len at 2.3.6)
 
     # State-machine cursor (stored in ctx + 24).
     DDEC_STATE_HEADER = 0;         # need BFINAL (1) + BTYPE (2)
@@ -613,6 +613,8 @@ fn _ddec_alloc_dyn_ws(): i64 {
 #   +136 dyn_idx             — bite-3: doubles as cl_idx during CL_LENS and al_idx during AL_*
 #   +144 dyn_prev            — bite-3: last code length emitted into all_lens (for repeat-16)
 #   +152 dyn_rep_sym         — bite-3: pending cl symbol awaiting extras (16, 17, or 18)
+#   +160 dict_scratch        — 2.3.6: heap copy of the preset dict (0 if none)
+#   +168 dict_len            — 2.3.6: preset-dict length (0 = no dict; fast match-copy path)
 
 fn _ddec_state(ctx): i64 { return load64(ctx + 24); }
 fn _ddec_err(ctx): i64 { return load64(ctx + 80); }
@@ -752,8 +754,38 @@ fn deflate_dec_init(dst, dst_cap): i64 {
     store64(ctx + 136, 0);
     store64(ctx + 144, 0);
     store64(ctx + 152, 0);
+    store64(ctx + 160, 0);   # dict scratch (none)
+    store64(ctx + 168, 0);   # dict_len (0 → fast match-copy path)
 
     _deflate_init_tables();
+    return ctx;
+}
+
+# Start a streaming DEFLATE decoder pre-warmed with a preset dictionary
+# (2.3.6 — used by FDICT zlib streaming). The dict is copied into a
+# scratch buffer kept beside the ctx; the match-copy reads it for
+# back-references that reach before the stream's own output (negative
+# logical offset), so the decoded output still lands cleanly at dst[0]
+# (unlike the batch path, which stages the dict in dst and shifts after).
+# dict_len == 0 is exactly deflate_dec_init. Holds the mutex on success.
+fn deflate_dec_init_dict(dst, dst_cap, dict, dict_len): i64 {
+    if (dict_len < 0) { return 0; }
+    if (dict_len > DEFLATE_WINDOW_SIZE) { return 0; }
+    if (dict_len > 0 && dict == 0) { return 0; }
+
+    var ctx = deflate_dec_init(dst, dst_cap);
+    if (ctx == 0) { return 0; }
+    if (dict_len > 0) {
+        var scratch = _sankoch_alloc(dict_len);
+        if (scratch == 0) { _sankoch_unlock(); return 0; }
+        var i = 0;
+        while (i < dict_len) {
+            store8(scratch + i, load8(dict + i));
+            i = i + 1;
+        }
+        store64(ctx + 160, scratch);
+        store64(ctx + 168, dict_len);
+    }
     return ctx;
 }
 
@@ -784,6 +816,8 @@ fn deflate_dec_reset(ctx): i64 {
     store64(ctx + 136, 0);   # dyn_idx
     store64(ctx + 144, 0);   # dyn_prev
     store64(ctx + 152, 0);   # dyn_rep_sym
+    store64(ctx + 160, 0);   # dict scratch (a reset member carries no dict)
+    store64(ctx + 168, 0);   # dict_len
     return 0;
 }
 
@@ -968,7 +1002,10 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             var length_v = load64(ctx + 88);
             var distance = load64(ctx + 96);
             var dp_match = load64(ctx + 8);
-            if (distance > dp_match) {
+            var mc_dict_len = load64(ctx + 168);
+            # A back-reference may reach into the preset dict (2.3.6):
+            # the valid history is dp_match + dict_len, not just dp_match.
+            if (distance > dp_match + mc_dict_len) {
                 return _ddec_poison(ctx, 0 - ERR_MATCH_OUT_OF_RANGE);
             }
             if (dp_match + length_v > load64(ctx + 16)) {
@@ -980,10 +1017,30 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
             var dst_match = load64(ctx + 0);
             var src_match = dp_match - distance;
             var i_match = 0;
-            while (i_match < length_v) {
-                store8(dst_match + dp_match + i_match,
-                load8(dst_match + src_match + i_match));
-                i_match = i_match + 1;
+            if (mc_dict_len == 0) {
+                # Fast path — no preset dict, source is always in dst.
+                while (i_match < length_v) {
+                    store8(dst_match + dp_match + i_match,
+                    load8(dst_match + src_match + i_match));
+                    i_match = i_match + 1;
+                }
+            } else {
+                # Dict-aware: logical space is [dict][dst output]. A
+                # negative source offset reads the dict scratch; once it
+                # crosses 0 the bytes come from dst (including those just
+                # written this loop, so self-overlapping matches work).
+                var mc_dict_p = load64(ctx + 160);
+                while (i_match < length_v) {
+                    var spos = src_match + i_match;
+                    var bval = 0;
+                    if (spos < 0) {
+                        bval = load8(mc_dict_p + mc_dict_len + spos);
+                    } else {
+                        bval = load8(dst_match + spos);
+                    }
+                    store8(dst_match + dp_match + i_match, bval);
+                    i_match = i_match + 1;
+                }
             }
             store64(ctx + 8, dp_match + length_v);
             store64(ctx + 24, DDEC_STATE_DECODE_SYM);

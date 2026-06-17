@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.6] — 2026-06-16
+
+**Streaming FDICT zlib.** The streaming zlib decoder can now decode
+preset-dictionary (FDICT) streams when the caller supplies the matching
+dictionary — previously rejected with `-ERR_UNSUPPORTED_FORMAT`. Closes
+the last streaming/batch capability gap on the zlib path. Wire-format
+identical (decode-only; all 43 SIZE lines unchanged).
+
+### Added
+
+- **`deflate_dec_init_dict(dst, dst_cap, dict, dict_len)`** — a
+  streaming DEFLATE decoder pre-warmed with a preset dictionary. Unlike
+  the batch path (which stages the dict at the front of `dst` and shifts
+  the output afterward), the streaming variant keeps the dict in a
+  separate scratch buffer beside the ctx; the match-copy reads it for
+  back-references that reach before the stream's own output (negative
+  logical offset). The decoded output therefore lands cleanly at `dst[0]`
+  with no post-pass shift, and the layout survives chunk-boundary state
+  saves. `dict_len == 0` is exactly `deflate_dec_init` and leaves the
+  hot-path match-copy untouched (no common-path cost).
+- **`zlib_dec_init_dict(dst, dst_cap, dict, dict_len)`** — streaming zlib
+  decoder with a preset dictionary. On an FDICT stream it parses the
+  4-byte big-endian DICTID (new `ZDEC_STATE_DICTID`) and validates it
+  against `adler32(dict)` before decoding. `zlib_dec_init` now delegates
+  to it with no dict; an FDICT stream fed to the no-dict path is still
+  rejected (`-ERR_UNSUPPORTED_FORMAT` — nothing to satisfy it).
+- New tests: streaming FDICT round-trip (whole + byte-at-a-time, with the
+  input overlapping the dict so back-references reach into it) + wrong-
+  dict (DICTID mismatch) and no-dict rejection. Suite: **3,862,327**
+  assertions (sankoch) + 346,583 (git_object).
+
+### Verified
+
+- **Reference conformance.** sankoch's streaming decoder decodes a
+  Python-`zlib`-produced FDICT stream (compressed with a preset
+  dictionary) **byte-identical** to the reference output.
+
 ## [2.3.5] — 2026-06-16
 
 **gzip streaming-decode hardening: FHCRC verify + concatenated members.**

@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.3.5) | **Last Updated**: 2026-06-16
+> **Status**: Stable (v2.3.6) | **Last Updated**: 2026-06-16
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
@@ -13,21 +13,22 @@ in. Items further down can be re-ordered against new information.
 > items were renumbered to 2.3.3+ accordingly. Shipped since:
 > **2.3.3** (configurable LZ4F block-max + per-block checksum),
 > **2.3.4** (CRC-32 slice-by-8 + cyrius pin → 6.2.15), **2.3.5** (gzip
-> streaming hardening — FHCRC verify + concatenated members) — see
-> `CHANGELOG.md`. The old bundled "2.3.5 streaming hardening" slot was
-> split (see below): FDICT streaming → 2.3.6, alloc-fail → 2.3.7, P(-1)
-> → 2.3.8. xz/bzip2 decode (takumi-driven) opens the 2.4.x line —
-> additive `FORMAT_*` APIs are a minor bump.
+> streaming hardening — FHCRC verify + concatenated members), **2.3.6**
+> (streaming FDICT zlib) — see `CHANGELOG.md`. The old bundled "2.3.5
+> streaming hardening" slot was split: FHCRC + concatenated shipped in
+> 2.3.5, FDICT in 2.3.6; alloc-fail → 2.3.7, P(-1) → 2.3.8. xz/bzip2
+> decode (takumi-driven) opens the 2.4.x line — additive `FORMAT_*` APIs
+> are a minor bump.
 
 ---
 
-## v2.3.x ladder (sequenced, post-2.3.5)
+## v2.3.x ladder (sequenced, post-2.3.6)
 
 The 2.3.x line continues from the streaming-decompression cut (2.3.0)
 through two pin-bump patches (2.3.1, 2.3.2), configurable-block-max
-(2.3.3), CRC-32 throughput (2.3.4), and gzip streaming hardening
-(2.3.5). The remaining items finish the deferred 2.3.0 streaming work
-plus carried INFOs from the 2.1.3 / 2.2.3 audits. P(-1) closes the line
+(2.3.3), CRC-32 throughput (2.3.4), gzip streaming hardening (2.3.5),
+and streaming FDICT zlib (2.3.6). The remaining items finish the
+carried INFOs from the 2.1.3 / 2.2.3 audits. P(-1) closes the line
 before 2.4.0 opens.
 
 > **2.3.4 note — "DEFLATE throughput round 2" partially delivered.**
@@ -45,32 +46,10 @@ before 2.4.0 opens.
 > split.** It rolled up four items; bundling two hot-path / large-surface
 > changes with two smaller ones into one release ran against the "small
 > bites" rule. **2.3.5 shipped** the two tightly-related gzip items
-> (FHCRC verify + concatenated-member streaming — see `CHANGELOG.md`).
-> The remaining two each get a focused slot below.
-
-### 🎯 2.3.6 — streaming FDICT zlib
-
-Bite 4 (2.3.0) rejects FDICT-bearing zlib streams with
-`-ERR_UNSUPPORTED_FORMAT`. Full support needs a
-`deflate_dec_init_dict(dst, dst_cap, dict, dict_len)` companion to
-`deflate_dec_init` — preload the dict into a separate scratch region
-that back-references can reach (the batch `_deflate_decompress_dict_inner`
-stages dict at the start of dst and shifts the output afterwards; the
-streaming variant can't shift, so it keeps the dict in a scratch buffer
-and the match-copy reads it for negative offsets). zlib wrapper
-(`zlib_dec_init_dict`) accepts the dict + validates the 4-byte DICTID
-against `adler32(dict)`.
-
-**Design (from the 2.3.5 assessment):** grow the deflate_dec ctx
-(160 → 176: +160 dict-scratch ptr, +168 dict_len); the match-copy
-distance check allows `distance ≤ dp + dict_len`; the copy loop reads
-the dict scratch when `dp - distance < 0`, else dst. `dict_len == 0`
-keeps the current fast path untouched (no common-path cost). Survives
-chunk-boundary state saves because the dict scratch + len live in the
-ctx.
-
-**Sizing:** medium-large. Touches the DEFLATE match-copy hot path —
-the reason it was split into its own release.
+> (FHCRC verify + concatenated-member streaming), and **2.3.6 shipped**
+> streaming FDICT zlib (`deflate_dec_init_dict` + `zlib_dec_init_dict`,
+> dict-scratch match-copy) — see `CHANGELOG.md`. The last bundled item
+> (alloc-fail propagation) is next.
 
 ### 🎯 2.3.7 — lazy-global alloc-failure propagation
 
@@ -243,7 +222,7 @@ self-contained but spec-dense.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.3.5**.
+> Current as of **2.3.6**.
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -256,21 +235,21 @@ self-contained but spec-dense.
 | lz77.cyr         |  179 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  181 | LZ4 block + frame decompress (incl. per-block checksum) + LZ4F enum (kernel-safe) | core |
 | lz4.cyr          |  932 | LZ4 block + frame compress + `lz4f_enc_*` (configurable block-max + checksum) + `lz4f_dec_*` streaming | full |
-| deflate.cyr      | 2306 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset`), dict | full |
-| zlib.cyr         |  406 | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming | full |
+| deflate.cyr      | 2363 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict`), dict | full |
+| zlib.cyr         |  451 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict`) + `zlib_enc_*` + `zlib_dec_*` | full |
 | gzip.cyr         |  596 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming | full |
 | lib.cyr          |  193 | Public API, `_sankoch_mtx`, two-tier lock dispatch | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| **Total**        | **6503** | | |
+| **Total**        | **6605** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 312 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **179 distinct test functions** (169 sankoch.tcyr + 10
-git_object.tcyr) producing **4,208,691 assertions** total
-(3,862,108 + 346,583). Most of the assertion count comes from
+Tests: **180 distinct test functions** (170 sankoch.tcyr + 10
+git_object.tcyr) producing **4,208,910 assertions** total
+(3,862,327 + 346,583). Most of the assertion count comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -283,8 +262,8 @@ Fuzz: 1,649 iterations across 6 harnesses (`fuzz_lz4` 700,
 the four streaming variants and the tree-shape / skewed-freq
 harnesses).
 
-Distlib: `dist/sankoch.cyr` at 6,483 lines (full) +
-`dist/sankoch-core.cyr` at 312 lines (kernel-safe) — at 2.3.5.
+Distlib: `dist/sankoch.cyr` at 6,585 lines (full) +
+`dist/sankoch-core.cyr` at 312 lines (kernel-safe) — at 2.3.6.
 
 ## Dependencies
 
@@ -306,4 +285,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.15).
 
 ---
 
-*Last Updated: 2026-06-16 (2.3.5 cut — gzip streaming hardening: FHCRC verify + concatenated members)*
+*Last Updated: 2026-06-16 (2.3.6 cut — streaming FDICT zlib)*

@@ -195,28 +195,34 @@ fn zlib_enc_finish(ctx): i64 {
 # `zlib_dec_finish` (the lock is taken by the inner deflate_dec_init
 # and released by deflate_dec_finish — same pattern as the encoder).
 #
-# Bite-4 scope: FDICT streams are NOT supported and return
-# `-ERR_UNSUPPORTED_FORMAT` from the header parse. Full FDICT support
-# would require a `deflate_dec_init_dict` analog and is deferred to
-# a follow-on 2.3.x patch release.
+# FDICT (2.3.6): FDICT-bearing streams ARE supported when the caller
+# provides the matching dictionary via `zlib_dec_init_dict`. The inner
+# DEFLATE decoder is pre-warmed (`deflate_dec_init_dict`), the 4-byte
+# DICTID is validated against `adler32(dict)`, and decode proceeds. An
+# FDICT stream decoded through the no-dict `zlib_dec_init` is rejected
+# with `-ERR_UNSUPPORTED_FORMAT` (no dictionary to satisfy it).
 #
-# ctx layout (9 i64 slots = 72 bytes):
+# ctx layout (12 i64 slots = 96 bytes):
 #   +0   inner_dctx       — pointer to deflate_dec ctx (also owns dst)
 #   +8   state            — ZDEC_STATE_*
-#   +16  adler_state      — adler32 incremental state pointer
-#   +24  hdr_idx          — bytes parsed in the 2-byte header (0..2)
+#   +16  adler_state      — adler32 incremental state pointer (output only)
+#   +24  hdr_idx          — bytes parsed in header (0..2) / DICTID (0..4)
 #   +32  hdr_cmf          — parsed CMF byte
 #   +40  hdr_flg          — parsed FLG byte
 #   +48  trailer_idx      — bytes parsed in the 4-byte trailer (0..4)
 #   +56  trailer_value    — big-endian Adler-32 from the trailer
 #   +64  err              — sticky error; 0 = OK
+#   +72  dict             — caller's preset-dict pointer (0 if none)
+#   +80  dict_len         — preset-dict length (0 if none)
+#   +88  dictid_acc       — big-endian DICTID accumulated from the stream
 
 enum ZlibDec {
-    ZDEC_CTX_SIZE = 72;
+    ZDEC_CTX_SIZE = 96;
     ZDEC_STATE_HEADER = 0;
     ZDEC_STATE_DEFLATE = 1;
     ZDEC_STATE_TRAILER = 2;
     ZDEC_STATE_DONE = 3;
+    ZDEC_STATE_DICTID = 4;     # 4-byte big-endian DICTID (FDICT streams)
 }
 
 fn _zdec_poison(ctx, code): i64 {
@@ -228,7 +234,19 @@ fn _zdec_poison(ctx, code): i64 {
 # Takes _sankoch_mtx (via the inner deflate_dec_init); released only
 # on zlib_dec_finish or on init alloc-failure.
 fn zlib_dec_init(dst, dst_cap): i64 {
-    var inner = deflate_dec_init(dst, dst_cap);
+    return zlib_dec_init_dict(dst, dst_cap, 0, 0);
+}
+
+# Streaming zlib decoder with a preset dictionary (2.3.6). Required to
+# decode FDICT streams: dict/dict_len must be the dictionary whose
+# Adler-32 matches the stream's DICTID. dict_len == 0 is exactly
+# `zlib_dec_init` (no dict; FDICT streams then rejected).
+fn zlib_dec_init_dict(dst, dst_cap, dict, dict_len): i64 {
+    if (dict_len < 0) { return 0; }
+    if (dict_len > DEFLATE_WINDOW_SIZE) { return 0; }
+    if (dict_len > 0 && dict == 0) { return 0; }
+
+    var inner = deflate_dec_init_dict(dst, dst_cap, dict, dict_len);
     if (inner == 0) { return 0; }
 
     var ctx = _sankoch_alloc(ZDEC_CTX_SIZE);
@@ -245,6 +263,9 @@ fn zlib_dec_init(dst, dst_cap): i64 {
     store64(ctx + 48, 0);
     store64(ctx + 56, 0);
     store64(ctx + 64, 0);
+    store64(ctx + 72, dict);
+    store64(ctx + 80, dict_len);
+    store64(ctx + 88, 0);
     return ctx;
 }
 
@@ -295,9 +316,33 @@ fn zlib_dec_write(ctx, input, in_len): i64 {
             if (((cmf >> 4) & 15) > 7) {
                 return _zdec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
             }
-            # Bite-4: FDICT not yet wired through the streaming path.
+            # FDICT (2.3.6): a preset dict is required. With one, parse +
+            # validate the 4-byte DICTID next; without one, reject.
             if ((flg & 32) != 0) {
-                return _zdec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+                if (load64(ctx + 80) == 0) {
+                    return _zdec_poison(ctx, 0 - ERR_UNSUPPORTED_FORMAT);
+                }
+                store64(ctx + 24, 0);   # hdr_idx reused as DICTID counter
+                store64(ctx + 8, ZDEC_STATE_DICTID);
+            } else {
+                store64(ctx + 8, ZDEC_STATE_DEFLATE);
+            }
+        } elif (state == ZDEC_STATE_DICTID) {
+            # 4-byte big-endian DICTID = Adler-32 of the dictionary
+            # (RFC 1950 §2.2). Validate against the caller's dict.
+            var did = load64(ctx + 24);
+            var did_acc = load64(ctx + 88);
+            while (did < 4 && cp < in_len) {
+                did_acc = (did_acc << 8) | load8(input + cp);
+                cp = cp + 1;
+                did = did + 1;
+            }
+            store64(ctx + 24, did);
+            store64(ctx + 88, did_acc);
+            if (did < 4) { return cp; }
+            var want = adler32(load64(ctx + 72), load64(ctx + 80));
+            if (did_acc != want) {
+                return _zdec_poison(ctx, 0 - ERR_CHECKSUM_MISMATCH);
             }
             store64(ctx + 8, ZDEC_STATE_DEFLATE);
         } elif (state == ZDEC_STATE_DEFLATE) {

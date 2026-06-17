@@ -1739,6 +1739,67 @@ fn test_zlib_enc_dict_roundtrip() {
     return 0;
 }
 
+fn test_zlib_dec_dict_streaming() {
+    # 2.3.6: streaming decode of an FDICT zlib stream. The input overlaps
+    # the dict heavily, so the encoder emits back-references INTO the dict
+    # — exercising the dict-aware match-copy (negative source offsets).
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var enc = alloc(512);
+    var ec = zlib_enc_init_dict(6, enc, 512, dict, dict_len);
+    assert(ec != 0, "zdec dict enc init");
+    assert(zlib_enc_write(ec, input, input_len) == 0, "zdec dict enc write");
+    var clen = zlib_enc_finish(ec);
+    assert(clen > 6, "zdec dict enc clen");
+
+    # Streaming decode (whole) with the matching dict.
+    var d = alloc(256);
+    var ctx = zlib_dec_init_dict(d, 256, dict, dict_len);
+    assert(ctx != 0, "zdec dict init");
+    assert(zlib_dec_write(ctx, enc, clen) >= 0, "zdec dict write");
+    assert(zlib_dec_finish(ctx) == input_len, "zdec dict len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(d + i) == load8(input + i), "zdec dict content");
+        i = i + 1;
+    }
+
+    # Streaming byte-at-a-time — DICTID + dict match-copy across chunks.
+    var d2 = alloc(256);
+    var ctx2 = zlib_dec_init_dict(d2, 256, dict, dict_len);
+    assert(ctx2 != 0, "zdec dict baat init");
+    var k = 0;
+    while (k < clen) {
+        assert(zlib_dec_write(ctx2, enc + k, 1) >= 0, "zdec dict baat write");
+        k = k + 1;
+    }
+    assert(zlib_dec_finish(ctx2) == input_len, "zdec dict baat len");
+    i = 0;
+    while (i < input_len) {
+        assert(load8(d2 + i) == load8(input + i), "zdec dict baat content");
+        i = i + 1;
+    }
+
+    # Wrong dict (same length, different content) → DICTID mismatch.
+    var wrong = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    var d3 = alloc(256);
+    var ctx3 = zlib_dec_init_dict(d3, 256, wrong, dict_len);
+    var rc3 = zlib_dec_write(ctx3, enc, clen);
+    var fin3 = zlib_dec_finish(ctx3);
+    assert(rc3 < 0 || fin3 < 0, "zdec wrong dict rejected");
+
+    # FDICT stream through the no-dict zlib_dec_init → rejected.
+    var d4 = alloc(256);
+    var ctx4 = zlib_dec_init(d4, 256);
+    var rc4 = zlib_dec_write(ctx4, enc, clen);
+    var fin4 = zlib_dec_finish(ctx4);
+    assert(rc4 < 0 || fin4 < 0, "zdec FDICT without dict rejected");
+    return 0;
+}
+
 fn test_zlib_enc_dict_wrong_dict_rejected() {
     # Encode with dict A; decompress claiming dict B → DICTID mismatch.
     var dict_a = "abcdefghijklmnop";
@@ -3640,6 +3701,7 @@ fn main() {
     test_deflate_enc_dict_roundtrip();
     test_deflate_enc_dict_levels();
     test_zlib_enc_dict_roundtrip();
+    test_zlib_dec_dict_streaming();
     test_zlib_enc_dict_wrong_dict_rejected();
     test_gzip_enc_dict_roundtrip();
     test_enc_dict_invalid_args();

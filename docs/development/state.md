@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-16 (v2.3.5 cut — gzip streaming hardening: FHCRC verify + concatenated members) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.3.6 cut — streaming FDICT zlib) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.5` — single source of truth
+- **`VERSION`**: `2.3.6` — single source of truth
 - **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin
-- **Tag**: `2.3.5` (bare semver, no `v` prefix)
+- **Tag**: `2.3.6` (bare semver, no `v` prefix)
 - **Released**: 2026-06-16
 
 ## Distribution
@@ -28,16 +28,16 @@ type: state
 
 ## Source
 
-- **Source**: **6,503 lines** across 14 domain modules (`src/*.cyr`).
+- **Source**: **6,605 lines** across 14 domain modules (`src/*.cyr`).
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
 
 | Suite                          | Functions | Assertions |
 |--------------------------------|----------:|-----------:|
-| `tests/tcyr/sankoch.tcyr`      |       169 |  3,862,108 |
+| `tests/tcyr/sankoch.tcyr`      |       170 |  3,862,327 |
 | `tests/tcyr/git_object.tcyr`   |        10 |    346,583 |
-| **Total**                      |   **179** | **4,208,691** |
+| **Total**                      |   **180** | **4,208,910** |
 
 The assertion total is heavily inflated by per-byte content-loop checks on streaming round-trips (a single 128 KB round-trip contributes 131,072 assertions through one `while (i < N) assert(load8(d+i) == load8(s+i))` loop). Read as a coverage-**density** number, not a coverage-**breadth** number. See [`guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large) for the full explanation.
 
@@ -51,20 +51,19 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 6,483 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
+| `dist/sankoch.cyr`           | 6,585 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
 | `dist/sankoch-core.cyr`      |   312 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
 
 Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
 
 ## In-flight slots
 
-Empty at 2.3.5 cut. Next items per [`roadmap.md`](roadmap.md) — the old
-bundled "2.3.5 streaming hardening" slot was split (FHCRC + concatenated
-shipped in 2.3.5; the two larger pieces get focused slots):
+Empty at 2.3.6 cut. Next items per [`roadmap.md`](roadmap.md) — the old
+bundled "2.3.5 streaming hardening" slot was split across 2.3.5 (FHCRC +
+concatenated), 2.3.6 (FDICT streaming), and the slots below:
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.3.6**  | streaming FDICT zlib (`deflate_dec_init_dict` + dict-scratch match-copy)         | medium-large |
 | **2.3.7**  | lazy-global alloc-failure propagation (INFO-A; 35 sites + fault-injection matrix) | large        |
 | **2.3.8**  | P(-1) closeout for the 2.3.x line                                                | medium       |
 | **2.4.0**  | xz / LZMA decode (`FORMAT_XZ`) — unblocks takumi `.tar.xz` extraction            | large        |
@@ -102,12 +101,12 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.3.6  | 2026-06-16 | Streaming FDICT zlib (`zlib_dec_init_dict`; dict-scratch match-copy) |
 | 2.3.5  | 2026-06-16 | gzip streaming hardening — FHCRC verify + concatenated-member decode |
 | 2.3.4  | 2026-06-16 | CRC-32 slice-by-8 (~2×, wire-identical) + cyrius pin → 6.2.15 |
 | 2.3.3  | 2026-06-16 | Configurable LZ4F block-max (64K/256K/1M/4M) + per-block checksum (`lz4f_enc_init_ex`) |
 | 2.3.2  | 2026-06-16 | Cyrius pin → 6.2.14 (stdlib pin sweep; no source change) |
 | 2.3.1  | 2026-06-12 | Cyrius pin → 6.2.1 (stdlib pin sweep; no source change) |
-| 2.3.0  | 2026-05-23 | True incremental decompression (DEFLATE / zlib / gzip / LZ4F `*_dec_*` + `stream_decompress_init_inc`) |
 
 ## Open INFOs carried forward
 
