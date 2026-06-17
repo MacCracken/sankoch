@@ -7,19 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] — 2026-06-17
+
+**bzip2 decode (`bzip2_decompress` + `FORMAT_BZIP2`) — decode only.**
+Rounds out the source-tarball codecs alongside the 2.4.0 xz decode path:
+sankoch now extracts `.bz2` / `.tar.bz2`. From-scratch BWT-based decoder,
+zero new dependencies.
+
+### Added
+
+- **`bzip2_decompress(src, src_len, dst, dst_cap)`** + `FORMAT_BZIP2`
+  (= 7), wired into `decompress()` and `detect_format()` (magic `BZh` +
+  level digit). New module [`src/bzip2.cyr`](src/bzip2.cyr) (~500 lines):
+  MSB-first bit reader → Huffman decode (canonical, up to 6 tables, 50-
+  symbol group selectors) → MTF + RLE2 inverse → **inverse BWT**
+  (cumulative-count transform vector walked from the origin pointer) →
+  RLE1 inverse, fused with the BWT walk. Per-block and combined-stream
+  **CRC-32/BZIP2** validated. **Concatenated streams** (e.g. pbzip2
+  output) decode; trailing data after a complete stream stops cleanly.
+  Randomized blocks (extinct pre-0.9.5 feature) are rejected as
+  unsupported.
+- **CRC-32/BZIP2** (poly 0x04C11DB7, **non-reflected** — distinct from
+  the reflected RFC-1952 CRC-32) in
+  [`src/checksum.cyr`](src/checksum.cyr): `crc32_bzip2` + table init.
+  Validated against the canonical `0xFC891918` check value for
+  `"123456789"`.
+
+### Tests / fuzz
+
+- New suite [`tests/tcyr/bzip2_decompress.tcyr`](tests/tcyr/bzip2_decompress.tcyr)
+  (8 tests: small/repetitive/text-multitable/empty/RLE1-runs/binary +
+  corruption + public-API path) — real `bzip2` fixtures, decoded to the
+  original byte-for-byte. CRC-32/BZIP2 test added to `checksum.tcyr`.
+- New fuzz harness [`fuzz/fuzz_bzip2.fcyr`](fuzz/fuzz_bzip2.fcyr): 300
+  random-input + 200 corruption iterations — never crash on hostile input.
+- Out-of-band: 100+ `bzip2`-vs-sankoch round-trips across sizes 0–1.5 MB
+  (multi-block), random/zero/text/sequential/RLE-heavy content, levels
+  1–9; concatenated streams; a real multi-file `.tar.bz2`.
+
 ### Changed
 
-- **Test suite split** (no source/behavior change). The monolithic
-  `tests/tcyr/sankoch.tcyr` (~6,200 lines, 190 tests) is split by
-  **codec × direction** into 15 focused suites
-  (`checksum`, `lz4_{compress,decompress}`, `lz4f_{compress,decompress}`,
-  `deflate_{compress,decompress}`, `zlib_{compress,decompress}`,
-  `gzip_{compress,decompress}`, `xz_{compress,decompress}`, `stream`,
-  `detect_error`) sharing `tests/tcyr/_harness.tcyr` (includes + 4 MB
-  heap setup + cross-cutting helpers). Round-trip tests live with the
-  compress side. Assertion total is unchanged (3,979,611); CI Test step
-  now auto-discovers every suite (skipping `_`-prefixed includes), so
-  future suites need no workflow edits. `git_object.tcyr` is unchanged.
+- **Test suite split** (no source/behavior change; landed post-2.4.1).
+  The monolithic `tests/tcyr/sankoch.tcyr` (~6,200 lines) was split by
+  **codec × direction** into focused suites sharing
+  `tests/tcyr/_harness.tcyr` (includes + 4 MB heap setup + cross-cutting
+  helpers). The CI Test step auto-discovers every suite (skipping
+  `_`-prefixed includes), so new suites (like `bzip2_decompress`) need no
+  workflow edits. `git_object.tcyr` is unchanged.
 
 ## [2.4.1] — 2026-06-16
 

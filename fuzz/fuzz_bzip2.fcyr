@@ -1,0 +1,126 @@
+# sankoch — bzip2 decode fuzz harness (2.4.2)
+#
+# Decode-only adversarial surface: the .bz2 container + Huffman/MTF/RLE2
+# + inverse-BWT + RLE1 path must never crash, read out of bounds, or loop
+# forever on hostile input.
+#   1. Random bytes (some carrying the "BZh" magic) -> error, not a fault.
+#   2. A known-good stream with random byte flips -> exercises deep decode
+#      paths (BWT walk, RLE1) under corruption.
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_fill(buf, len) {
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, _fuzz_next());
+        i = i + 1;
+    }
+    return 0;
+}
+
+# valid .bz2 fixture (100 bytes -> 246 plaintext), level 9
+fn _bz_fuzz_fixture(buf) {
+    store8(buf + 0, 66); store8(buf + 1, 90); store8(buf + 2, 104); store8(buf + 3, 57);
+    store8(buf + 4, 49); store8(buf + 5, 65); store8(buf + 6, 89); store8(buf + 7, 38);
+    store8(buf + 8, 83); store8(buf + 9, 89); store8(buf + 10, 96); store8(buf + 11, 81);
+    store8(buf + 12, 116); store8(buf + 13, 194); store8(buf + 14, 0); store8(buf + 15, 0);
+    store8(buf + 16, 56); store8(buf + 17, 153); store8(buf + 18, 128); store8(buf + 19, 64);
+    store8(buf + 20, 1); store8(buf + 21, 16); store8(buf + 22, 16); store8(buf + 23, 63);
+    store8(buf + 24, 109); store8(buf + 25, 246); store8(buf + 26, 240); store8(buf + 27, 32);
+    store8(buf + 28, 0); store8(buf + 29, 112); store8(buf + 30, 80); store8(buf + 31, 0);
+    store8(buf + 32, 52); store8(buf + 33, 12); store8(buf + 34, 153); store8(buf + 35, 2);
+    store8(buf + 36, 42); store8(buf + 37, 134); store8(buf + 38, 137); store8(buf + 39, 134);
+    store8(buf + 40, 77); store8(buf + 41, 77); store8(buf + 42, 164); store8(buf + 43, 109);
+    store8(buf + 44, 169); store8(buf + 45, 49); store8(buf + 46, 129); store8(buf + 47, 168);
+    store8(buf + 48, 200); store8(buf + 49, 115); store8(buf + 50, 30); store8(buf + 51, 7);
+    store8(buf + 52, 224); store8(buf + 53, 220); store8(buf + 54, 108); store8(buf + 55, 52);
+    store8(buf + 56, 27); store8(buf + 57, 14); store8(buf + 58, 35); store8(buf + 59, 192);
+    store8(buf + 60, 61); store8(buf + 61, 13); store8(buf + 62, 7); store8(buf + 63, 161);
+    store8(buf + 64, 200); store8(buf + 65, 31); store8(buf + 66, 227); store8(buf + 67, 224);
+    store8(buf + 68, 212); store8(buf + 69, 108); store8(buf + 70, 48); store8(buf + 71, 48);
+    store8(buf + 72, 62); store8(buf + 73, 12); store8(buf + 74, 13); store8(buf + 75, 198);
+    store8(buf + 76, 99); store8(buf + 77, 184); store8(buf + 78, 55); store8(buf + 79, 28);
+    store8(buf + 80, 6); store8(buf + 81, 6); store8(buf + 82, 67); store8(buf + 83, 244);
+    store8(buf + 84, 26); store8(buf + 85, 140); store8(buf + 86, 199); store8(buf + 87, 65);
+    store8(buf + 88, 160); store8(buf + 89, 250); store8(buf + 90, 46); store8(buf + 91, 228);
+    store8(buf + 92, 138); store8(buf + 93, 112); store8(buf + 94, 161); store8(buf + 95, 32);
+    store8(buf + 96, 192); store8(buf + 97, 162); store8(buf + 98, 233); store8(buf + 99, 132);
+    return 100;
+}
+
+# Strategy 1: random bytes (optionally "BZh<digit>" prefixed) -> survive.
+fn fuzz_bz_random(seed, data_len, magic) {
+    _fuzz_seed(seed);
+    var src[512];
+    var capped = data_len;
+    if (capped > 512) { capped = 512; }
+    _fuzz_fill(&src, capped);
+    if (magic != 0 && capped >= 4) {
+        store8(&src + 0, 66); store8(&src + 1, 90);
+        store8(&src + 2, 104); store8(&src + 3, 57);
+    }
+    var dst[8192];
+    var dlen = bzip2_decompress(&src, capped, &dst, 8192);
+    return 0;
+}
+
+# Strategy 2: valid fixture with random byte flips -> survive.
+fn fuzz_bz_corrupt(seed) {
+    _fuzz_seed(seed);
+    var src[256];
+    var n = _bz_fuzz_fixture(&src);
+    var flips = 1 + (_fuzz_next() & 3);
+    var k = 0;
+    while (k < flips) {
+        var off = (_fuzz_next() | ((_fuzz_next() & 1) << 8)) % n;
+        store8(&src + off, _fuzz_next());
+        k = k + 1;
+    }
+    var dst[8192];
+    var dlen = bzip2_decompress(&src, n, &dst, 8192);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    var fx[256];
+    var fn_ = _bz_fuzz_fixture(&fx);
+    var fdst[8192];
+    var flen = bzip2_decompress(&fx, fn_, &fdst, 8192);
+    assert(flen == 246, "fuzz_bzip2 fixture baseline decodes");
+
+    var seed = 1;
+    while (seed <= 150) {
+        fuzz_bz_random(seed * 2654435761, (seed * 13) % 512, 0);
+        fuzz_bz_random(seed * 40503, (seed * 17) % 512, 1);
+        seed = seed + 1;
+    }
+    println("fuzz_bzip2: 300 random-input tests passed");
+
+    seed = 1;
+    while (seed <= 200) {
+        fuzz_bz_corrupt(seed * 7919);
+        seed = seed + 1;
+    }
+    println("fuzz_bzip2: 200 corruption tests passed");
+
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
+

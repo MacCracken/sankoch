@@ -79,6 +79,19 @@ fn test_crc64_known() {
     return 0;
 }
 
+fn test_crc32_bzip2_known() {
+    crc32_bzip2_init_table();
+    var buf = alloc(9);
+    store8(buf + 0, 49); store8(buf + 1, 50); store8(buf + 2, 51);
+    store8(buf + 3, 52); store8(buf + 4, 53); store8(buf + 5, 54);
+    store8(buf + 6, 55); store8(buf + 7, 56); store8(buf + 8, 57);
+    # CRC-32/BZIP2 check value for "123456789" (poly 0x04C11DB7, non-reflected).
+    assert(crc32_bzip2(buf, 9) == 0xFC891918, "crc32_bzip2 '123456789'");
+    var empty = alloc(1);
+    assert(crc32_bzip2(empty, 0) == 0, "crc32_bzip2 empty = 0");
+    return 0;
+}
+
 fn test_xxhash32_known_vectors() {
     var buf = alloc(64);
 
@@ -266,6 +279,7 @@ fn main() {
     test_crc32_known();
     test_crc64_empty();
     test_crc64_known();
+    test_crc32_bzip2_known();
     test_xxhash32_known_vectors();
     test_xxhash32_incremental();
     test_adler32_incremental();

@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.4.1 — xz codec complete: decode + optimal-parse encode; 2.4.2 bzip2 decode next) | **Last Updated**: 2026-06-16
+> **Status**: Stable (v2.4.2 — bzip2 decode shipped; 2.4.3 bzip2 encode next) | **Last Updated**: 2026-06-17
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
@@ -83,8 +83,8 @@ principle. Ladder:
 |-----------|-------------------------------|-------------------|
 | 2.4.0     | xz / LZMA **decode**          | ✅ shipped 2026-06-16 |
 | 2.4.1     | xz / LZMA **encode**          | ✅ shipped 2026-06-16 |
-| **2.4.2** | bzip2 **decode**              | ← next            |
-| 2.4.3     | bzip2 **encode**              | planned           |
+| 2.4.2     | bzip2 **decode**              | ✅ shipped 2026-06-17 |
+| **2.4.3** | bzip2 **encode**              | ← next            |
 
 **Decode** was the takumi gap: `extract_archive` handles `.tar` /
 `.tar.gz` today (via `gzip_decompress`) but rejected `.tar.xz` /
@@ -159,24 +159,29 @@ Per-cut detail in [`CHANGELOG.md`](../../CHANGELOG.md). **Not** in the
 wire-format SIZE gate (the encoder will keep being tuned). A throughput
 pass on the optimal-parse DP is a candidate follow-on.
 
-### 🎯 2.4.2 — bzip2 decode
+### ✅ 2.4.2 — bzip2 decode — SHIPPED (2026-06-17)
 
-Lower priority (legacy; rare for new releases, but still in the wild).
-Adds `bzip2_decompress` + `FORMAT_BZIP2`.
+`bzip2_decompress` + `FORMAT_BZIP2` (= 7). New module
+[`src/bzip2.cyr`](../../src/bzip2.cyr) (~500 lines): MSB-first bit reader
+→ canonical Huffman decode (≤ 6 tables, 50-symbol group selectors) →
+MTF + RLE2 inverse → inverse BWT (cumulative-count transform vector
+walked from the origin pointer) → RLE1 inverse (fused with the BWT
+walk). Per-block + combined-stream **CRC-32/BZIP2** (non-reflected, new
+in checksum.cyr) validated; **concatenated streams** (pbzip2) decode;
+randomized blocks (extinct) rejected. Wired into `decompress()` +
+`detect_format()`.
 
-**Scope:**
-- `.bz2` stream parse (magic `BZh` + block magic
-  `31 41 59 26 53 59`) + per-block CRC validation.
-- Decode pipeline: Huffman decode → MTF (move-to-front) inverse →
-  RLE2 → inverse BWT (Burrows-Wheeler) → RLE1. The inverse BWT is the
-  non-obvious piece (build the transform vector, walk it).
-- Conformance: round-trip reference `.tar.bz2` against `bzip2 -dc`;
-  takumi adds the `FORMAT_BZIP2` sniff branch.
+Validated out-of-band: 100+ `bzip2`-vs-sankoch round-trips (sizes 0–1.5
+MB multi-block, random/zero/text/seq/RLE-heavy, levels 1–9) + a real
+`.tar.bz2`; in-suite: 8 `.tcyr` tests +
+[`fuzz/fuzz_bzip2.fcyr`](../../fuzz/fuzz_bzip2.fcyr) (300 random + 200
+corruption). Per-cut detail in [`CHANGELOG.md`](../../CHANGELOG.md).
+**takumi** can now add the `FORMAT_BZIP2` sniff branch and lift its
+`.tar.bz2` rejection.
 
-**Sizing:** medium-large. Inverse BWT + the MTF/RLE chain is
-self-contained but spec-dense.
+Decode-only — the forward BWT block-sort encoder is 2.4.3.
 
-### 🎯 2.4.3 — bzip2 encode
+### 🎯 2.4.3 — bzip2 encode  ← **next**
 
 Closes the bzip2 codec. Adds `bzip2_compress` + wires
 `compress(FORMAT_BZIP2, …)`.
@@ -222,14 +227,14 @@ the 2.4.2 chain run backwards.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.4.1** (xz/LZMA encode — `src/xz.cyr` grew the encoder;
-> lib dispatch touched).
+> Current as of **2.4.2** (bzip2 decode — new `src/bzip2.cyr`; checksum /
+> types / lib dispatch touched).
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
-| types.cyr        |   39 | Enums: formats (incl. FORMAT_LZ4F, FORMAT_XZ), errors (incl. ERR_OOM), limits | core |
+| types.cyr        |   40 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2), errors (incl. ERR_OOM), limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
-| checksum.cyr     |  502 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ + incremental state APIs (alloc-using) | full |
+| checksum.cyr     |  546 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs (alloc-using) | full |
 | bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  683 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes (OOM-propagating allocs) | full |
@@ -240,18 +245,19 @@ the 2.4.2 chain run backwards.
 | zlib.cyr         |  451 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict`) + `zlib_enc_*` + `zlib_dec_*` | full |
 | gzip.cyr         |  596 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming | full |
 | xz.cyr           | 1738 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) | full |
-| lib.cyr          |  242 | Public API, `_sankoch_mtx`, two-tier lock dispatch, `_sankoch_alloc` + fault-injection + `_sankoch_reset_tables` | full |
+| bzip2.cyr        |  503 | `.bz2` decode: MSB-first bit reader + Huffman + MTF/RLE2 + inverse BWT + RLE1 (`bzip2_decompress`) — decode only | full |
+| lib.cyr          |  258 | Public API, `_sankoch_mtx`, two-tier lock dispatch, `_sankoch_alloc` + fault-injection + `_sankoch_reset_tables` | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| **Total**        | **8562** | | |
+| **Total**        | **9126** | | |
 
-`core` modules (types + xxhash32 + lz4_decode = 314 source lines)
+`core` modules (types + xxhash32 + lz4_decode = 315 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **200 distinct test functions** (190 across the 15 split
+Tests: **209 distinct test functions** (199 across the 16 split
 codec×direction suites + 10 in git_object.tcyr) producing
-**4,326,194 assertions** total (3,979,611 + 346,583). Most comes from
+**4,332,708 assertions** total (3,986,125 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -259,14 +265,14 @@ coverage *density*, not coverage *breadth*. See
 [`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
-Fuzz: 2,449 iterations across 3 files (`fuzz_lz4` 700, `fuzz_deflate`
+Fuzz: 2,949 iterations across 4 files (`fuzz_lz4` 700, `fuzz_deflate`
 949 — batch 340 / zlib 160 / gzip 160 / four streaming variants /
-tree-shape / skewed-freq, `fuzz_xz` 800 — 300 random-input + 200
-corruption + 300 encode→decode round-trip).
+tree-shape / skewed-freq, `fuzz_xz` 800 — 300 random + 200 corruption +
+300 encode→decode, `fuzz_bzip2` 500 — 300 random + 200 corruption).
 
-Distlib: `dist/sankoch.cyr` at 8,541 lines (full) +
-`dist/sankoch-core.cyr` at 314 lines (kernel-safe) — at 2.4.1
-(+xz encoder in the full bundle; core unchanged).
+Distlib: `dist/sankoch.cyr` at 9,104 lines (full) +
+`dist/sankoch-core.cyr` at 315 lines (kernel-safe) — at 2.4.2
+(+bzip2 decoder in the full bundle; +1 core line for the FORMAT_BZIP2 enum).
 
 ## Dependencies
 
@@ -290,4 +296,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.15).
 
 ---
 
-*Last Updated: 2026-06-16 (2.4.1 cut — xz/LZMA optimal-parse encode shipped; xz codec complete. Next: 2.4.2 bzip2 decode, 2.4.3 bzip2 encode)*
+*Last Updated: 2026-06-17 (2.4.2 cut — bzip2 decode shipped. Next: 2.4.3 bzip2 encode to close the codec)*

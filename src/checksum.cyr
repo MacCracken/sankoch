@@ -362,6 +362,50 @@ fn crc64_final(st): i64 {
     return load64(st) ^ 0xFFFFFFFFFFFFFFFF;
 }
 
+# CRC-32/BZIP2: table-driven, polynomial 0x04C11DB7, NON-reflected
+# (MSB-first), init = xorout = 0xFFFFFFFF. This is a different CRC from
+# the RFC-1952 CRC-32 above (which is the reflected 0xEDB88320 variant):
+# bzip2 processes bits most-significant-first and does not reflect the
+# result. The .bz2 format (2.4.2) uses it for the per-block and combined
+# stream check fields. Check value for "123456789" is 0xFC891918.
+var crc32bz_table = 0;   # heap-allocated: 256 entries × 8 bytes
+
+fn crc32_bzip2_init_table(): i64 {
+    if (crc32bz_table == 0) {
+        crc32bz_table = _sankoch_alloc(2048);   # 256 × 8
+        if (crc32bz_table == 0) { return 0 - ERR_OOM; }
+    }
+    var i = 0;
+    while (i < 256) {
+        var c = (i << 24) & 0xFFFFFFFF;
+        var j = 0;
+        while (j < 8) {
+            if ((c & 0x80000000) != 0) {
+                c = ((c << 1) ^ 0x04C11DB7) & 0xFFFFFFFF;
+            } else {
+                c = (c << 1) & 0xFFFFFFFF;
+            }
+            j = j + 1;
+        }
+        store64(crc32bz_table + i * 8, c);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Compute CRC-32/BZIP2 of data[0..len). Call crc32_bzip2_init_table()
+# first. MSB-first fold: crc = (crc << 8) ^ table[(crc>>24 ^ byte) & 0xFF].
+fn crc32_bzip2(data, len): i64 {
+    var crc = 0xFFFFFFFF;
+    var i = 0;
+    while (i < len) {
+        var idx = ((crc >> 24) ^ load8(data + i)) & 255;
+        crc = ((crc << 8) & 0xFFFFFFFF) ^ load64(crc32bz_table + idx * 8);
+        i = i + 1;
+    }
+    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
+}
+
 # xxHash32 batch + helpers (`xxhash32`, `_xxh32_round`, `_xxh32_rotl`,
 # `XXH32` enum) live in src/xxhash32.cyr — that file is part of the
 # `[lib.core]` kernel-safe distlib profile. The incremental state APIs

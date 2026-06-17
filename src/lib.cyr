@@ -42,6 +42,7 @@ include "src/deflate.cyr"
 include "src/zlib.cyr"
 include "src/gzip.cyr"
 include "src/xz.cyr"
+include "src/bzip2.cyr"
 include "src/stream.cyr"
 
 # ============================================================================
@@ -201,6 +202,9 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
     if (format == FORMAT_XZ) {
         return _xz_decompress_inner(src, src_len, dst, dst_cap);
     }
+    if (format == FORMAT_BZIP2) {
+        return _bz2_decompress_inner(src, src_len, dst, dst_cap);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
@@ -226,6 +230,18 @@ fn detect_format(src, src_len): i64 {
             if (load8(src + 2) == 0x7A && load8(src + 3) == 0x58
             && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
                 return FORMAT_XZ;
+            }
+        }
+    }
+
+    # bzip2: "BZh" + level digit '1'..'9'
+    if (b0 == 0x42) {
+        if (b1 == 0x5A && src_len >= 4) {
+            if (load8(src + 2) == 0x68) {
+                var lvl = load8(src + 3);
+                if (lvl >= 0x31 && lvl <= 0x39) {
+                    return FORMAT_BZIP2;
+                }
             }
         }
     }

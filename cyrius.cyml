@@ -35,6 +35,7 @@ modules = [
     "src/zlib.cyr",
     "src/gzip.cyr",
     "src/xz.cyr",
+    "src/bzip2.cyr",
     "src/stream.cyr",
     "src/lib.cyr",
 ]
