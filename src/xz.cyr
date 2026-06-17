@@ -727,3 +727,1012 @@ fn xz_decompress(src, src_len, dst, dst_cap): i64 {
     _sankoch_unlock();
     return r;
 }
+
+# ============================================================
+# ENCODE SIDE (2.4.1)
+# ============================================================
+# The encoder mirrors the decoder: the same probability model
+# (`_xz_probs` + the `XZ_OFF_*` offsets) and the same literal / length /
+# distance structure, run in reverse. Encode and decode never run
+# concurrently (each public call resets the model under `_sankoch_mtx`),
+# so the probability array is shared rather than duplicated.
+#
+# This block is built in bites: (1) the range encoder + bit-tree symbol
+# coders [here], (2) match finder + parse + LZMA2 framing + container
+# writer, (3) optimal parse. Reference shape: LZMA SDK LzmaEnc.c.
+
+# ---- range encoder state ----
+var _xze_low = 0;          # i64 — holds carry above bit 31
+var _xze_range = 0;        # u32
+var _xze_cache = 0;        # pending output byte
+var _xze_cache_size = 0;   # run length of pending 0xFF carry bytes
+var _xze_out = 0;          # output buffer base
+var _xze_op = 0;           # output cursor (also the "needed size" counter)
+var _xze_out_cap = 0;
+var _xze_overflow = 0;     # set when op would exceed cap
+
+# Emit one byte, guarding the capacity. `_xze_op` keeps advancing past
+# the cap so the final value reports the size that would be needed.
+fn _xze_emit(b): i64 {
+    if (_xze_op < _xze_out_cap) {
+        store8(_xze_out + _xze_op, b & 255);
+    } else {
+        _xze_overflow = 1;
+    }
+    _xze_op = _xze_op + 1;
+    return 0;
+}
+
+# Carry-propagating low-byte shift. Defers a run of bytes until the carry
+# out of bit 32 is known (LzmaEnc RangeEnc_ShiftLow).
+fn _xze_shift_low(): i64 {
+    var carry = _xze_low >> 32;
+    if (carry != 0 || _xze_low < 0xFF000000) {
+        var temp = _xze_cache;
+        while (1) {
+            _xze_emit((temp + carry) & 255);
+            temp = 0xFF;
+            _xze_cache_size = _xze_cache_size - 1;
+            if (_xze_cache_size == 0) { break; }
+        }
+        _xze_cache = (_xze_low >> 24) & 255;
+    }
+    _xze_cache_size = _xze_cache_size + 1;
+    # `(UInt32)low << 8` in the reference is 32-bit arithmetic: the top
+    # byte (already captured into `cache`, or held as a 0xFF run) is
+    # dropped. Truncating to 32 bits keeps `low` a 33-bit value after the
+    # next `low += bound`, so the carry stays a single bit.
+    _xze_low = ((_xze_low & 0xFFFFFFFF) << 8) & 0xFFFFFFFF;
+    return 0;
+}
+
+# Reset the range encoder over a fresh output window.
+fn _xze_rc_reset(out, cap): i64 {
+    _xze_low = 0;
+    _xze_range = 0xFFFFFFFF;
+    _xze_cache = 0;
+    _xze_cache_size = 1;
+    _xze_out = out;
+    _xze_op = 0;
+    _xze_out_cap = cap;
+    _xze_overflow = 0;
+    return 0;
+}
+
+# Encode one bit against the probability at slot `idx`; update the prob.
+fn _xze_encode_bit(idx, bit): i64 {
+    var p = load64(_xz_probs + idx * 8);
+    var bound = (_xze_range >> 11) * p;
+    if (bit == 0) {
+        _xze_range = bound;
+        p = p + ((2048 - p) >> 5);
+    } else {
+        _xze_low = _xze_low + bound;
+        _xze_range = _xze_range - bound;
+        p = p - (p >> 5);
+    }
+    store64(_xz_probs + idx * 8, p);
+    if (_xze_range < 16777216) {
+        _xze_range = (_xze_range << 8) & 0xFFFFFFFF;
+        _xze_shift_low();
+    }
+    return 0;
+}
+
+# Encode `nbits` equiprobable bits of `value` (MSB first), no model.
+fn _xze_encode_direct(value, nbits): i64 {
+    var i = nbits;
+    while (i > 0) {
+        i = i - 1;
+        _xze_range = (_xze_range >> 1) & 0xFFFFFFFF;
+        var bit = (value >> i) & 1;
+        _xze_low = _xze_low + (_xze_range * bit);
+        if (_xze_range < 16777216) {
+            _xze_range = (_xze_range << 8) & 0xFFFFFFFF;
+            _xze_shift_low();
+        }
+    }
+    return 0;
+}
+
+# Bit-tree encode, MSB-first — mirror of `_xz_bittree`.
+fn _xze_bittree(base, nbits, symbol): i64 {
+    var m = 1;
+    var i = nbits;
+    while (i > 0) {
+        i = i - 1;
+        var bit = (symbol >> i) & 1;
+        _xze_encode_bit(base + m, bit);
+        m = (m << 1) | bit;
+    }
+    return 0;
+}
+
+# Reverse bit-tree encode, LSB-first — mirror of `_xz_bittree_rev`.
+fn _xze_bittree_rev(base, nbits, symbol): i64 {
+    var m = 1;
+    var i = 0;
+    while (i < nbits) {
+        var bit = symbol & 1;
+        symbol = symbol >> 1;
+        _xze_encode_bit(base + m, bit);
+        m = (m << 1) | bit;
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Flush the range encoder — 5 ShiftLow calls drain low + cache.
+fn _xze_flush(): i64 {
+    var i = 0;
+    while (i < 5) {
+        _xze_shift_low();
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ---- encoder LZMA state ----
+var _xze_state = 0;
+var _xze_rep0 = 0;
+var _xze_rep1 = 0;
+var _xze_rep2 = 0;
+var _xze_rep3 = 0;
+var _xze_lc = 0;
+var _xze_lp = 0;
+var _xze_pb = 0;
+var _xze_pos_mask = 0;
+var _xze_lit_mask = 0;
+var _xze_tmp = 0;       # scratch buffer for one chunk's range-coded bytes
+
+# ---- container-writer cursor ----
+var _xzc_out = 0;
+var _xzc_op = 0;
+var _xzc_cap = 0;
+var _xzc_overflow = 0;
+
+# Encoder defaults — lc=3, lp=0, pb=2 (the LZMA / xz default), dict code
+# 8 → 65536 (>= the lz77 32 KB match window), check = CRC-64 (xz default).
+enum XzEnc {
+    XZE_LC = 3;
+    XZE_LP = 0;
+    XZE_PB = 2;
+    XZE_PROPS = 93;          # (pb*5 + lp)*9 + lc
+    XZE_DICT_CODE = 8;       # (2|0) << (8/2 + 11) = 65536
+    XZE_MAX_UNCOMP = 2000000; # per-chunk uncompressed cap (< 2^21 fmt max,
+    # leaves room for one trailing match)
+    XZE_COMP_SOFT = 60000;    # per-chunk compressed soft cap (keeps comp < 64KB
+    # even for incompressible input)
+    XZE_TMP_CAP = 70000;      # chunk scratch size
+    XZE_CHECK = 4;           # stream check type: CRC-64
+    XZE_MATCH_MIN = 2;       # LZMA kMatchMinLen
+    XZE_MATCH_MAX = 273;     # LZMA max match length (len code 271 + 2)
+    XZE_OPT_W = 4096;        # block-DP window (price snapshot refresh span)
+}
+
+# Index of the highest set bit of x (x >= 1).
+fn _xze_bsr(x): i64 {
+    var n = 0;
+    while (x > 1) {
+        x = x >> 1;
+        n = n + 1;
+    }
+    return n;
+}
+
+# Map a distance value (back_distance - 1) to its 6-bit LZMA pos-slot.
+fn _xze_pos_slot(dist): i64 {
+    if (dist < 4) { return dist; }
+    var n = _xze_bsr(dist);
+    return (n << 1) | ((dist >> (n - 1)) & 1);
+}
+
+# ---- container output helper ----
+fn _xzc_put(b): i64 {
+    if (_xzc_op < _xzc_cap) {
+        store8(_xzc_out + _xzc_op, b & 255);
+    } else {
+        _xzc_overflow = 1;
+    }
+    _xzc_op = _xzc_op + 1;
+    return 0;
+}
+
+# Write a 4-byte little-endian value.
+fn _xzc_le32(v): i64 {
+    _xzc_put(v & 255);
+    _xzc_put((v >> 8) & 255);
+    _xzc_put((v >> 16) & 255);
+    _xzc_put((v >> 24) & 255);
+    return 0;
+}
+
+# Write a multibyte (LEB128) integer.
+fn _xzc_varint(v): i64 {
+    while (v >= 128) {
+        _xzc_put((v & 127) | 128);
+        v = v >> 7;
+    }
+    _xzc_put(v & 127);
+    return 0;
+}
+
+# ============================================================
+# LZMA symbol emit (mirror of the decode state machine)
+# ============================================================
+
+# Encode the literal byte at src[pos] (state < 7: plain; >= 7: matched).
+fn _xze_emit_literal(src, pos): i64 {
+    var prev = 0;
+    if (pos > 0) { prev = load8(src + pos - 1); }
+    var lit_state = ((pos & _xze_lit_mask) << _xze_lc) + (prev >> (8 - _xze_lc));
+    var base = XZ_OFF_LITERAL + 768 * lit_state;
+    var symbol = load8(src + pos);
+
+    if (_xze_state < 7) {
+        var ctx = 1;
+        var i = 8;
+        while (i > 0) {
+            i = i - 1;
+            var bit = (symbol >> i) & 1;
+            _xze_encode_bit(base + ctx, bit);
+            ctx = (ctx << 1) | bit;
+        }
+    } else {
+        var match_byte = load8(src + pos - _xze_rep0 - 1);
+        var ctx = 1;
+        var matching = 1;
+        var i = 8;
+        while (i > 0) {
+            i = i - 1;
+            var sbit = (symbol >> i) & 1;
+            if (matching != 0) {
+                var mbit = (match_byte >> i) & 1;
+                _xze_encode_bit(base + ((1 + mbit) << 8) + ctx, sbit);
+                ctx = (ctx << 1) | sbit;
+                if (mbit != sbit) { matching = 0; }
+            } else {
+                _xze_encode_bit(base + ctx, sbit);
+                ctx = (ctx << 1) | sbit;
+            }
+        }
+    }
+    return 0;
+}
+
+# Encode a length (0-based: actual length - 2) at `base`.
+fn _xze_emit_len(base, len0, pos_state): i64 {
+    if (len0 < 8) {
+        _xze_encode_bit(base, 0);
+        _xze_bittree(base + 2 + pos_state * 8, 3, len0);
+    } elif (len0 < 16) {
+        _xze_encode_bit(base, 1);
+        _xze_encode_bit(base + 1, 0);
+        _xze_bittree(base + 130 + pos_state * 8, 3, len0 - 8);
+    } else {
+        _xze_encode_bit(base, 1);
+        _xze_encode_bit(base + 1, 1);
+        _xze_bittree(base + 258, 8, len0 - 16);
+    }
+    return 0;
+}
+
+# Encode a match distance. `len0` = length-2, `dist` = back_distance - 1.
+fn _xze_emit_dist(len0, dist): i64 {
+    var len_state = len0;
+    if (len_state > 3) { len_state = 3; }
+    var pos_slot = _xze_pos_slot(dist);
+    _xze_bittree(XZ_OFF_POSSLOT + len_state * 64, 6, pos_slot);
+
+    if (pos_slot >= 4) {
+        var num_direct = (pos_slot >> 1) - 1;
+        var base_val = (2 | (pos_slot & 1)) << num_direct;
+        var rest = dist - base_val;
+        if (pos_slot < 14) {
+            _xze_bittree_rev(XZ_OFF_SPECPOS + base_val - pos_slot, num_direct, rest);
+        } else {
+            _xze_encode_direct(rest >> 4, num_direct - 4);
+            _xze_bittree_rev(XZ_OFF_ALIGN, 4, rest & 15);
+        }
+    }
+    return 0;
+}
+
+# Emit one literal symbol (IsMatch=0 + the literal) and advance state.
+fn _xze_op_literal(src, pos, pos_state): i64 {
+    _xze_encode_bit(XZ_OFF_ISMATCH + (_xze_state << 4) + pos_state, 0);
+    _xze_emit_literal(src, pos);
+    if (_xze_state < 4) { _xze_state = 0; }
+    elif (_xze_state < 10) { _xze_state = _xze_state - 3; }
+    else { _xze_state = _xze_state - 6; }
+    return 0;
+}
+
+# Emit one new-match symbol (length `len`, back-distance `back`) and
+# update the rep history + state.
+fn _xze_op_match(pos_state, len, back): i64 {
+    _xze_encode_bit(XZ_OFF_ISMATCH + (_xze_state << 4) + pos_state, 1);
+    _xze_encode_bit(XZ_OFF_ISREP + _xze_state, 0);
+    var len0 = len - XZE_MATCH_MIN;
+    _xze_emit_len(XZ_OFF_LENCODER, len0, pos_state);
+    _xze_emit_dist(len0, back - 1);
+    _xze_rep3 = _xze_rep2;
+    _xze_rep2 = _xze_rep1;
+    _xze_rep1 = _xze_rep0;
+    _xze_rep0 = back - 1;
+    if (_xze_state < 7) { _xze_state = 7; } else { _xze_state = 10; }
+    return 0;
+}
+
+# Emit a short-rep (single byte at rep0). reps unchanged.
+fn _xze_op_shortrep(pos_state): i64 {
+    _xze_encode_bit(XZ_OFF_ISMATCH + (_xze_state << 4) + pos_state, 1);
+    _xze_encode_bit(XZ_OFF_ISREP + _xze_state, 1);
+    _xze_encode_bit(XZ_OFF_ISREPG0 + _xze_state, 0);
+    _xze_encode_bit(XZ_OFF_ISREP0LONG + (_xze_state << 4) + pos_state, 0);
+    if (_xze_state < 7) { _xze_state = 9; } else { _xze_state = 11; }
+    return 0;
+}
+
+# Emit a long rep match (rep index `ri`, length `len`), rotating reps to
+# match the decoder's rep-cycle exactly.
+fn _xze_op_rep(pos_state, ri, len): i64 {
+    _xze_encode_bit(XZ_OFF_ISMATCH + (_xze_state << 4) + pos_state, 1);
+    _xze_encode_bit(XZ_OFF_ISREP + _xze_state, 1);
+    if (ri == 0) {
+        _xze_encode_bit(XZ_OFF_ISREPG0 + _xze_state, 0);
+        _xze_encode_bit(XZ_OFF_ISREP0LONG + (_xze_state << 4) + pos_state, 1);
+    } else {
+        _xze_encode_bit(XZ_OFF_ISREPG0 + _xze_state, 1);
+        var dist = 0;
+        if (ri == 1) {
+            _xze_encode_bit(XZ_OFF_ISREPG1 + _xze_state, 0);
+            dist = _xze_rep1;
+        } else {
+            _xze_encode_bit(XZ_OFF_ISREPG1 + _xze_state, 1);
+            if (ri == 2) {
+                _xze_encode_bit(XZ_OFF_ISREPG2 + _xze_state, 0);
+                dist = _xze_rep2;
+                _xze_rep2 = _xze_rep1;
+            } else {
+                _xze_encode_bit(XZ_OFF_ISREPG2 + _xze_state, 1);
+                dist = _xze_rep3;
+                _xze_rep3 = _xze_rep2;
+                _xze_rep2 = _xze_rep1;
+            }
+        }
+        _xze_rep1 = _xze_rep0;
+        _xze_rep0 = dist;
+    }
+    _xze_emit_len(XZ_OFF_REPLEN, len - XZE_MATCH_MIN, pos_state);
+    if (_xze_state < 7) { _xze_state = 8; } else { _xze_state = 11; }
+    return 0;
+}
+
+# ============================================================
+# Optimal parse (price tables + block DP) + LZMA2 emit
+# ============================================================
+# Any parse is valid (the range coder is exact), so the optimizer only
+# affects ratio. A forward DP over a bounded window minimizes the modeled
+# bit-price of literal / normal-match / rep-match / short-rep moves, with
+# rep-distance history tracked per path. Prices come from a ProbPrices
+# table (LzmaEnc-style) read against the live probability model; the model
+# is a snapshot per window, refreshed every window. Reference: LZMA SDK
+# LzmaEnc.c GetOptimum + the price tables.
+
+# ProbPrices[128] — cost (in 1/16-bit units) of one modeled bit at a
+# representative probability. price(prob,0)=ProbPrices[prob>>4];
+# price(prob,1)=ProbPrices[(2048-prob)>>4]. A direct (equiprobable) bit
+# costs exactly 16.
+var _xze_prices = 0;
+
+# Block-DP arrays (size XZE_OPT_W + 1), allocated once.
+var _xze_oc = 0;    # min price to reach window offset j
+var _xze_os = 0;    # LZMA state of the best path at j
+var _xze_o0 = 0;    # rep0 of the best path at j
+var _xze_o1 = 0;
+var _xze_o2 = 0;
+var _xze_o3 = 0;
+var _xze_olen = 0;  # length of the op arriving at j
+var _xze_okind = 0; # 0 literal, 1 normal match, 2 rep, 3 short rep
+var _xze_odist = 0; # normal: back-distance; rep/short: rep index
+
+# Match-collection scratch (increasing length, min distance each).
+var _xze_ml = 0;
+var _xze_md = 0;
+
+# Length-price cache: price of each length code (len0 0..271) at each
+# pos-state (0..15) for the two length coders, recomputed once per DP
+# window from the prob snapshot. Index: coder*16*272 + ps*272 + len0.
+# Removes the per-length price_len recompute from the DP hot loops.
+var _xze_lpc = 0;
+
+# Backtrack op stack.
+var _xze_stk_len = 0;
+var _xze_stk_kind = 0;
+var _xze_stk_dist = 0;
+
+# Streaming chunk-emit state (chunks span DP windows).
+var _xze_epos = 0;          # source position being emitted
+var _xze_chunk_start = 0;   # source pos at the current chunk's start
+var _xze_first_chunk = 0;
+var _xze_enc_err = 0;
+
+# Build ProbPrices (LzmaEnc_InitPriceTables): a fixed-point -log2 of the
+# bit probability, in 1/16-bit units.
+fn _xze_init_prices(): i64 {
+    var i = 8;
+    while (i < 2048) {
+        var w = i;
+        var bitcount = 0;
+        var j = 0;
+        while (j < 4) {
+            w = w * w;
+            bitcount = bitcount << 1;
+            while (w >= 65536) {
+                w = w >> 1;
+                bitcount = bitcount + 1;
+            }
+            j = j + 1;
+        }
+        # (kNumBitModelTotalBits << kCyclesBits) - 15 - bitcount = 161 - bc
+        store64(_xze_prices + (i >> 4) * 8, 161 - bitcount);
+        i = i + 16;
+    }
+    return 0;
+}
+
+# Price of encoding one bit at probability slot `idx`.
+fn _xze_pb(idx, bit): i64 {
+    var p = load64(_xz_probs + idx * 8);
+    if (bit == 0) {
+        return load64(_xze_prices + (p >> 4) * 8);
+    }
+    return load64(_xze_prices + ((2048 - p) >> 4) * 8);
+}
+
+# Price of a forward bit-tree symbol.
+fn _xze_price_tree(base, nbits, symbol): i64 {
+    var m = 1;
+    var price = 0;
+    var i = nbits;
+    while (i > 0) {
+        i = i - 1;
+        var bit = (symbol >> i) & 1;
+        price = price + _xze_pb(base + m, bit);
+        m = (m << 1) | bit;
+    }
+    return price;
+}
+
+# Price of a reverse bit-tree symbol.
+fn _xze_price_tree_rev(base, nbits, symbol): i64 {
+    var m = 1;
+    var price = 0;
+    var i = 0;
+    while (i < nbits) {
+        var bit = symbol & 1;
+        symbol = symbol >> 1;
+        price = price + _xze_pb(base + m, bit);
+        m = (m << 1) | bit;
+        i = i + 1;
+    }
+    return price;
+}
+
+# Price of a length code (len0 = actual length - 2).
+fn _xze_price_len(base, len0, pos_state): i64 {
+    if (len0 < 8) {
+        return _xze_pb(base, 0) + _xze_price_tree(base + 2 + pos_state * 8, 3, len0);
+    }
+    if (len0 < 16) {
+        return _xze_pb(base, 1) + _xze_pb(base + 1, 0)
+        + _xze_price_tree(base + 130 + pos_state * 8, 3, len0 - 8);
+    }
+    return _xze_pb(base, 1) + _xze_pb(base + 1, 1)
+    + _xze_price_tree(base + 258, 8, len0 - 16);
+}
+
+# Price of a match distance (len0 = length-2, dist = back_distance - 1).
+fn _xze_price_dist(len0, dist): i64 {
+    var len_state = len0;
+    if (len_state > 3) { len_state = 3; }
+    var pos_slot = _xze_pos_slot(dist);
+    var price = _xze_price_tree(XZ_OFF_POSSLOT + len_state * 64, 6, pos_slot);
+    if (pos_slot >= 4) {
+        var num_direct = (pos_slot >> 1) - 1;
+        var base_val = (2 | (pos_slot & 1)) << num_direct;
+        var rest = dist - base_val;
+        if (pos_slot < 14) {
+            price = price + _xze_price_tree_rev(XZ_OFF_SPECPOS + base_val - pos_slot, num_direct, rest);
+        } else {
+            price = price + (num_direct - 4) * 16
+            + _xze_price_tree_rev(XZ_OFF_ALIGN, 4, rest & 15);
+        }
+    }
+    return price;
+}
+
+# Price of a literal at src[pos] given state + rep0 (for matched literals).
+fn _xze_price_literal(state, pos, src, r0): i64 {
+    var prev = 0;
+    if (pos > 0) { prev = load8(src + pos - 1); }
+    var lit_state = ((pos & _xze_lit_mask) << _xze_lc) + (prev >> (8 - _xze_lc));
+    var base = XZ_OFF_LITERAL + 768 * lit_state;
+    var symbol = load8(src + pos);
+    var price = 0;
+    if (state < 7) {
+        var ctx = 1;
+        var i = 8;
+        while (i > 0) {
+            i = i - 1;
+            var bit = (symbol >> i) & 1;
+            price = price + _xze_pb(base + ctx, bit);
+            ctx = (ctx << 1) | bit;
+        }
+    } else {
+        var match_byte = load8(src + pos - r0 - 1);
+        var ctx = 1;
+        var matching = 1;
+        var i = 8;
+        while (i > 0) {
+            i = i - 1;
+            var sbit = (symbol >> i) & 1;
+            if (matching != 0) {
+                var mbit = (match_byte >> i) & 1;
+                price = price + _xze_pb(base + ((1 + mbit) << 8) + ctx, sbit);
+                ctx = (ctx << 1) | sbit;
+                if (mbit != sbit) { matching = 0; }
+            } else {
+                price = price + _xze_pb(base + ctx, sbit);
+                ctx = (ctx << 1) | sbit;
+            }
+        }
+    }
+    return price;
+}
+
+# Price of the rep-index selection bits for rep `ri` (long rep, len>=2),
+# excluding the IsMatch/IsRep bits the caller already counted.
+fn _xze_price_rep_select(state, pos_state, ri): i64 {
+    if (ri == 0) {
+        return _xze_pb(XZ_OFF_ISREPG0 + state, 0)
+        + _xze_pb(XZ_OFF_ISREP0LONG + (state << 4) + pos_state, 1);
+    }
+    var p = _xze_pb(XZ_OFF_ISREPG0 + state, 1);
+    if (ri == 1) {
+        p = p + _xze_pb(XZ_OFF_ISREPG1 + state, 0);
+    } else {
+        p = p + _xze_pb(XZ_OFF_ISREPG1 + state, 1);
+        if (ri == 2) {
+            p = p + _xze_pb(XZ_OFF_ISREPG2 + state, 0);
+        } else {
+            p = p + _xze_pb(XZ_OFF_ISREPG2 + state, 1);
+        }
+    }
+    return p;
+}
+
+# Collect matches at src[pos] from the lz77 hash chain into _xze_ml/_xze_md
+# (increasing length, smallest distance for each). Returns the count.
+fn _xze_get_matches(src, src_len, pos, max_avail): i64 {
+    var cnt = 0;
+    var maxlen = src_len - pos;
+    if (maxlen > XZE_MATCH_MAX) { maxlen = XZE_MATCH_MAX; }
+    if (maxlen > max_avail) { maxlen = max_avail; }
+    if (maxlen < LZ77_MIN_MATCH) { return 0; }
+
+    var h = _lz77_hash3(src, pos);
+    var chain = load64(_lz77_head + h * 8);
+    var best = LZ77_MIN_MATCH - 1;
+    var depth = 0;
+    while (depth < _lz77_chain_depth) {
+        if (chain < 0) { break; }
+        var dist = pos - chain;          # batch mode: window_base == 0
+        if (dist <= 0 || dist > LZ77_WINDOW) { break; }
+        var l = 0;
+        while (l < maxlen && load8(src + chain + l) == load8(src + pos + l)) {
+            l = l + 1;
+        }
+        if (l > best) {
+            store64(_xze_ml + cnt * 8, l);
+            store64(_xze_md + cnt * 8, dist);
+            cnt = cnt + 1;
+            best = l;
+            if (l >= maxlen) { break; }
+        }
+        chain = load64(_lz77_prev + (chain & LZ77_HASH_MASK) * 8);
+        depth = depth + 1;
+    }
+    return cnt;
+}
+
+# Relax window slot `idx` if `cost` improves it.
+fn _xze_relax(idx, cost, st, r0, r1, r2, r3, ln, kind, di): i64 {
+    if (cost < load64(_xze_oc + idx * 8)) {
+        store64(_xze_oc + idx * 8, cost);
+        store64(_xze_os + idx * 8, st);
+        store64(_xze_o0 + idx * 8, r0);
+        store64(_xze_o1 + idx * 8, r1);
+        store64(_xze_o2 + idx * 8, r2);
+        store64(_xze_o3 + idx * 8, r3);
+        store64(_xze_olen + idx * 8, ln);
+        store64(_xze_okind + idx * 8, kind);
+        store64(_xze_odist + idx * 8, di);
+    }
+    return 0;
+}
+
+# Precompute the length-price cache from the current prob snapshot.
+fn _xze_fill_len_prices(): i64 {
+    var c = 0;
+    while (c < 2) {
+        var base = XZ_OFF_LENCODER;
+        if (c == 1) { base = XZ_OFF_REPLEN; }
+        var ps = 0;
+        while (ps < 16) {
+            var row = c * 16 * 272 + ps * 272;
+            var len0 = 0;
+            while (len0 < 272) {
+                store64(_xze_lpc + (row + len0) * 8, _xze_price_len(base, len0, ps));
+                len0 = len0 + 1;
+            }
+            ps = ps + 1;
+        }
+        c = c + 1;
+    }
+    return 0;
+}
+
+# Cached length price (coder 0 = LenCoder, 1 = RepLenCoder).
+fn _xze_lp(coder, ps, len0): i64 {
+    return load64(_xze_lpc + (coder * 16 * 272 + ps * 272 + len0) * 8);
+}
+
+# Fill the block-DP arrays for the window [base_pos, base_pos+W]. Inserts
+# every scanned position into the hash chain. Uses the live probability
+# model (snapshot) for prices; the path's start state is the encoder's
+# current _xze_state / _xze_rep*.
+fn _xze_dp_fill(src, src_len, base_pos, W): i64 {
+    var INF = 1152921504606846976;   # 2^60
+    _xze_fill_len_prices();
+    var j = 0;
+    while (j <= W) {
+        store64(_xze_oc + j * 8, INF);
+        j = j + 1;
+    }
+    store64(_xze_oc, 0);
+    store64(_xze_os, _xze_state);
+    store64(_xze_o0, _xze_rep0);
+    store64(_xze_o1, _xze_rep1);
+    store64(_xze_o2, _xze_rep2);
+    store64(_xze_o3, _xze_rep3);
+
+    j = 0;
+    while (j < W) {
+        var pos = base_pos + j;
+        var avail = W - j;
+        var mcount = _xze_get_matches(src, src_len, pos, avail);
+        if (pos + LZ77_MIN_MATCH <= src_len) { _lz77_insert(src, pos); }
+
+        var base = load64(_xze_oc + j * 8);
+        if (base < INF) {
+            var s = load64(_xze_os + j * 8);
+            var r0 = load64(_xze_o0 + j * 8);
+            var r1 = load64(_xze_o1 + j * 8);
+            var r2 = load64(_xze_o2 + j * 8);
+            var r3 = load64(_xze_o3 + j * 8);
+            var ps = pos & _xze_pos_mask;
+            var ismatch = XZ_OFF_ISMATCH + (s << 4) + ps;
+
+            # literal
+            var nst = 0;
+            if (s < 4) { nst = 0; } elif (s < 10) { nst = s - 3; } else { nst = s - 6; }
+            var litp = base + _xze_pb(ismatch, 0) + _xze_price_literal(s, pos, src, r0);
+            _xze_relax(j + 1, litp, nst, r0, r1, r2, r3, 1, 0, 0);
+
+            var matchp = base + _xze_pb(ismatch, 1);
+            var repp = matchp + _xze_pb(XZ_OFF_ISREP + s, 1);
+            var normp = matchp + _xze_pb(XZ_OFF_ISREP + s, 0);
+            var rep_state = 11;
+            if (s < 7) { rep_state = 8; }
+            var short_state = 11;
+            if (s < 7) { short_state = 9; }
+            var match_state = 10;
+            if (s < 7) { match_state = 7; }
+
+            # rep matches (rep indices 0..3)
+            var ri = 0;
+            while (ri < 4) {
+                var rd = 0;
+                if (ri == 0) { rd = r0; } elif (ri == 1) { rd = r1; }
+                elif (ri == 2) { rd = r2; } else { rd = r3; }
+                rd = rd + 1;   # back distance
+                if (pos - rd >= 0) {
+                    var rmax = avail;
+                    if (rmax > XZE_MATCH_MAX) { rmax = XZE_MATCH_MAX; }
+                    var rl = 0;
+                    while (rl < rmax && load8(src + pos + rl) == load8(src + pos - rd + rl)) {
+                        rl = rl + 1;
+                    }
+                    # rotated rep set for this ri
+                    var q0 = r0; var q1 = r1; var q2 = r2; var q3 = r3;
+                    if (ri == 1) { q0 = r1; q1 = r0; }
+                    elif (ri == 2) { q0 = r2; q1 = r0; q2 = r1; }
+                    elif (ri == 3) { q0 = r3; q1 = r0; q2 = r1; q3 = r2; }
+                    if (ri == 0 && rl >= 1) {
+                        var sp = repp + _xze_pb(XZ_OFF_ISREPG0 + s, 0)
+                        + _xze_pb(XZ_OFF_ISREP0LONG + (s << 4) + ps, 0);
+                        _xze_relax(j + 1, sp, short_state, r0, r1, r2, r3, 1, 3, 0);
+                    }
+                    if (rl >= 2) {
+                        var sel = repp + _xze_price_rep_select(s, ps, ri);
+                        var l = 2;
+                        while (l <= rl) {
+                            var rp = sel + _xze_lp(1, ps, l - 2);
+                            _xze_relax(j + l, rp, rep_state, q0, q1, q2, q3, l, 2, ri);
+                            l = l + 1;
+                        }
+                    }
+                }
+                ri = ri + 1;
+            }
+
+            # normal matches
+            var mi = 0;
+            var prev_len = LZ77_MIN_MATCH - 1;
+            while (mi < mcount) {
+                var mlen = load64(_xze_ml + mi * 8);
+                var mdist = load64(_xze_md + mi * 8);
+                var l = prev_len + 1;
+                while (l <= mlen) {
+                    var np = normp + _xze_lp(0, ps, l - 2)
+                    + _xze_price_dist(l - 2, mdist - 1);
+                    _xze_relax(j + l, np, match_state, mdist - 1, r0, r1, r2, l, 1, mdist);
+                    l = l + 1;
+                }
+                prev_len = mlen;
+                mi = mi + 1;
+            }
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+# ---- streaming chunk emit ----
+
+fn _xze_start_chunk(): i64 {
+    _xze_chunk_start = _xze_epos;
+    _xze_rc_reset(_xze_tmp, XZE_TMP_CAP);
+    return 0;
+}
+
+fn _xze_finish_chunk(): i64 {
+    _xze_flush();
+    var comp = _xze_op;
+    var uncomp = _xze_epos - _xze_chunk_start;
+    if (_xze_overflow != 0 || comp > 65536) { _xze_enc_err = 1; return 0; }
+    var reset = 0;
+    if (_xze_first_chunk != 0) { reset = 3; }
+    _xzc_put(128 | (reset << 5) | (((uncomp - 1) >> 16) & 31));
+    _xzc_put(((uncomp - 1) >> 8) & 255);
+    _xzc_put((uncomp - 1) & 255);
+    _xzc_put(((comp - 1) >> 8) & 255);
+    _xzc_put((comp - 1) & 255);
+    if (reset >= 2) { _xzc_put(XZE_PROPS); }
+    var i = 0;
+    while (i < comp) {
+        _xzc_put(load8(_xze_tmp + i));
+        i = i + 1;
+    }
+    _xze_first_chunk = 0;
+    return 0;
+}
+
+# Emit one op, cutting the LZMA2 chunk first if the current one is full.
+fn _xze_emit_op(src, kind, ln, di): i64 {
+    if ((_xze_epos - _xze_chunk_start) >= XZE_MAX_UNCOMP || _xze_op >= XZE_COMP_SOFT) {
+        _xze_finish_chunk();
+        _xze_start_chunk();
+    }
+    var ps = _xze_epos & _xze_pos_mask;
+    if (kind == 0) {
+        _xze_op_literal(src, _xze_epos, ps);
+    } elif (kind == 1) {
+        _xze_op_match(ps, ln, di);
+    } elif (kind == 2) {
+        _xze_op_rep(ps, di, ln);
+    } else {
+        _xze_op_shortrep(ps);
+    }
+    _xze_epos = _xze_epos + ln;
+    return 0;
+}
+
+# Backtrack the DP window and emit its ops in forward order.
+fn _xze_dp_emit(src, base_pos, W): i64 {
+    var cnt = 0;
+    var j = W;
+    while (j > 0) {
+        var ln = load64(_xze_olen + j * 8);
+        store64(_xze_stk_len + cnt * 8, ln);
+        store64(_xze_stk_kind + cnt * 8, load64(_xze_okind + j * 8));
+        store64(_xze_stk_dist + cnt * 8, load64(_xze_odist + j * 8));
+        cnt = cnt + 1;
+        j = j - ln;
+    }
+    var i = cnt;
+    while (i > 0) {
+        i = i - 1;
+        _xze_emit_op(src, load64(_xze_stk_kind + i * 8), load64(_xze_stk_len + i * 8),
+        load64(_xze_stk_dist + i * 8));
+    }
+    return 0;
+}
+
+# Optimal-parse encode of src[0..src_len) into LZMA2 chunks. Returns the
+# LZMA2 byte count (incl. 0x00 end marker), or negative error.
+fn _xze_lzma2_emit(src, src_len): i64 {
+    var lz2_start = _xzc_op;
+    _xze_state = 0;
+    _xze_rep0 = 0;
+    _xze_rep1 = 0;
+    _xze_rep2 = 0;
+    _xze_rep3 = 0;
+    _xz_reset_probs();
+    _xze_init_prices();
+
+    _xze_epos = 0;
+    _xze_first_chunk = 1;
+    _xze_enc_err = 0;
+    _xze_start_chunk();
+
+    var pos = 0;
+    while (pos < src_len) {
+        var W = src_len - pos;
+        if (W > XZE_OPT_W) { W = XZE_OPT_W; }
+        _xze_dp_fill(src, src_len, pos, W);
+        _xze_dp_emit(src, pos, W);
+        if (_xze_enc_err != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        pos = pos + W;
+    }
+    _xze_finish_chunk();
+    if (_xze_enc_err != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    _xzc_put(0);   # LZMA2 end marker
+    return _xzc_op - lz2_start;
+}
+
+# Compress src → .xz stream in dst. Inner entry — caller holds the lock.
+fn _xz_compress_inner(src, src_len, dst, dst_cap): i64 {
+    # Lazy allocations.
+    if (_xz_probs == 0) {
+        _xz_probs = _sankoch_alloc(XZ_PROBS_TOTAL * 8);
+        if (_xz_probs == 0) { return 0 - ERR_OOM; }
+    }
+    if (_xze_tmp == 0) {
+        _xze_tmp = _sankoch_alloc(XZE_TMP_CAP);
+        if (_xze_tmp == 0) { return 0 - ERR_OOM; }
+    }
+    if (_xze_prices == 0) {
+        # ProbPrices[128]; DP arrays sized OPT_W+1; match + op-stack scratch.
+        _xze_prices = _sankoch_alloc(128 * 8);
+        if (_xze_prices == 0) { return 0 - ERR_OOM; }
+        var dpn = (XZE_OPT_W + 1) * 8;
+        _xze_oc = _sankoch_alloc(dpn);
+        _xze_os = _sankoch_alloc(dpn);
+        _xze_o0 = _sankoch_alloc(dpn);
+        _xze_o1 = _sankoch_alloc(dpn);
+        _xze_o2 = _sankoch_alloc(dpn);
+        _xze_o3 = _sankoch_alloc(dpn);
+        _xze_olen = _sankoch_alloc(dpn);
+        _xze_okind = _sankoch_alloc(dpn);
+        _xze_odist = _sankoch_alloc(dpn);
+        _xze_stk_len = _sankoch_alloc(dpn);
+        _xze_stk_kind = _sankoch_alloc(dpn);
+        _xze_stk_dist = _sankoch_alloc(dpn);
+        _xze_ml = _sankoch_alloc((XZE_MATCH_MAX + 1) * 8);
+        _xze_md = _sankoch_alloc((XZE_MATCH_MAX + 1) * 8);
+        _xze_lpc = _sankoch_alloc(2 * 16 * 272 * 8);
+        if (_xze_lpc == 0 || _xze_oc == 0 || _xze_os == 0 || _xze_o0 == 0 || _xze_o1 == 0
+        || _xze_o2 == 0 || _xze_o3 == 0 || _xze_olen == 0 || _xze_okind == 0
+        || _xze_odist == 0 || _xze_stk_len == 0 || _xze_stk_kind == 0
+        || _xze_stk_dist == 0 || _xze_ml == 0 || _xze_md == 0) {
+            return 0 - ERR_OOM;
+        }
+    }
+    if (lz77_init() < 0) { return 0 - ERR_OOM; }
+    lz77_set_level(9);
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
+    if (crc64_init_table() < 0) { return 0 - ERR_OOM; }
+
+    _xze_lc = XZE_LC;
+    _xze_lp = XZE_LP;
+    _xze_pb = XZE_PB;
+    _xze_pos_mask = (1 << XZE_PB) - 1;
+    _xze_lit_mask = (1 << XZE_LP) - 1;
+
+    _xzc_out = dst;
+    _xzc_op = 0;
+    _xzc_cap = dst_cap;
+    _xzc_overflow = 0;
+
+    # ---- stream header ----
+    _xzc_put(0xFD); _xzc_put(0x37); _xzc_put(0x7A);
+    _xzc_put(0x58); _xzc_put(0x5A); _xzc_put(0x00);
+    _xzc_put(0x00); _xzc_put(XZE_CHECK);   # stream flags
+    # CRC32 of the 2 stream-flags bytes (build in scratch to avoid
+    # re-reading a possibly-overflowed dst).
+    store8(_xze_tmp, 0x00);
+    store8(_xze_tmp + 1, XZE_CHECK);
+    _xzc_le32(crc32(_xze_tmp, 2));
+
+    var block_unpadded = 0;
+    if (src_len > 0) {
+        # ---- block header (fixed: single LZMA2 filter, no sizes) ----
+        var bh = _xzc_op;
+        _xzc_put(0x02);          # header size: (2+1)*4 = 12
+        _xzc_put(0x00);          # block flags: 1 filter, no comp/uncomp size
+        _xzc_put(0x21);          # filter id: LZMA2
+        _xzc_put(0x01);          # size of properties
+        _xzc_put(XZE_DICT_CODE); # LZMA2 dict-size code
+        _xzc_put(0x00); _xzc_put(0x00); _xzc_put(0x00);   # header padding
+        if (_xzc_overflow != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        _xzc_le32(crc32(dst + bh, 8));   # header CRC32
+
+        # ---- LZMA2 payload ----
+        var lz2 = _xze_lzma2_emit(src, src_len);
+        if (lz2 < 0) { return lz2; }
+
+        # ---- block padding ----
+        while (((_xzc_op - bh) & 3) != 0) { _xzc_put(0); }
+
+        # ---- check field (CRC-64 of the uncompressed data) ----
+        var chk = crc64(src, src_len);
+        _xzc_le32(chk & 0xFFFFFFFF);
+        _xzc_le32((chk >> 32) & 0xFFFFFFFF);
+
+        block_unpadded = 12 + lz2 + 8;
+    }
+
+    # ---- index ----
+    var idx = _xzc_op;
+    _xzc_put(0x00);   # index indicator
+    if (src_len > 0) {
+        _xzc_varint(1);
+        _xzc_varint(block_unpadded);
+        _xzc_varint(src_len);
+    } else {
+        _xzc_varint(0);
+    }
+    while (((_xzc_op - idx) & 3) != 0) { _xzc_put(0); }
+    if (_xzc_overflow != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    _xzc_le32(crc32(dst + idx, _xzc_op - idx));
+    var index_size = _xzc_op - idx;
+
+    # ---- stream footer ----
+    var backward = index_size / 4 - 1;
+    # footer CRC32 covers Backward Size (4) + Stream Flags (2).
+    store8(_xze_tmp, backward & 255);
+    store8(_xze_tmp + 1, (backward >> 8) & 255);
+    store8(_xze_tmp + 2, (backward >> 16) & 255);
+    store8(_xze_tmp + 3, (backward >> 24) & 255);
+    store8(_xze_tmp + 4, 0x00);
+    store8(_xze_tmp + 5, XZE_CHECK);
+    _xzc_le32(crc32(_xze_tmp, 6));
+    _xzc_le32(backward);
+    _xzc_put(0x00); _xzc_put(XZE_CHECK);
+    _xzc_put(0x59); _xzc_put(0x5A);   # footer magic "YZ"
+
+    if (_xzc_overflow != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    return _xzc_op;
+}
+
+# Public: compress src → .xz stream. Thread-safe wrapper.
+fn xz_compress(src, src_len, dst, dst_cap): i64 {
+    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    _sankoch_lock();
+    var r = _xz_compress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
+}

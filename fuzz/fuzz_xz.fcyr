@@ -111,6 +111,44 @@ fn fuzz_xz_corrupt(seed) {
     return 0;
 }
 
+# Strategy 3: encode -> decode round-trip on generated data. The encoder
+# must always produce a stream our decoder reproduces byte-for-byte.
+# `mode` selects the input shape: 0 random, 1 periodic, 2 mostly-constant.
+fn fuzz_xz_roundtrip(seed, data_len, mode) {
+    _fuzz_seed(seed);
+    var src[4096];
+    var capped = data_len;
+    if (capped > 4096) { capped = 4096; }
+    var i = 0;
+    while (i < capped) {
+        var b = 0;
+        if (mode == 0) {
+            b = _fuzz_next();
+        } elif (mode == 1) {
+            b = 97 + (i % (1 + (seed & 7)));   # short period
+        } else {
+            b = 66;
+            if ((_fuzz_next() & 15) == 0) { b = _fuzz_next(); }   # mostly 'B'
+        }
+        store8(&src + i, b);
+        i = i + 1;
+    }
+
+    var comp[8192];
+    var clen = xz_compress(&src, capped, &comp, 8192);
+    assert(clen > 0, "fuzz_xz compress produced a stream");
+
+    var dec[4096];
+    var dlen = xz_decompress(&comp, clen, &dec, 4096);
+    assert(dlen == capped, "fuzz_xz roundtrip length");
+    i = 0;
+    while (i < capped) {
+        assert(load8(&dec + i) == load8(&src + i), "fuzz_xz roundtrip content");
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -135,6 +173,16 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_xz: 200 corruption tests passed");
+
+    seed = 1;
+    while (seed <= 100) {
+        var sz = (seed * 41) % 4096;
+        fuzz_xz_roundtrip(seed * 2246822519, sz, 0);
+        fuzz_xz_roundtrip(seed * 3266489917, sz, 1);
+        fuzz_xz_roundtrip(seed * 668265263, sz, 2);
+        seed = seed + 1;
+    }
+    println("fuzz_xz: 300 encode round-trip tests passed");
 
     return 0;
 }

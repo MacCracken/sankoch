@@ -16,11 +16,14 @@ release in [`VERSION`](VERSION)).
 | DEFLATE (raw)   | `FORMAT_DEFLATE` | ✓     | ✓         | (wrapped via zlib/gzip) |
 | zlib            | `FORMAT_ZLIB`    | ✓     | ✓         | Python `zlib.decompress` |
 | gzip            | `FORMAT_GZIP`    | ✓     | ✓         | `gunzip`               |
-| xz / LZMA2      | `FORMAT_XZ`      | decode | —        | `xz -dc`               |
+| xz / LZMA2      | `FORMAT_XZ`      | ✓     | —         | `xz -dc` / `xz -d`     |
 
-xz is **decode-only** (`xz_decompress` / `FORMAT_XZ`, v2.4.0+) — `.xz`
-container + LZMA2 + LZMA range decoder, with CRC-32 / CRC-64 check
-validation. No xz encoder.
+xz is a **full codec** — decode (`xz_decompress` / `FORMAT_XZ`, v2.4.0+)
+and encode (`xz_compress` / `compress(FORMAT_XZ, …)`, v2.4.1+). `.xz`
+container + LZMA2 + LZMA range coder both ways, with CRC-32 / CRC-64
+checks. The encoder uses an optimal (price-table) parse; `xz -d` decodes
+its output. Within a few percent of `xz -6` on text/code (it does not
+claim bit-identical parity).
 
 ## API
 
@@ -108,7 +111,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict          | full    |
 | zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming                 | full    |
 | gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming          | full    |
-| xz.cyr         | `.xz` container + LZMA2 framing + LZMA range/state decoder (`xz_decompress`) — decode  | full    |
+| xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder        | full    |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
 | lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch                    | full    |
 

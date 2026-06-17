@@ -162,6 +162,11 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
     if (format == FORMAT_LZ4F) {
         return _lz4f_compress_inner(src, src_len, dst, dst_cap);
     }
+    if (format == FORMAT_XZ) {
+        # xz encode ignores the DEFLATE-style level (fixed lc/lp/pb +
+        # optimal parse); the parameter is accepted for API uniformity.
+        return _xz_compress_inner(src, src_len, dst, dst_cap);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 

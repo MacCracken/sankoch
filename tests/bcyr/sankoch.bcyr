@@ -434,6 +434,23 @@ fn main() {
     clen = gzip_compress(src4k, 4096, c, 16384);
     _print("  gzip     "); _print_int(4096); _print(" -> "); _print_int(clen); _nl();
 
+    clen = compress(FORMAT_XZ, src4k, 4096, c, 16384);
+    _print("  xz       "); _print_int(4096); _print(" -> "); _print_int(clen); _nl();
+
+    println("");
+
+    # ---- xz encode throughput (2.4.1) — informational, not SIZE-gated.
+    # The optimal-parse encoder is the slowest compress path, so few iters.
+    println("--- xz encode (optimal parse, 10 iters) ---");
+    fill_text(src4k, 4096);
+    bench_c("xz  c text  4K", FORMAT_XZ, src4k, 4096, c, 16384, 10);
+    fill_zeros(src4k, 4096);
+    bench_c("xz  c zeros 4K", FORMAT_XZ, src4k, 4096, c, 16384, 10);
+    fill_random(src4k, 4096);
+    bench_c("xz  c rand  4K", FORMAT_XZ, src4k, 4096, c, 16384, 10);
+    fill_text(src4k, 4096);
+    clen = compress(FORMAT_XZ, src4k, 4096, c, 16384);
+    bench_d("xz  d text  4K", FORMAT_XZ, c, clen, d, 16384, iters);
     println("");
 
     # ================================================================

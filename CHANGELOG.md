@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-06-16
+
+**xz / LZMA encode (`xz_compress` + `compress(FORMAT_XZ, …)`).** Closes
+the xz codec — sankoch now emits valid `.xz` that `xz -d` decodes and our
+own `xz_decompress` round-trips. From-scratch LZMA encoder with an
+**optimal (price-table) parse**; zero new dependencies. Encode side lands
+in [`src/xz.cyr`](src/xz.cyr) reusing the existing `lz77.cyr` match finder.
+
+### Added
+
+- **`xz_compress(src, src_len, dst, dst_cap)`** + `compress(FORMAT_XZ, …)`
+  (the level argument is accepted but ignored — fixed lc=3/lp=0/pb=2 +
+  optimal parse). Produces a complete `.xz` stream: header / single block
+  (LZMA2 filter) / index / footer, all CRC-32 fields plus a **CRC-64**
+  check over the uncompressed data (matching `xz`'s default).
+- **LZMA range encoder** — carry-propagating `ShiftLow`, `encode_bit`
+  (with the prob update), `encode_direct`, bit-tree / reverse-bit-tree
+  encoders, 5-byte flush. Verified bit-exact against the 2.4.0 decoder.
+- **Optimal parse** — a bounded forward DP (window `XZE_OPT_W`) minimizing
+  the modeled bit-price of literal / normal-match / rep-match / short-rep
+  moves, with rep-distance history tracked per path. Prices from a
+  `ProbPrices` table (LzmaEnc-style) read against the live model; a
+  per-window length-price cache keeps the hot loops O(1).
+- **LZMA2 framing** — chunk control bytes with dict/state/props reset on
+  the first chunk; up to ~2 MB uncompressed per chunk, cut early when the
+  compressed size nears the 64 KB chunk limit (so incompressible input
+  stays valid).
+
+### Tests / fuzz / bench
+
+- 8 new `.tcyr` encode tests (empty, small, all-same, periodic, text,
+  pseudo-random, ~90 KB multi-window, and the public `compress` /
+  `detect_format` / `decompress` path) — our encode → our decode,
+  byte-for-byte.
+- [`fuzz/fuzz_xz.fcyr`](fuzz/fuzz_xz.fcyr): +300 encode→decode round-trip
+  iterations (random / periodic / mostly-constant shapes).
+- `bench`: an `xz` compress/decompress section + a ratio line
+  (informational — **not** in the wire-format SIZE gate, since the
+  encoder will keep being tuned).
+
+### Conformance / ratio
+
+- `xz -d` decodes every fixture we emit; our own `xz_decompress`
+  round-trips. Validated out-of-band across 1 B – 500 KB, random / zero /
+  text / sequential content, plus a real `.tar.xz` extracted by `tar` +
+  `xz`. **Numbers** (vs `xz -6`): within ~1–5 % on text/code (CHANGELOG
+  39144 vs 37788; deflate.cyr 20192 vs 19304; lz4.cyr 8388 vs 8332),
+  wider on pathological repetition (big.txt 308 vs 256). Not bit-identical
+  to `xz` (different parse heuristics) — and not claimed to be.
+
+### Notes
+
+- **Decode-only formats unaffected.** The wire-format SIZE gate is
+  unchanged at 43 lines (xz encode is not gated).
+- Encoder throughput is modest (optimal-parse DP) — fine for the
+  one-shot/archival use this targets; a throughput pass can follow.
+
 ## [2.4.0] — 2026-06-16
 
 **xz / LZMA decode (`FORMAT_XZ`) — decode only.** Opens the 2.4.x

@@ -67,7 +67,7 @@ src/
   deflate.cyr      — DEFLATE de/compress, adaptive blocks, dict, deflate_enc_* + deflate_dec_*
   zlib.cyr         — zlib wrapper + FDICT batch + zlib_enc_* + zlib_dec_*
   gzip.cyr         — gzip wrapper + concatenated batch + gzip_enc_* + gzip_dec_*
-  xz.cyr           — .xz container + LZMA2 framing + LZMA range/state decoder (xz_decompress) — decode only
+  xz.cyr           — .xz de/compress: container + LZMA2 + LZMA range coder, optimal-parse encoder (xz_decompress / xz_compress)
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
 programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules
