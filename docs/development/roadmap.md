@@ -249,9 +249,9 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **200 distinct test functions** (190 sankoch.tcyr + 10
-git_object.tcyr) producing **4,326,194 assertions** total
-(3,979,611 + 346,583). Most of the assertion count comes from
+Tests: **200 distinct test functions** (190 across the 15 split
+codec×direction suites + 10 in git_object.tcyr) producing
+**4,326,194 assertions** total (3,979,611 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures

@@ -7,8 +7,8 @@ See [AGNOS First-Party Standards](https://github.com/MacCracken/agnosticos/blob/
 ```sh
 cyrius deps                            # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch # compile-check
-cyrius test                            # auto-runs both tcyr suites
-cyrius fuzz                            # both fuzz harnesses
+cyrius test                            # auto-runs all tcyr suites
+cyrius fuzz                            # all fuzz harnesses
 cyrius bench tests/bcyr/sankoch.bcyr   # throughput + SIZE lines
 ```
 
@@ -29,8 +29,8 @@ Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage
 - Zero external dependencies — no git deps under `[deps.*]` in
   `cyrius.cyml`. Checksums live inline in `src/checksum.cyr`
 - CI gates: `cyrius build` 0 warnings, `cyrius lint` 0 warnings,
-  `cyrius fmt --check` diff-clean, `cyrius vet` 0 untrusted, both
-  tcyr suites + both fuzz harnesses green, SIZE lines stable
+  `cyrius fmt --check` diff-clean, `cyrius vet` 0 untrusted, all
+  tcyr suites + all fuzz harnesses green, SIZE lines stable
 - Version bumps require a matching `CHANGELOG.md` entry — the
   release workflow asserts `VERSION == tag` and greps the tag in
   CHANGELOG before publishing

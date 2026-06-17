@@ -1,0 +1,374 @@
+# sankoch — DEFLATE — compress (encoder, round-trip, dynamic Huffman, dict, levels)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/deflate_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_deflate_enc_smoke() {
+    # Level 6 dynamic path — write 5 bytes, decompress, verify.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var ctx = deflate_enc_init(6, c, 64);
+    assert(ctx != 0, "enc_init returns ctx");
+    assert(deflate_enc_write(ctx, src, 5) == 0, "enc_write 5B");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_finish returns length");
+
+    var d = alloc(64);
+    var dlen = deflate_decompress(c, clen, d, 64);
+    assert(dlen == 5, "enc rt dlen");
+    assert(load8(d + 0) == 72 && load8(d + 1) == 101 && load8(d + 2) == 108
+    && load8(d + 3) == 108 && load8(d + 4) == 111, "enc rt content");
+    return 0;
+}
+
+fn test_deflate_enc_chunked() {
+    # Same 5 bytes but in 5 separate enc_write calls (byte-at-a-time).
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var ctx = deflate_enc_init(6, c, 64);
+    assert(ctx != 0, "enc_chunked init");
+    var i = 0;
+    while (i < 5) {
+        assert(deflate_enc_write(ctx, src + i, 1) == 0, "enc_write 1B");
+        i = i + 1;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_chunked finish");
+
+    var d = alloc(64);
+    var dlen = deflate_decompress(c, clen, d, 64);
+    assert(dlen == 5, "enc_chunked dlen");
+    i = 0;
+    while (i < 5) { assert(load8(d + i) == load8(src + i), "enc_chunked content"); i = i + 1; }
+    return 0;
+}
+
+fn test_deflate_enc_empty() {
+    # Zero bytes → enc_init + enc_finish must emit a valid empty stream.
+    var c = alloc(16);
+    var ctx = deflate_enc_init(6, c, 16);
+    assert(ctx != 0, "enc_empty init");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_empty finish");
+
+    var d = alloc(16);
+    assert(deflate_decompress(c, clen, d, 16) == 0, "enc_empty decompress empty");
+    return 0;
+}
+
+fn test_deflate_enc_fixed() {
+    # Level 1 (fixed path) — verify the BFINAL=0 block + BFINAL=1 stored trailer works.
+    var src = alloc(120);
+    var j = 0;
+    while (j < 120) { store8(src + j, 65 + (j % 3)); j = j + 1; }
+    var c = alloc(256);
+    var ctx = deflate_enc_init(1, c, 256);
+    assert(ctx != 0, "enc_fixed init");
+    assert(deflate_enc_write(ctx, src, 120) == 0, "enc_fixed write");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_fixed finish");
+
+    var d = alloc(128);
+    var dlen = deflate_decompress(c, clen, d, 128);
+    assert(dlen == 120, "enc_fixed rt dlen");
+    j = 0;
+    while (j < 120) { assert(load8(d + j) == load8(src + j), "enc_fixed rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_deflate_enc_slide() {
+    # 100K input — crosses the 64K window boundary, exercises slide+rebase.
+    var N = 100000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 17)); j = j + 1; }
+    var c = alloc(N + 4096);
+    var ctx = deflate_enc_init(6, c, N + 4096);
+    assert(ctx != 0, "enc_slide init");
+    # Feed in 4 KB chunks to force multiple consumes + at least one slide.
+    var fed = 0;
+    while (fed < N) {
+        var take = N - fed;
+        if (take > 4096) { take = 4096; }
+        assert(deflate_enc_write(ctx, src + fed, take) == 0, "enc_slide write chunk");
+        fed = fed + take;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "enc_slide finish");
+
+    var d = alloc(N);
+    var dlen = deflate_decompress(c, clen, d, N);
+    assert(dlen == N, "enc_slide rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "enc_slide rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_deflate_enc_levels() {
+    # Same 10KB text at each level — all must round-trip, and compressed
+    # size should not *grow* relative to the batch API for the same level.
+    var N = 10000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 26)); j = j + 1; }
+    var c = alloc(N + 1024);
+    var d = alloc(N);
+    _enc_rt(src, N, 1, N, c, N + 1024, d, N, "enc_levels L1");
+    _enc_rt(src, N, 3, N, c, N + 1024, d, N, "enc_levels L3");
+    _enc_rt(src, N, 6, N, c, N + 1024, d, N, "enc_levels L6");
+    _enc_rt(src, N, 9, N, c, N + 1024, d, N, "enc_levels L9");
+    return 0;
+}
+
+fn test_deflate_enc_window_boundary() {
+    # Exactly 65536 bytes — one full window, no slide needed.
+    # Then 65537 bytes — one byte past, forces the slide path.
+    var N = 65537;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 23)); j = j + 1; }
+    var c = alloc(N + 2048);
+    var d = alloc(N);
+    _enc_rt(src, 65536, 6, 8192, c, N + 2048, d, N, "enc 65536B");
+    _enc_rt(src, 65537, 6, 8192, c, N + 2048, d, N, "enc 65537B");
+    return 0;
+}
+
+fn test_deflate_enc_varied_chunks() {
+    # 80K text — feed in wildly varied chunk sizes to stress write-boundary
+    # interactions with LZ77 lookahead reserve + sub-block flush.
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 37 + j / 11) % 95); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    # Chunk sizes: 1, 258 (= LOOKAHEAD), 259, 1000, 4096, rest
+    var chunks[6];
+    store64(&chunks + 0 * 8, 1);
+    store64(&chunks + 1 * 8, 258);
+    store64(&chunks + 2 * 8, 259);
+    store64(&chunks + 3 * 8, 1000);
+    store64(&chunks + 4 * 8, 4096);
+    store64(&chunks + 5 * 8, N);
+    var ctx = deflate_enc_init(6, c, N + 4096);
+    assert(ctx != 0, "varied_chunks init");
+    var fed = 0;
+    var ci = 0;
+    while (fed < N) {
+        var take = load64(&chunks + (ci % 6) * 8);
+        if (take > N - fed) { take = N - fed; }
+        assert(deflate_enc_write(ctx, src + fed, take) == 0, "varied_chunks write");
+        fed = fed + take;
+        ci = ci + 1;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "varied_chunks finish");
+    var dlen = deflate_decompress(c, clen, d, N);
+    assert(dlen == N, "varied_chunks dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "varied_chunks content"); j = j + 1; }
+    return 0;
+}
+
+fn test_deflate_rt_empty() {
+    var src = alloc(1);
+    var c = alloc(64);
+    var d = alloc(64);
+    var clen = deflate_compress(src, 0, c, 64);
+    assert(clen > 0, "deflate rt empty compress");
+    assert(deflate_decompress(c, clen, d, 64) == 0, "deflate rt empty decompress");
+    return 0;
+}
+
+fn test_deflate_rt_1byte() {
+    var src = alloc(1);
+    store8(src, 88);
+    _verify_roundtrip(src, 1, "deflate rt 1 byte");
+    return 0;
+}
+
+fn test_deflate_rt_hello() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    _verify_roundtrip(src, 5, "deflate rt Hello");
+    return 0;
+}
+
+fn test_deflate_rt_repetitive() {
+    var src = alloc(120);
+    var i = 0;
+    while (i < 120) { store8(src + i, 65 + (i % 3)); i = i + 1; }
+    var clen = _verify_roundtrip(src, 120, "deflate rt repetitive");
+    assert(clen < 120, "deflate should compress repetitive");
+    return 0;
+}
+
+fn test_deflate_rt_all_bytes() {
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, i); i = i + 1; }
+    _verify_roundtrip(src, 256, "deflate rt all 256 bytes");
+    return 0;
+}
+
+fn test_deflate_rt_2kb() {
+    var src = alloc(2048);
+    var i = 0;
+    while (i < 2048) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    _verify_roundtrip(src, 2048, "deflate rt 2KB");
+    return 0;
+}
+
+fn test_levels_deflate() {
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 10)); i = i + 1; }
+    var c1 = alloc(512);
+    var c9 = alloc(512);
+    var d = alloc(256);
+    var len1 = compress_level(FORMAT_DEFLATE, src, 256, c1, 512, 1);
+    var len9 = compress_level(FORMAT_DEFLATE, src, 256, c9, 512, 9);
+    assert(len1 > 0 && len9 > 0, "both levels compress");
+    assert(decompress(FORMAT_DEFLATE, c1, len1, d, 256) == 256, "level 1 rt");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "level 1 content"); i = i + 1; }
+    assert(decompress(FORMAT_DEFLATE, c9, len9, d, 256) == 256, "level 9 rt");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "level 9 content"); i = i + 1; }
+    return 0;
+}
+
+fn test_dynamic_huffman_rt() {
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 10)); i = i + 1; }
+    var c = alloc(512);
+    var d = alloc(512);
+    var clen = deflate_compress_level(src, 256, c, 512, 6);
+    assert(clen > 0 && clen < 256, "dynamic huffman compresses");
+    assert((load8(c) & 7) == 5, "BTYPE=10 dynamic block");
+    assert(deflate_decompress(c, clen, d, 512) == 256, "dynamic huffman rt");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "dynamic content"); i = i + 1; }
+    return 0;
+}
+
+fn test_dynamic_vs_fixed() {
+    var src = alloc(512);
+    var i = 0;
+    while (i < 512) {
+        if ((i % 10) == 0) { store8(src + i, 66 + (i % 5)); }
+        else { store8(src + i, 65); }
+        i = i + 1;
+    }
+    var cf = alloc(1024);
+    var cd = alloc(1024);
+    var d = alloc(512);
+    var lf = deflate_compress_level(src, 512, cf, 1024, 1);
+    var ld = deflate_compress_level(src, 512, cd, 1024, 6);
+    assert(lf > 0 && ld > 0, "both fixed and dynamic compress");
+    assert(deflate_decompress(cd, ld, d, 512) == 512, "dynamic decompress");
+    i = 0;
+    while (i < 512) { assert(load8(d + i) == load8(src + i), "dynamic vs fixed content"); i = i + 1; }
+    return 0;
+}
+
+fn test_deflate_enc_dict_roundtrip() {
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var dst = alloc(512);
+    var ctx = deflate_enc_init_dict(6, dst, 512, dict, dict_len);
+    assert(ctx != 0, "deflate_enc_init_dict ctx");
+    assert(deflate_enc_write(ctx, input, input_len) == 0, "deflate_enc_write dict");
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "deflate_enc_finish dict clen>0");
+
+    var out = alloc(256);
+    var dlen = deflate_decompress_dict(dst, clen, out, 256, dict, dict_len);
+    assert(dlen == input_len, "deflate dict roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "deflate dict roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_deflate_enc_dict_levels() {
+    # Same roundtrip across the level boundaries that switch fixed/
+    # dynamic encoder paths.
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var levels[4];
+    store64(&levels + 0, 1);   # fixed
+    store64(&levels + 8, 3);   # fixed
+    store64(&levels + 16, 6);  # dynamic
+    store64(&levels + 24, 9);  # dynamic / deepest chain
+
+    var li = 0;
+    while (li < 4) {
+        var level = load64(&levels + li * 8);
+        var dst = alloc(512);
+        var ctx = deflate_enc_init_dict(level, dst, 512, dict, dict_len);
+        assert(ctx != 0, "deflate dict ctx (level)");
+        assert(deflate_enc_write(ctx, input, input_len) == 0, "deflate dict write (level)");
+        var clen = deflate_enc_finish(ctx);
+        assert(clen > 0, "deflate dict clen>0 (level)");
+
+        var out = alloc(256);
+        var dlen = deflate_decompress_dict(dst, clen, out, 256, dict, dict_len);
+        assert(dlen == input_len, "deflate dict roundtrip len (level)");
+        var i = 0;
+        while (i < input_len) {
+            assert(load8(out + i) == load8(input + i), "deflate dict roundtrip byte (level)");
+            i = i + 1;
+        }
+        li = li + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_deflate_enc_smoke();
+    test_deflate_enc_chunked();
+    test_deflate_enc_empty();
+    test_deflate_enc_fixed();
+    test_deflate_enc_slide();
+    test_deflate_enc_levels();
+    test_deflate_enc_window_boundary();
+    test_deflate_enc_varied_chunks();
+    test_deflate_rt_empty();
+    test_deflate_rt_1byte();
+    test_deflate_rt_hello();
+    test_deflate_rt_repetitive();
+    test_deflate_rt_all_bytes();
+    test_deflate_rt_2kb();
+    test_levels_deflate();
+    test_dynamic_huffman_rt();
+    test_dynamic_vs_fixed();
+    test_deflate_enc_dict_roundtrip();
+    test_deflate_enc_dict_levels();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

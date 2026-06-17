@@ -1,0 +1,278 @@
+# sankoch — Checksum tests (Adler-32 / CRC-32 / CRC-64 / xxHash32)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/checksum.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_adler32_empty() {
+    var buf = alloc(1);
+    assert(adler32(buf, 0) == 1, "adler32 empty = 1");
+    return 0;
+}
+
+fn test_adler32_hello() {
+    var buf = alloc(5);
+    store8(buf + 0, 72); store8(buf + 1, 101); store8(buf + 2, 108);
+    store8(buf + 3, 108); store8(buf + 4, 111);
+    # Round-trip validates checksum internally; verify non-zero here
+    var result = adler32(buf, 5);
+    assert(result > 0, "adler32 Hello non-zero");
+    return 0;
+}
+
+fn test_adler32_single_byte() {
+    var buf = alloc(1);
+    store8(buf, 0);
+    assert(adler32(buf, 1) == 65537, "adler32 single zero byte");
+    store8(buf, 255);
+    assert(adler32(buf, 1) == 16777472, "adler32 single 0xFF byte");
+    return 0;
+}
+
+fn test_adler32_large() {
+    # Test NMAX boundary crossing — 6000 bytes
+    var buf = alloc(6000);
+    var i = 0;
+    while (i < 6000) { store8(buf + i, 65); i = i + 1; }
+    var result = adler32(buf, 6000);
+    assert(result > 0, "adler32 large must be positive");
+    # Verify consistency: two calls return same value
+    var result2 = adler32(buf, 6000);
+    assert(result == result2, "adler32 large deterministic");
+    return 0;
+}
+
+fn test_crc32_empty() {
+    crc32_init_table();
+    var buf = alloc(1);
+    assert(crc32(buf, 0) == 0, "crc32 empty = 0");
+    return 0;
+}
+
+fn test_crc32_known() {
+    crc32_init_table();
+    var buf = alloc(9);
+    store8(buf + 0, 49); store8(buf + 1, 50); store8(buf + 2, 51);
+    store8(buf + 3, 52); store8(buf + 4, 53); store8(buf + 5, 54);
+    store8(buf + 6, 55); store8(buf + 7, 56); store8(buf + 8, 57);
+    assert(crc32(buf, 9) == 3421780262, "crc32 '123456789'");
+    return 0;
+}
+
+fn test_crc64_empty() {
+    crc64_init_table();
+    var buf = alloc(1);
+    # init = xorout = ~0, no bytes folded → ~0 ^ ~0 = 0.
+    assert(crc64(buf, 0) == 0, "crc64 empty = 0");
+    return 0;
+}
+
+fn test_crc64_known() {
+    crc64_init_table();
+    var buf = alloc(9);
+    store8(buf + 0, 49); store8(buf + 1, 50); store8(buf + 2, 51);
+    store8(buf + 3, 52); store8(buf + 4, 53); store8(buf + 5, 54);
+    store8(buf + 6, 55); store8(buf + 7, 56); store8(buf + 8, 57);
+    # CRC-64/XZ check value for "123456789" (ECMA-182, reflected).
+    assert(crc64(buf, 9) == 0x995DC9BBDF1939FA, "crc64 '123456789'");
+    return 0;
+}
+
+fn test_xxhash32_known_vectors() {
+    var buf = alloc(64);
+
+    # Empty — 0x02CC5D05 (short path, no tail)
+    assert(xxhash32(buf, 0) == 46947589, "xxh32 empty");
+
+    # "a" (1 byte) — 0x550D7456 (short path, byte tail only)
+    store8(buf, 97);
+    assert(xxhash32(buf, 1) == 1426945110, "xxh32 'a'");
+
+    # "abc" (3 bytes) — 0x32D153FF (short path, byte tail only)
+    store8(buf, 97); store8(buf + 1, 98); store8(buf + 2, 99);
+    assert(xxhash32(buf, 3) == 852579327, "xxh32 'abc'");
+
+    # "abcd" (4 bytes) — 0xA3643705 (exercises 4-byte tail — catches PRIME2/PRIME4 bug)
+    store8(buf, 97); store8(buf + 1, 98); store8(buf + 2, 99); store8(buf + 3, 100);
+    assert(xxhash32(buf, 4) == 2741253893, "xxh32 'abcd'");
+
+    # "abcdefg" (7 bytes) — 0x9DD093B3 (4-byte tail once + byte tail)
+    var j = 0;
+    while (j < 7) { store8(buf + j, 97 + j); j = j + 1; }
+    assert(xxhash32(buf, 7) == 2647692211, "xxh32 'abcdefg'");
+
+    # "abcdefghijklmno" (15 bytes) — 0xB918A375 (short path, 4-byte tail x3 + byte tail x3)
+    j = 0;
+    while (j < 15) { store8(buf + j, 97 + j); j = j + 1; }
+    assert(xxhash32(buf, 15) == 3105399669, "xxh32 'abcdef…mno'");
+
+    # 16 zero bytes — 0x8E022B3A (first stripe-path case: exactly one 16-byte stripe)
+    j = 0;
+    while (j < 16) { store8(buf + j, 0); j = j + 1; }
+    assert(xxhash32(buf, 16) == 2382506810, "xxh32 16×0x00");
+
+    # "Nobody inspects the spammish repetition" (39 bytes) — 0xE2293B2F
+    # Exercises: 2 full stripes (32 bytes) + 4-byte tail (4 bytes) + byte tail (3 bytes)
+    var s[40];
+    store8(&s+0,78); store8(&s+1,111); store8(&s+2,98); store8(&s+3,111);
+    store8(&s+4,100); store8(&s+5,121); store8(&s+6,32); store8(&s+7,105);
+    store8(&s+8,110); store8(&s+9,115); store8(&s+10,112); store8(&s+11,101);
+    store8(&s+12,99); store8(&s+13,116); store8(&s+14,115); store8(&s+15,32);
+    store8(&s+16,116); store8(&s+17,104); store8(&s+18,101); store8(&s+19,32);
+    store8(&s+20,115); store8(&s+21,112); store8(&s+22,97); store8(&s+23,109);
+    store8(&s+24,109); store8(&s+25,105); store8(&s+26,115); store8(&s+27,104);
+    store8(&s+28,32); store8(&s+29,114); store8(&s+30,101); store8(&s+31,112);
+    store8(&s+32,101); store8(&s+33,116); store8(&s+34,105); store8(&s+35,116);
+    store8(&s+36,105); store8(&s+37,111); store8(&s+38,110);
+    assert(xxhash32(&s, 39) == 3794352943, "xxh32 'Nobody inspects…'");
+
+    j = 0;
+    while (j < 64) { store8(buf + j, 0); j = j + 1; }
+    assert(xxhash32(buf, 64) == 1446152080, "xxh32 64×0x00");
+
+    return 0;
+}
+
+fn test_xxhash32_incremental() {
+    # Streaming xxhash32 must match batch for every input size, regardless
+    # of how the bytes are fed in. Boundary cases around 16-byte stripe.
+    var buf = alloc(200);
+    var j = 0;
+    while (j < 200) { store8(buf + j, (j * 37 + 11) % 256); j = j + 1; }
+
+    # 1. Total all at once (update with full len)
+    var st = xxhash32_init();
+    xxhash32_update(st, buf, 67);
+    assert(xxhash32_final(st) == xxhash32(buf, 67), "xxh32 inc one-shot 67B");
+
+    # 2. Byte-at-a-time for sizes spanning the stripe boundary.
+    j = 0;
+    while (j <= 40) {
+        st = xxhash32_init();
+        var k = 0;
+        while (k < j) { xxhash32_update(st, buf + k, 1); k = k + 1; }
+        assert(xxhash32_final(st) == xxhash32(buf, j), "xxh32 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    # 3. Varied chunk sizes totaling 150B (multiple stripes + tail).
+    st = xxhash32_init();
+    xxhash32_update(st, buf + 0, 5);       # short of stripe
+    xxhash32_update(st, buf + 5, 12);      # fills + part of second stripe
+    xxhash32_update(st, buf + 17, 16);     # exactly one stripe
+    xxhash32_update(st, buf + 33, 100);    # multiple stripes
+    xxhash32_update(st, buf + 133, 17);    # stripe + tail
+    assert(xxhash32_final(st) == xxhash32(buf, 150), "xxh32 inc varied chunks");
+
+    return 0;
+}
+
+fn test_adler32_incremental() {
+    # Byte-at-a-time and varied-chunk updates must match batch adler32.
+    var buf = alloc(150);
+    var j = 0;
+    while (j < 150) { store8(buf + j, (j * 19 + 7) % 256); j = j + 1; }
+
+    # Empty
+    var st = adler32_init();
+    assert(adler32_final(st) == adler32(buf, 0), "adler32 inc empty");
+
+    # 1..65 bytes, byte-at-a-time — crosses NMAX is not relevant here, but
+    # spans both small and medium sizes for robustness.
+    j = 0;
+    while (j <= 65) {
+        st = adler32_init();
+        var k = 0;
+        while (k < j) { adler32_update(st, buf + k, 1); k = k + 1; }
+        assert(adler32_final(st) == adler32(buf, j), "adler32 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    # Varied chunks totaling 150
+    st = adler32_init();
+    adler32_update(st, buf, 7);
+    adler32_update(st, buf + 7, 53);
+    adler32_update(st, buf + 60, 90);
+    assert(adler32_final(st) == adler32(buf, 150), "adler32 inc varied");
+    return 0;
+}
+
+fn test_crc32_incremental() {
+    crc32_init_table();
+    var buf = alloc(150);
+    var j = 0;
+    while (j < 150) { store8(buf + j, (j * 37 + 11) % 256); j = j + 1; }
+
+    var st = crc32_init();
+    assert(crc32_final(st) == crc32(buf, 0), "crc32 inc empty");
+
+    j = 0;
+    while (j <= 40) {
+        st = crc32_init();
+        var k = 0;
+        while (k < j) { crc32_update(st, buf + k, 1); k = k + 1; }
+        assert(crc32_final(st) == crc32(buf, j), "crc32 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    st = crc32_init();
+    crc32_update(st, buf, 7);
+    crc32_update(st, buf + 7, 8);     # just past the 8-byte unroll boundary
+    crc32_update(st, buf + 15, 135);
+    assert(crc32_final(st) == crc32(buf, 150), "crc32 inc varied");
+    return 0;
+}
+
+fn test_crc64_incremental() {
+    crc64_init_table();
+    var buf = alloc(150);
+    var i = 0;
+    while (i < 150) { store8(buf + i, (i * 31 + 7) & 255); i = i + 1; }
+
+    var st = crc64_init();
+    assert(crc64_final(st) == crc64(buf, 0), "crc64 inc empty");
+
+    # Byte-at-a-time must equal the batch fold at every prefix length.
+    var j = 1;
+    while (j <= 32) {
+        st = crc64_init();
+        var k = 0;
+        while (k < j) { crc64_update(st, buf + k, 1); k = k + 1; }
+        assert(crc64_final(st) == crc64(buf, j), "crc64 inc byte-at-a-time");
+        j = j + 1;
+    }
+
+    # Varied-size chunks must also match the batch fold.
+    st = crc64_init();
+    crc64_update(st, buf, 7);
+    crc64_update(st, buf + 7, 8);
+    crc64_update(st, buf + 15, 135);
+    assert(crc64_final(st) == crc64(buf, 150), "crc64 inc varied");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_adler32_empty();
+    test_adler32_hello();
+    test_adler32_single_byte();
+    test_adler32_large();
+    test_crc32_empty();
+    test_crc32_known();
+    test_crc64_empty();
+    test_crc64_known();
+    test_xxhash32_known_vectors();
+    test_xxhash32_incremental();
+    test_adler32_incremental();
+    test_crc32_incremental();
+    test_crc64_incremental();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

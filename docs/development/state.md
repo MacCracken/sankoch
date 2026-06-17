@@ -33,11 +33,22 @@ type: state
 
 ## Test totals
 
-| Suite                          | Functions | Assertions |
-|--------------------------------|----------:|-----------:|
-| `tests/tcyr/sankoch.tcyr`      |       190 |  3,979,611 |
-| `tests/tcyr/git_object.tcyr`   |        10 |    346,583 |
-| **Total**                      |   **200** | **4,326,194** |
+The monolithic `sankoch.tcyr` was split (2.4.1 post-ship) into **15
+per-codec × direction suites** under `tests/tcyr/`, sharing
+`_harness.tcyr` (includes + 4 MB heap setup + cross-cutting helpers).
+Function/assertion totals are unchanged by the split.
+
+| Suite group                                   | Functions | Assertions |
+|-----------------------------------------------|----------:|-----------:|
+| `tests/tcyr/*.tcyr` (15 split suites)         |       190 |  3,979,611 |
+| `tests/tcyr/git_object.tcyr`                  |        10 |    346,583 |
+| **Total**                                     |   **200** | **4,326,194** |
+
+Split suites: `checksum`, `lz4_{compress,decompress}`,
+`lz4f_{compress,decompress}`, `deflate_{compress,decompress}`,
+`zlib_{compress,decompress}`, `gzip_{compress,decompress}`,
+`xz_{compress,decompress}`, `stream`, `detect_error`. Run one with
+`cyrius test tests/tcyr/<name>.tcyr`, or all with bare `cyrius test`.
 
 The assertion total is heavily inflated by per-byte content-loop checks on streaming round-trips (a single 128 KB round-trip contributes 131,072 assertions through one `while (i < N) assert(load8(d+i) == load8(s+i))` loop). Read as a coverage-**density** number, not a coverage-**breadth** number. See [`guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large) for the full explanation.
 
@@ -91,7 +102,7 @@ two deferred markers in [`roadmap.md`](roadmap.md).
 ## CI / release gates
 
 - **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (21 deps, 0 untrusted, 0 missing).
-- **Tests**: both tcyr suites green; all 14 fuzz harness functions green.
+- **Tests**: all tcyr suites green (15 split codec×direction suites + `git_object`, auto-discovered by the CI Test loop); all 14 fuzz harness functions green.
 - **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The 2.4.1 xz encoder is **deliberately excluded** from this gate — its output will keep being tuned, so it ships an informational ratio line in `bench` instead.
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.

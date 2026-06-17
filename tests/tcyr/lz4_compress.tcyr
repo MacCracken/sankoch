@@ -1,0 +1,132 @@
+# sankoch — LZ4 block — compress (round-trip)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/lz4_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_lz4_roundtrip_empty() {
+    var src = alloc(1);
+    var c = alloc(64);
+    var d = alloc(64);
+    var clen = lz4_compress(src, 0, c, 64);
+    assert(clen >= 0, "lz4 compress empty");
+    var dlen = lz4_decompress(c, clen, d, 64);
+    assert(dlen == 0, "lz4 decompress empty");
+    return 0;
+}
+
+fn test_lz4_roundtrip_1byte() {
+    var src = alloc(1);
+    store8(src, 42);
+    var c = alloc(64);
+    var d = alloc(64);
+    var clen = lz4_compress(src, 1, c, 64);
+    assert(clen > 0, "lz4 compress 1 byte");
+    var dlen = lz4_decompress(c, clen, d, 64);
+    assert(dlen == 1, "lz4 roundtrip 1 byte size");
+    assert(load8(d) == 42, "lz4 roundtrip 1 byte value");
+    return 0;
+}
+
+fn test_lz4_roundtrip_small() {
+    var src = alloc(16);
+    var i = 0;
+    while (i < 16) { store8(src + i, i + 65); i = i + 1; }
+    var c = alloc(64);
+    var d = alloc(64);
+    var clen = lz4_compress(src, 16, c, 64);
+    assert(clen > 0, "lz4 compress 16 bytes");
+    var dlen = lz4_decompress(c, clen, d, 64);
+    assert(dlen == 16, "lz4 roundtrip 16 bytes size");
+    i = 0;
+    while (i < 16) {
+        assert(load8(d + i) == load8(src + i), "lz4 roundtrip 16 content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_lz4_roundtrip_repetitive() {
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, i % 4); i = i + 1; }
+    var c = alloc(512);
+    var d = alloc(512);
+    var clen = lz4_compress(src, 256, c, 512);
+    assert(clen > 0, "lz4 compress repetitive succeeds");
+    var dlen = lz4_decompress(c, clen, d, 512);
+    assert(dlen == 256, "lz4 roundtrip repetitive size");
+    i = 0;
+    while (i < 256) { assert(load8(d + i) == load8(src + i), "lz4 rep content"); i = i + 1; }
+    return 0;
+}
+
+fn test_lz4_roundtrip_all_same() {
+    var src = alloc(128);
+    var i = 0;
+    while (i < 128) { store8(src + i, 42); i = i + 1; }
+    var c = alloc(256);
+    var d = alloc(256);
+    var clen = lz4_compress(src, 128, c, 256);
+    assert(clen > 0, "lz4 compress all-same succeeds");
+    var dlen = lz4_decompress(c, clen, d, 256);
+    assert(dlen == 128, "lz4 all-same size");
+    i = 0;
+    while (i < 128) { assert(load8(d + i) == 42, "lz4 all-same content"); i = i + 1; }
+    return 0;
+}
+
+fn test_lz4_roundtrip_random() {
+    var src = alloc(512);
+    var state = 12345;
+    var i = 0;
+    while (i < 512) {
+        state = state * 6364136223846793005 + 1;
+        store8(src + i, (state >> 33) & 255);
+        i = i + 1;
+    }
+    var c = alloc(1024);
+    var d = alloc(512);
+    var clen = lz4_compress(src, 512, c, 1024);
+    assert(clen > 0, "lz4 compress random data");
+    var dlen = lz4_decompress(c, clen, d, 512);
+    assert(dlen == 512, "lz4 roundtrip random size");
+    i = 0;
+    while (i < 512) { assert(load8(d + i) == load8(src + i), "lz4 random content"); i = i + 1; }
+    return 0;
+}
+
+fn test_lz4_roundtrip_1kb() {
+    var src = alloc(1024);
+    var i = 0;
+    while (i < 1024) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    var c = alloc(2048);
+    var d = alloc(1024);
+    var clen = lz4_compress(src, 1024, c, 2048);
+    assert(clen > 0, "lz4 compress 1KB");
+    var dlen = lz4_decompress(c, clen, d, 1024);
+    assert(dlen == 1024, "lz4 roundtrip 1KB size");
+    i = 0;
+    while (i < 1024) { assert(load8(d + i) == load8(src + i), "lz4 1KB content"); i = i + 1; }
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_lz4_roundtrip_empty();
+    test_lz4_roundtrip_1byte();
+    test_lz4_roundtrip_small();
+    test_lz4_roundtrip_repetitive();
+    test_lz4_roundtrip_all_same();
+    test_lz4_roundtrip_random();
+    test_lz4_roundtrip_1kb();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

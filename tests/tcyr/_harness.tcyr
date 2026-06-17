@@ -1,0 +1,275 @@
+# sankoch — shared test harness
+#
+# Included by every per-codec/-direction test suite in this directory.
+# Holds the includes, the 4 MB heap + buffer setup (`_test_init`), and the
+# cross-cutting helper functions used by more than one suite. It defines
+# no `main()`, so it is NOT a runnable suite — the CI Test step skips
+# `_`-prefixed files. Suites `include "tests/tcyr/_harness.tcyr"` and
+# nothing else (the harness pulls in src/lib.cyr + lib/assert.cyr).
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+# Pre-allocated shared buffers (legacy — kept for any suite that wants a
+# scratch buffer without its own alloc()).
+var _tb_small = 0;   # 64 bytes
+var _tb_med = 0;     # 512 bytes
+var _tb_large = 0;   # 8192 bytes
+
+# Lazily-allocated round-trip scratch buffers shared by `_enc_rt` /
+# `_verify_roundtrip` (4 KB each).
+var _rt_c = 0;
+var _rt_d = 0;
+
+# Custom heap init (4 MB instead of the 1 MB default) + buffer setup.
+# Every suite's main() calls this before running its tests.
+fn _test_init() {
+    _heap_base = syscall(12, 0);
+    _heap_end = _heap_base + 4194304;
+    syscall(12, _heap_end);
+    _heap_ptr = _heap_base;
+    _tb_small = alloc(64);
+    _tb_med = alloc(512);
+    _tb_large = alloc(8192);
+    return 0;
+}
+
+# ================================================================
+# Cross-cutting helpers (shared by multiple suites)
+# ================================================================
+
+# Fill buf with the ASCII bytes of s (up to len); caller supplies bytes.
+fn _put_str(buf, s, len) {
+    var i = 0;
+    while (i < len) { store8(buf + i, load8(s + i)); i = i + 1; }
+    return 0;
+}
+
+# Shared helper: compress `src[0..N)` via enc API in chunks of `chunk_sz`,
+# decompress, and assert every byte round-trips. `label` tags asserts.
+fn _enc_rt(src, N, level, chunk_sz, c, c_cap, d, d_cap, label) {
+    var ctx = deflate_enc_init(level, c, c_cap);
+    assert(ctx != 0, label);
+    var fed = 0;
+    while (fed < N) {
+        var take = N - fed;
+        if (take > chunk_sz) { take = chunk_sz; }
+        assert(deflate_enc_write(ctx, src + fed, take) == 0, label);
+        fed = fed + take;
+    }
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, label);
+    var dlen = deflate_decompress(c, clen, d, d_cap);
+    assert(dlen == N, label);
+    var j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), label); j = j + 1; }
+    return clen;
+}
+
+# Walk an LZ4F frame and count data blocks (excludes the end mark).
+# Assumes our wrapper layout: 7-byte header (no CSize, no DictID).
+fn _count_lz4f_blocks(frame, flen) {
+    var sp = 7;
+    var count = 0;
+    while (sp + 4 <= flen) {
+        var bs = load8(frame + sp) | (load8(frame + sp + 1) << 8) |
+        (load8(frame + sp + 2) << 16) | (load8(frame + sp + 3) << 24);
+        if (bs == 0) { return count; }
+        sp = sp + 4 + (bs & 2147483647);
+        count = count + 1;
+    }
+    return count;
+}
+
+fn _verify_roundtrip(src, len, label) {
+    if (_rt_c == 0) { _rt_c = alloc(4096); _rt_d = alloc(4096); }
+    var c = _rt_c;
+    var d = _rt_d;
+    var clen = deflate_compress(src, len, c, 4096);
+    assert(clen > 0, label);
+    var dlen = deflate_decompress(c, clen, d, 4096);
+    assert(dlen == len, label);
+    var i = 0;
+    while (i < len) { assert(load8(d + i) == load8(src + i), label); i = i + 1; }
+    return clen;
+}
+
+# Warm up lazy globals shared across all encoder paths so the
+# subsequent fault-injection counters target only the per-call
+# allocs. Idempotent; safe to call multiple times.
+fn _alloc_fail_warmup() {
+    var dst = alloc(256);
+    var c = deflate_enc_init(6, dst, 256);
+    deflate_enc_finish(c);
+    c = zlib_enc_init(6, dst, 256);
+    zlib_enc_finish(c);
+    c = gzip_enc_init(6, dst, 256);
+    gzip_enc_finish(c);
+    c = lz4f_enc_init(dst, 256);
+    lz4f_enc_finish(c);
+    return 0;
+}
+
+# 2.3.7: lazy-global OOM sweep. `_sankoch_reset_tables()` zeroes every
+# lazy table pointer so the injected fault hits a first-call lazy-init
+# (not a per-call ctx alloc). For each fault offset the public API must
+# return a clean result — never crash, and never deadlock: a path that
+# OOMs without releasing the mutex would HANG the next iteration's lock,
+# so completing the sweep is itself the no-deadlock proof.
+fn _oom_compress_path(fmt, level, limit) {
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    var dst = alloc(2048);
+    var n = 0;
+    while (n < limit) {
+        _sankoch_reset_tables();
+        _sankoch_alloc_set_fail_at(n);
+        var r = compress_level(fmt, src, 256, dst, 2048, level);
+        _sankoch_alloc_set_fail_at(0 - 1);   # clear any unspent fault
+        # Valid length (>0) or clean negative error — never 0 for a
+        # 256-byte input (0 would be a silent mis-handled failure).
+        assert(r != 0, "oom compress sweep: clean result");
+        n = n + 1;
+    }
+    return 0;
+}
+
+# Common dict + input — input has heavy overlap with dict so the
+# dict-warmed encoder reaches into the dict via match references.
+fn _dict_test_dict() {
+    # 45 bytes of pangram text
+    var s = "the quick brown fox jumps over the lazy dog. ";
+    return s;
+}
+
+fn _dict_test_input() {
+    # 89 bytes — repeats most of the dict content
+    var s = "the quick brown fox jumps over the lazy dog. the quick brown fox went home tonight.";
+    return s;
+}
+
+# 2.3.3 — round-trip a frame at a configured block-max ID through both
+# the streaming decoder and the batch decoder. block_max_id ∈ {5,6,7}
+# exercises the decoder's grown block buffer (>64K). Returns 0.
+fn _lz4f_bm_rt(block_max_id, n) {
+    var src = alloc(n);
+    var k = 0;
+    while (k < n) {
+        store8(src + k, 65 + (k % 26));   # compressible repeating pattern
+        k = k + 1;
+    }
+    var c = alloc(n + 65536);
+    var ec = lz4f_enc_init_ex(c, n + 65536, block_max_id, 0);
+    assert(ec != 0, "bm rt enc init");
+    assert(lz4f_enc_write(ec, src, n) >= 0, "bm rt enc write");
+    var clen = lz4f_enc_finish(ec);
+    assert(clen > 0, "bm rt enc finish");
+
+    # Streaming decode.
+    var d = alloc(n);
+    var ctx = lz4f_dec_init(d, n);
+    assert(ctx != 0, "bm rt dec init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "bm rt dec write");
+    var sn = lz4f_dec_finish(ctx);
+    assert(sn == n, "bm rt stream len");
+    var i = 0;
+    while (i < n) {
+        assert(load8(d + i) == load8(src + i), "bm rt stream content");
+        i = i + 1;
+    }
+
+    # Batch decode.
+    var d2 = alloc(n);
+    var bn = lz4f_decompress(c, clen, d2, n);
+    assert(bn == n, "bm rt batch len");
+    i = 0;
+    while (i < n) {
+        assert(load8(d2 + i) == load8(src + i), "bm rt batch content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 2.3.3 — per-block checksum round-trip + corruption rejection. Encodes
+# with FLG bit 4 set; both decoders must validate the per-block xxHash32
+# and reject a flipped block-data byte. Returns 0.
+fn _lz4f_bc_rt(block_max_id, n) {
+    var src = alloc(n);
+    var k = 0;
+    while (k < n) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var cap = n + 65536;
+    var c = alloc(cap);
+    var ec = lz4f_enc_init_ex(c, cap, block_max_id, 1);   # block_checksum = 1
+    assert(ec != 0, "bc rt enc init");
+    assert(lz4f_enc_write(ec, src, n) >= 0, "bc rt enc write");
+    var clen = lz4f_enc_finish(ec);
+    assert(clen > 0, "bc rt enc finish");
+
+    # Streaming decode — block checksum validated before emit.
+    var d = alloc(n);
+    var ctx = lz4f_dec_init(d, n);
+    assert(ctx != 0, "bc rt dec init");
+    assert(lz4f_dec_write(ctx, c, clen) >= 0, "bc rt dec write");
+    var sn = lz4f_dec_finish(ctx);
+    assert(sn == n, "bc rt stream len");
+    var i = 0;
+    while (i < n) {
+        assert(load8(d + i) == load8(src + i), "bc rt stream content");
+        i = i + 1;
+    }
+
+    # Batch decode — per-block checksum validated.
+    var d2 = alloc(n);
+    var bn = lz4f_decompress(c, clen, d2, n);
+    assert(bn == n, "bc rt batch len");
+    i = 0;
+    while (i < n) {
+        assert(load8(d2 + i) == load8(src + i), "bc rt batch content");
+        i = i + 1;
+    }
+
+    # Corrupt a block-data byte (past the 7-byte header + 4-byte size).
+    # Both decoders must reject via per-block checksum mismatch.
+    store8(c + 15, load8(c + 15) ^ 1);
+    var d3 = alloc(n);
+    var ctx2 = lz4f_dec_init(d3, n);
+    assert(ctx2 != 0, "bc rt corrupt init");
+    var rc = lz4f_dec_write(ctx2, c, clen);
+    var fin = lz4f_dec_finish(ctx2);
+    assert(rc < 0 || fin < 0, "bc rt stream rejects corruption");
+    assert(lz4f_decompress(c, clen, d3, n) < 0, "bc rt batch rejects corruption");
+    return 0;
+}
+
+fn _bite6_compress_hello(format, dst, dst_cap): i64 {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    if (format == FORMAT_DEFLATE) { return deflate_compress(src, 5, dst, dst_cap); }
+    if (format == FORMAT_ZLIB)    { return zlib_compress(src, 5, dst, dst_cap); }
+    if (format == FORMAT_GZIP)    { return gzip_compress(src, 5, dst, dst_cap); }
+    if (format == FORMAT_LZ4F)    { return lz4f_compress(src, 5, dst, dst_cap); }
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}
+
+# Compress src[0..n) then decompress; assert byte-identical recovery.
+# Returns the compressed length.
+fn _xz_rt(src, n, label) {
+    var cap = n + 8192;
+    var comp = alloc(cap);
+    var clen = xz_compress(src, n, comp, cap);
+    assert(clen > 0, label);
+    var out = alloc(n + 16);
+    var dlen = xz_decompress(comp, clen, out, n + 16);
+    assert(dlen == n, label);
+    var i = 0;
+    while (i < n) {
+        assert(load8(out + i) == load8(src + i), label);
+        i = i + 1;
+    }
+    return clen;
+}

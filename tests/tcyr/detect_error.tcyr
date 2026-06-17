@@ -1,0 +1,476 @@
+# sankoch — Format detection + error paths + OOM / alloc-failure
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/detect_error.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_enc_error_paths() {
+    # Poisoned encoder: second enc_write after a dst-overflow error returns
+    # the same sticky error, finish releases the lock and returns it too.
+    # (Give a tiny dst that can't hold the output of a 20 KB input.)
+    var src = alloc(20000);
+    var j = 0;
+    while (j < 20000) { store8(src + j, 32 + (j * 13) % 95); j = j + 1; }
+
+    # Need enough for the frame header + bw_init bookkeeping; too small
+    # for the compressed body. 128 bytes is comfortably under 20 KB output.
+    var c = alloc(128);
+    var ctx = deflate_enc_init(1, c, 128);   # level 1 fixed to force expansion
+    assert(ctx != 0, "err_paths init");
+    var rc1 = deflate_enc_write(ctx, src, 20000);
+    assert(rc1 < 0, "err_paths first write overflows");
+    # Poisoned: next write returns same error without corrupting further state
+    var rc2 = deflate_enc_write(ctx, src, 100);
+    assert(rc2 < 0 && rc2 == rc1, "err_paths sticky error");
+    # Finish propagates the error and releases the mutex
+    var fin = deflate_enc_finish(ctx);
+    assert(fin < 0, "err_paths finish returns error");
+    # Another compress after error must still work (mutex was released)
+    var c2 = alloc(64);
+    var d = alloc(64);
+    var small[5];
+    store8(&small, 65); store8(&small + 1, 66); store8(&small + 2, 67);
+    store8(&small + 3, 68); store8(&small + 4, 69);
+    var clen = deflate_compress(&small, 5, c2, 64);
+    assert(clen > 0, "err_paths: can compress after error release");
+    return 0;
+}
+
+fn test_enc_zero_write() {
+    # stream_write / enc_write with len=0 must be a no-op and return 0.
+    var c = alloc(128);
+    var ctx = deflate_enc_init(6, c, 128);
+    assert(ctx != 0, "zero_write init");
+    var nothing = alloc(1);
+    assert(deflate_enc_write(ctx, nothing, 0) == 0, "enc_write 0 bytes");
+    # Write real data; finish; decompress.
+    var src = alloc(5);
+    store8(src, 72); store8(src + 1, 73); store8(src + 2, 73);
+    store8(src + 3, 74); store8(src + 4, 75);
+    assert(deflate_enc_write(ctx, src, 5) == 0, "zero_write real");
+    var clen = deflate_enc_finish(ctx);
+    var d = alloc(8);
+    assert(deflate_decompress(c, clen, d, 8) == 5, "zero_write rt");
+    return 0;
+}
+
+fn test_detect_gzip() {
+    var buf = alloc(2);
+    store8(buf, 31); store8(buf + 1, 139);
+    assert(detect_format(buf, 2) == FORMAT_GZIP, "detect gzip");
+    return 0;
+}
+
+fn test_detect_zlib() {
+    var buf = alloc(2);
+    store8(buf, 120); store8(buf + 1, 156);
+    assert(detect_format(buf, 2) == FORMAT_ZLIB, "detect zlib");
+    return 0;
+}
+
+fn test_detect_short_input() {
+    var buf = alloc(1);
+    store8(buf, 0);
+    assert(detect_format(buf, 1) < 0, "detect format rejects 1-byte input");
+    assert(detect_format(buf, 0) < 0, "detect format rejects 0-byte input");
+    return 0;
+}
+
+fn test_detect_unknown() {
+    var buf = alloc(2);
+    store8(buf, 0); store8(buf + 1, 0);
+    assert(detect_format(buf, 2) < 0, "detect format rejects unknown");
+    return 0;
+}
+
+fn test_format_detect_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var zc = alloc(128);
+    var gc = alloc(128);
+    var zlen = zlib_compress(src, 5, zc, 128);
+    var glen = gzip_compress(src, 5, gc, 128);
+    assert(detect_format(zc, zlen) == FORMAT_ZLIB, "detect zlib output");
+    assert(detect_format(gc, glen) == FORMAT_GZIP, "detect gzip output");
+    return 0;
+}
+
+fn test_err_negative_len() {
+    var buf = alloc(1);
+    assert(compress(FORMAT_LZ4, buf, 0 - 1, buf, 64) < 0, "negative src_len");
+    assert(decompress(FORMAT_LZ4, buf, 10, buf, 0 - 1) < 0, "negative dst_cap");
+    return 0;
+}
+
+fn test_err_unsupported_format() {
+    var buf = alloc(64);
+    assert(compress(99, buf, 10, buf, 64) < 0, "unsupported format compress");
+    assert(decompress(99, buf, 10, buf, 64) < 0, "unsupported format decompress");
+    return 0;
+}
+
+fn test_enc_dict_invalid_args() {
+    var dict = "abc";
+    var dst = alloc(64);
+    # dict_len > DEFLATE_WINDOW_SIZE (32768) — reject
+    assert(deflate_enc_init_dict(6, dst, 64, dict, 32769) == 0,
+    "deflate dict_len>32768 rejected");
+    assert(zlib_enc_init_dict(6, dst, 64, dict, 32769) == 0,
+    "zlib dict_len>32768 rejected");
+    assert(gzip_enc_init_dict(6, dst, 64, dict, 32769) == 0,
+    "gzip dict_len>32768 rejected");
+    # dict_len < 0 — reject
+    assert(deflate_enc_init_dict(6, dst, 64, dict, 0 - 1) == 0,
+    "deflate dict_len<0 rejected");
+    # dict == 0 with dict_len > 0 — reject
+    assert(deflate_enc_init_dict(6, dst, 64, 0, 5) == 0,
+    "deflate null dict + nonzero len rejected");
+    return 0;
+}
+
+fn test_enc_dict_zero_len_equals_no_dict() {
+    # dict_len == 0 should behave identically to the no-dict path.
+    # We can't byte-compare against a fresh _enc_init stream because
+    # the static-data encoder state is shared and timing-sensitive,
+    # but we can confirm round-trip via the no-dict decompressor.
+    var input = "hello world";
+    var input_len = strlen(input);
+
+    var dst = alloc(256);
+    var ctx = deflate_enc_init_dict(6, dst, 256, 0, 0);
+    assert(ctx != 0, "dict_len=0 ctx (deflate)");
+    deflate_enc_write(ctx, input, input_len);
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "dict_len=0 clen>0 (deflate)");
+
+    var out = alloc(64);
+    var dlen = deflate_decompress(dst, clen, out, 64);
+    assert(dlen == input_len, "dict_len=0 roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "dict_len=0 roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_oom_compress_sweep() {
+    # DEFLATE L6 is the deepest path: lz77 + huffman tables + len/dist
+    # lookups + dynamic workspace + hcl_ws + dh_ws. L1 hits the fixed
+    # path. GZIP adds the CRC-32 table; LZ4 the match hash table.
+    _oom_compress_path(FORMAT_DEFLATE, 6, 36);
+    _oom_compress_path(FORMAT_DEFLATE, 1, 20);
+    _oom_compress_path(FORMAT_GZIP, 6, 36);
+    _oom_compress_path(FORMAT_LZ4, 6, 8);
+    # Recovery: fresh tables, no fault → normal compress works + decodes.
+    _sankoch_reset_tables();
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    var dst = alloc(2048);
+    var clen = compress_level(FORMAT_GZIP, src, 256, dst, 2048, 6);
+    assert(clen > 0, "oom sweep recovers (compress)");
+    var out = alloc(256);
+    assert(gzip_decompress(dst, clen, out, 256) == 256, "oom sweep recovers (roundtrip)");
+    return 0;
+}
+
+fn test_oom_decompress_sweep() {
+    # Build valid streams (warm), then reset + sweep the fault across the
+    # decode lazy-init sites (huffman tables, _ddec workspace, fixed
+    # tables, br_init, CRC table for gzip).
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    var gz = alloc(2048);
+    var gzlen = compress_level(FORMAT_GZIP, src, 256, gz, 2048, 6);
+    assert(gzlen > 0, "oom dec sweep: build gzip");
+    var df = alloc(2048);
+    var dflen = compress_level(FORMAT_DEFLATE, src, 256, df, 2048, 6);
+    assert(dflen > 0, "oom dec sweep: build deflate");
+
+    var out = alloc(256);
+    var n = 0;
+    while (n < 30) {
+        _sankoch_reset_tables();
+        _sankoch_alloc_set_fail_at(n);
+        var r = decompress(FORMAT_GZIP, gz, gzlen, out, 256);
+        _sankoch_alloc_set_fail_at(0 - 1);
+        assert(r != 0, "oom gzip decompress sweep: clean result");
+        n = n + 1;
+    }
+    n = 0;
+    while (n < 30) {
+        _sankoch_reset_tables();
+        _sankoch_alloc_set_fail_at(n);
+        var r2 = decompress(FORMAT_DEFLATE, df, dflen, out, 256);
+        _sankoch_alloc_set_fail_at(0 - 1);
+        assert(r2 != 0, "oom deflate decompress sweep: clean result");
+        n = n + 1;
+    }
+    # Recovery.
+    _sankoch_reset_tables();
+    assert(decompress(FORMAT_GZIP, gz, gzlen, out, 256) == 256, "oom sweep recovers (decompress)");
+    return 0;
+}
+
+fn test_alloc_fail_deflate_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Fail at alloc #0 — the DENC_CTX_SIZE alloc inside deflate_enc_init_dict.
+    _sankoch_alloc_set_fail_at(0);
+    var ctx = deflate_enc_init(6, dst, 256);
+    assert(ctx == 0, "deflate enc_init returns 0 when ctx alloc fails");
+    # Lock must be released — a fresh init succeeds.
+    var ctx2 = deflate_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "deflate enc_init succeeds after prior alloc fail (lock released)");
+    deflate_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_deflate_window() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Fail at alloc #1 — the DENC_WINDOW_CAP alloc.
+    _sankoch_alloc_set_fail_at(1);
+    var ctx = deflate_enc_init(6, dst, 256);
+    assert(ctx == 0, "deflate enc_init returns 0 when window alloc fails");
+    var ctx2 = deflate_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "deflate enc_init succeeds after window-fail (lock released)");
+    deflate_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_deflate_bw() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Fail at alloc #2 — bw_init's internal alloc(40).
+    _sankoch_alloc_set_fail_at(2);
+    var ctx = deflate_enc_init(6, dst, 256);
+    assert(ctx == 0, "deflate enc_init returns 0 when bw_init alloc fails");
+    var ctx2 = deflate_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "deflate enc_init succeeds after bw-fail (lock released)");
+    deflate_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_zlib_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # zlib_enc_init's first alloc that's its own (not deflate_enc_init_dict's
+    # 3) is at offset 3 — the 32-byte zlib ctx. By this point deflate
+    # has already taken the lock and succeeded; zlib's own alloc fail
+    # must release the lock that deflate took.
+    _sankoch_alloc_set_fail_at(3);
+    var ctx = zlib_enc_init(6, dst, 256);
+    assert(ctx == 0, "zlib enc_init returns 0 when zlib ctx alloc fails");
+    var ctx2 = zlib_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "zlib enc_init succeeds after zlib-ctx-fail (lock released)");
+    zlib_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_zlib_adler() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Offset 4 — zlib's adler32_init (after deflate's 3 + zlib's ctx).
+    _sankoch_alloc_set_fail_at(4);
+    var ctx = zlib_enc_init(6, dst, 256);
+    assert(ctx == 0, "zlib enc_init returns 0 when adler32_init alloc fails");
+    var ctx2 = zlib_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "zlib enc_init succeeds after adler-fail (lock released)");
+    zlib_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_gzip_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Same offset structure as zlib — deflate's 3 first, then gzip's ctx at 3.
+    _sankoch_alloc_set_fail_at(3);
+    var ctx = gzip_enc_init(6, dst, 256);
+    assert(ctx == 0, "gzip enc_init returns 0 when gzip ctx alloc fails");
+    var ctx2 = gzip_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "gzip enc_init succeeds after gzip-ctx-fail (lock released)");
+    gzip_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_lz4f_ctx() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # lz4f_enc_init takes the lock itself and then allocs ctx, block_buf,
+    # xxhash32 state. Offset 0 = ctx.
+    _sankoch_alloc_set_fail_at(0);
+    var ctx = lz4f_enc_init(dst, 256);
+    assert(ctx == 0, "lz4f enc_init returns 0 when ctx alloc fails");
+    var ctx2 = lz4f_enc_init(dst, 256);
+    assert(ctx2 != 0, "lz4f enc_init succeeds after ctx-fail (lock released)");
+    lz4f_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_lz4f_block_buf() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Offset 1 — the LZ4F_BLOCK_MAX (64KB) block buffer alloc.
+    _sankoch_alloc_set_fail_at(1);
+    var ctx = lz4f_enc_init(dst, 256);
+    assert(ctx == 0, "lz4f enc_init returns 0 when block_buf alloc fails");
+    var ctx2 = lz4f_enc_init(dst, 256);
+    assert(ctx2 != 0, "lz4f enc_init succeeds after block_buf-fail (lock released)");
+    lz4f_enc_finish(ctx2);
+    return 0;
+}
+
+# 2.2.3 P(-1) closeout — coverage gaps surfaced by audit.
+fn test_alloc_fail_lz4f_xxh32() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Offset 2 — xxhash32_init (after ctx + block_buf in lz4f_enc_init).
+    _sankoch_alloc_set_fail_at(2);
+    var ctx = lz4f_enc_init(dst, 256);
+    assert(ctx == 0, "lz4f enc_init returns 0 when xxhash32_init alloc fails");
+    var ctx2 = lz4f_enc_init(dst, 256);
+    assert(ctx2 != 0, "lz4f enc_init succeeds after xxh-fail (lock released)");
+    lz4f_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_alloc_fail_gzip_crc32() {
+    _alloc_fail_warmup();
+    var dst = alloc(256);
+    # Offset 4 — crc32_init alloc (after deflate's 3 + gzip ctx at 3).
+    _sankoch_alloc_set_fail_at(4);
+    var ctx = gzip_enc_init(6, dst, 256);
+    assert(ctx == 0, "gzip enc_init returns 0 when crc32_init alloc fails");
+    var ctx2 = gzip_enc_init(6, dst, 256);
+    assert(ctx2 != 0, "gzip enc_init succeeds after crc-fail (lock released)");
+    gzip_enc_finish(ctx2);
+    return 0;
+}
+
+fn test_enc_dict_max_len_32768() {
+    # Largest legal dict — exactly DEFLATE_WINDOW_SIZE. Hash-seed loop
+    # runs from j=0 to j=32765 (32,766 inserts). Round-trip must work.
+    #
+    # `dst_cap` for the decompress side has to be >= dict_len because
+    # `_deflate_decompress_dict_inner` stages the dict prefix into
+    # dst[0..dict_len] before decoding the payload (then moves output
+    # back to dst[0..]). 65 KB covers the 32 KB dict prefix + the
+    # short payload.
+    var dict = alloc(32768);
+    var i = 0;
+    while (i < 32768) { store8(dict + i, (i * 7 + 11) & 255); i = i + 1; }
+
+    var input = "PAYLOAD-AT-MAX-DICT-BOUNDARY";
+    var input_len = strlen(input);
+
+    var dst = alloc(65536);
+    var ctx = deflate_enc_init_dict(6, dst, 65536, dict, 32768);
+    assert(ctx != 0, "deflate dict_len=32768 ctx");
+    deflate_enc_write(ctx, input, input_len);
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "deflate dict_len=32768 clen>0");
+
+    var out = alloc(65536);
+    var dlen = deflate_decompress_dict(dst, clen, out, 65536, dict, 32768);
+    assert(dlen == input_len, "deflate dict_len=32768 roundtrip len");
+    i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "deflate dict_len=32768 roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_enc_dict_min_match_len_3() {
+    # Exactly LZ77_MIN_MATCH — hash-seed loop runs once (j=0).
+    var dict = "abc";
+    var input = "abcdefgh";
+    var input_len = strlen(input);
+
+    var dst = alloc(256);
+    var ctx = deflate_enc_init_dict(6, dst, 256, dict, 3);
+    assert(ctx != 0, "deflate dict_len=3 ctx");
+    deflate_enc_write(ctx, input, input_len);
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "deflate dict_len=3 clen>0");
+
+    var out = alloc(64);
+    var dlen = deflate_decompress_dict(dst, clen, out, 64, dict, 3);
+    assert(dlen == input_len, "deflate dict_len=3 roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "deflate dict_len=3 roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_enc_dict_below_min_match_len_2() {
+    # Below LZ77_MIN_MATCH — hash-seed loop never runs. Dict bytes
+    # still copied to the window (decoder needs them prefixed for
+    # consistent abs-position semantics) but no matches reach into
+    # dict territory. Round-trip must still work.
+    var dict = "ab";
+    var input = "abcdefgh";
+    var input_len = strlen(input);
+
+    var dst = alloc(256);
+    var ctx = deflate_enc_init_dict(6, dst, 256, dict, 2);
+    assert(ctx != 0, "deflate dict_len=2 ctx");
+    deflate_enc_write(ctx, input, input_len);
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "deflate dict_len=2 clen>0");
+
+    var out = alloc(64);
+    var dlen = deflate_decompress_dict(dst, clen, out, 64, dict, 2);
+    assert(dlen == input_len, "deflate dict_len=2 roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "deflate dict_len=2 roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_enc_error_paths();
+    test_enc_zero_write();
+    test_detect_gzip();
+    test_detect_zlib();
+    test_detect_short_input();
+    test_detect_unknown();
+    test_format_detect_roundtrip();
+    test_err_negative_len();
+    test_err_unsupported_format();
+    test_enc_dict_invalid_args();
+    test_enc_dict_zero_len_equals_no_dict();
+    test_oom_compress_sweep();
+    test_oom_decompress_sweep();
+    test_alloc_fail_deflate_ctx();
+    test_alloc_fail_deflate_window();
+    test_alloc_fail_deflate_bw();
+    test_alloc_fail_zlib_ctx();
+    test_alloc_fail_zlib_adler();
+    test_alloc_fail_gzip_ctx();
+    test_alloc_fail_lz4f_ctx();
+    test_alloc_fail_lz4f_block_buf();
+    test_alloc_fail_lz4f_xxh32();
+    test_alloc_fail_gzip_crc32();
+    test_enc_dict_max_len_32768();
+    test_enc_dict_min_match_len_3();
+    test_enc_dict_below_min_match_len_2();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

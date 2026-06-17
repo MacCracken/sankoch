@@ -1,0 +1,132 @@
+# sankoch — xz / LZMA — compress (optimal-parse encode, round-trip)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/xz_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_xz_encode_empty() {
+    var src = alloc(1);
+    var clen = _xz_rt(src, 0, "xz_encode empty");
+    assert(clen > 0, "xz_encode empty produces a stream");
+    return 0;
+}
+
+fn test_xz_encode_small() {
+    var src = alloc(64);
+    var s = "Hello, xz encoder! Hello, xz encoder!";   # 37 bytes, repetitive
+    var i = 0;
+    while (i < 37) { store8(src + i, load8(s + i)); i = i + 1; }
+    var clen = _xz_rt(src, 37, "xz_encode small");
+    assert(clen < 37 + 80, "xz_encode small bounded");
+    return 0;
+}
+
+fn test_xz_encode_allsame() {
+    var n = 4000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 65); i = i + 1; }   # all 'A'
+    var clen = _xz_rt(src, n, "xz_encode allsame");
+    # Highly compressible → must shrink dramatically (rep matches).
+    assert(clen < 200, "xz_encode allsame ratio");
+    return 0;
+}
+
+fn test_xz_encode_periodic() {
+    var n = 6000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 97 + (i % 7)); i = i + 1; }   # period 7
+    var clen = _xz_rt(src, n, "xz_encode periodic");
+    assert(clen < n / 4, "xz_encode periodic compresses");
+    return 0;
+}
+
+fn test_xz_encode_text() {
+    var n = 5000;
+    var src = alloc(n);
+    var w = "the quick brown fox jumps over the lazy dog ";   # 44 bytes
+    var i = 0;
+    while (i < n) { store8(src + i, load8(w + (i % 44))); i = i + 1; }
+    var clen = _xz_rt(src, n, "xz_encode text");
+    assert(clen < n / 2, "xz_encode text compresses");
+    return 0;
+}
+
+fn test_xz_encode_pseudorandom() {
+    var n = 3000;
+    var src = alloc(n);
+    var st = 2463534242;
+    var i = 0;
+    while (i < n) {
+        st = st ^ (st << 13);
+        st = st ^ ((st >> 7) & 0x1FFFFFFFFFFFFFF);
+        st = st ^ (st << 17);
+        store8(src + i, st & 255);
+        i = i + 1;
+    }
+    # Incompressible: just assert round-trip (ratio not guaranteed).
+    _xz_rt(src, n, "xz_encode pseudorandom");
+    return 0;
+}
+
+fn test_xz_encode_large() {
+    # ~90 KB → spans many DP windows; mixed structure.
+    var n = 90000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var v = (i % 251);
+        if ((i % 5) == 0) { v = 88; }   # inject repetition
+        store8(src + i, v & 255);
+        i = i + 1;
+    }
+    var clen = _xz_rt(src, n, "xz_encode large");
+    assert(clen < n, "xz_encode large compresses");
+    return 0;
+}
+
+fn test_xz_encode_public_api() {
+    var n = 2000;
+    var src = alloc(n);
+    var w = "AGNOS sankoch xz public api round trip ";   # 39 bytes
+    var i = 0;
+    while (i < n) { store8(src + i, load8(w + (i % 39))); i = i + 1; }
+
+    var cap = n + 8192;
+    var comp = alloc(cap);
+    var clen = compress(FORMAT_XZ, src, n, comp, cap);
+    assert(clen > 0, "xz public compress");
+    # detect_format must recognize the .xz magic we emitted.
+    assert(detect_format(comp, clen) == FORMAT_XZ, "xz public detect");
+    var out = alloc(n + 16);
+    var dlen = decompress(FORMAT_XZ, comp, clen, out, n + 16);
+    assert(dlen == n, "xz public decompress len");
+    i = 0;
+    while (i < n) {
+        assert(load8(out + i) == load8(src + i), "xz public byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_xz_encode_empty();
+    test_xz_encode_small();
+    test_xz_encode_allsame();
+    test_xz_encode_periodic();
+    test_xz_encode_text();
+    test_xz_encode_pseudorandom();
+    test_xz_encode_large();
+    test_xz_encode_public_api();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -40,9 +40,9 @@ Project predates `cyrius init` / `cyrius port` — it was originally hand-scaffo
 ```bash
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check (library — emitted binary is trivial)
-cyrius test tests/tcyr/sankoch.tcyr      # main test suite
-cyrius test tests/tcyr/git_object.tcyr   # git-object regression suite
-cyrius fuzz                              # all 12 harness functions
+cyrius test                              # all tcyr suites (auto-discovered)
+cyrius test tests/tcyr/xz_compress.tcyr  # one split suite (codec × direction)
+cyrius fuzz                              # all fuzz harness functions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + SIZE lines
 cyrius distlib                           # → dist/sankoch.cyr (full)
 cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe LZ4 decompress)
@@ -71,7 +71,7 @@ src/
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
 programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules
-tests/tcyr/        — test suites (sankoch.tcyr, git_object.tcyr)
+tests/tcyr/        — test suites: 15 codec×direction files + _harness.tcyr (shared) + git_object.tcyr
 tests/bcyr/        — benchmarks (sankoch.bcyr)
 fuzz/              — fuzz harnesses (lz4, deflate — both wired into CI)
 dist/
@@ -141,7 +141,7 @@ Run before opening any minor; closes any debt the previous minor accreted. See t
 
 1. Work phase — implement algorithm, add tests/benchmarks.
 2. Build: `cyrius build src/lib.cyr build/sankoch`.
-3. Test: `cyrius test tests/tcyr/sankoch.tcyr` — 0 failures.
+3. Test: `cyrius test` (all suites) — 0 failures.
 4. Benchmark: throughput (MB/s) and ratio for changes in the hot path.
 5. Audit: verify against spec (RFC 1951, LZ4 block format, etc.).
 6. Documentation — CHANGELOG, roadmap, state.md.

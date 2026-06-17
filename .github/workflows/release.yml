@@ -78,9 +78,13 @@ jobs:
           echo "sankoch-aarch64: $(wc -c < build/sankoch-aarch64) bytes"
 
       - name: Test
+        # Auto-discover every suite; skip `_`-prefixed shared includes.
         run: |
-          cyrius test tests/tcyr/sankoch.tcyr
-          cyrius test tests/tcyr/git_object.tcyr
+          for f in tests/tcyr/*.tcyr; do
+            case "$f" in tests/tcyr/_*) continue;; esac
+            echo "=== $f ==="
+            cyrius test "$f"
+          done
 
       - name: Fuzz
         run: |

@@ -1,0 +1,275 @@
+# sankoch — Streaming dispatch (format-agnostic compress / incremental decompress)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/stream.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_stream_mode_mismatch() {
+    # Calling stream_compress_finish on a decompress ctx (or vice versa)
+    # must return -ERR_INVALID_INPUT, not crash.
+    var c = alloc(64);
+    var dctx = stream_decompress_init(FORMAT_GZIP);
+    assert(stream_compress_finish(dctx) == 0 - ERR_INVALID_INPUT, "compress_finish on dec ctx");
+
+    var cctx = stream_compress_init(FORMAT_GZIP, 6, c, 64);
+    var d = alloc(64);
+    assert(stream_decompress_finish(cctx, d, 64) == 0 - ERR_INVALID_INPUT, "decompress_finish on enc ctx");
+    # Still need to finish the enc ctx to release its mutex.
+    stream_compress_finish(cctx);
+    return 0;
+}
+
+fn test_stream_format_dispatch() {
+    # stream_compress_init must dispatch correctly for every supported
+    # format. Round-trip 12 bytes via each format's streaming path.
+    var src = alloc(12);
+    var i = 0;
+    while (i < 12) { store8(src + i, 65 + i); i = i + 1; }
+    var c = alloc(256);
+    var d = alloc(64);
+
+    # DEFLATE
+    var ctx = stream_compress_init(FORMAT_DEFLATE, 6, c, 256);
+    assert(ctx != 0, "stream dispatch DEFLATE");
+    stream_write(ctx, src, 12);
+    var clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream DEFLATE finish");
+    assert(deflate_decompress(c, clen, d, 64) == 12, "stream DEFLATE rt");
+
+    # ZLIB
+    ctx = stream_compress_init(FORMAT_ZLIB, 6, c, 256);
+    assert(ctx != 0, "stream dispatch ZLIB");
+    stream_write(ctx, src, 12);
+    clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream ZLIB finish");
+    assert(zlib_decompress(c, clen, d, 64) == 12, "stream ZLIB rt");
+
+    # GZIP
+    ctx = stream_compress_init(FORMAT_GZIP, 6, c, 256);
+    assert(ctx != 0, "stream dispatch GZIP");
+    stream_write(ctx, src, 12);
+    clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream GZIP finish");
+    assert(gzip_decompress(c, clen, d, 64) == 12, "stream GZIP rt");
+
+    # LZ4F
+    ctx = stream_compress_init(FORMAT_LZ4F, 6, c, 256);
+    assert(ctx != 0, "stream dispatch LZ4F");
+    stream_write(ctx, src, 12);
+    clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream LZ4F finish");
+    assert(lz4f_decompress(c, clen, d, 64) == 12, "stream LZ4F rt");
+
+    # FORMAT_LZ4 (raw block) — unsupported for streaming
+    assert(stream_compress_init(FORMAT_LZ4, 6, c, 256) == 0, "stream LZ4 raw unsupported");
+    return 0;
+}
+
+fn test_stream_compress() {
+    # "Hello, world" (12 bytes) split across two stream_write calls,
+    # now using the incremental encoder dispatch via stream.cyr.
+    var out = alloc(128);
+    var ctx = stream_compress_init(FORMAT_ZLIB, 6, out, 128);
+    var c1 = alloc(5);
+    store8(c1 + 0, 72); store8(c1 + 1, 101); store8(c1 + 2, 108);
+    store8(c1 + 3, 108); store8(c1 + 4, 111);
+    var c2 = alloc(7);
+    store8(c2 + 0, 44); store8(c2 + 1, 32); store8(c2 + 2, 119);
+    store8(c2 + 3, 111); store8(c2 + 4, 114); store8(c2 + 5, 108); store8(c2 + 6, 100);
+    stream_write(ctx, c1, 5);
+    stream_write(ctx, c2, 7);
+    var clen = stream_compress_finish(ctx);
+    assert(clen > 0, "stream compress finish");
+    var d = alloc(64);
+    assert(decompress(FORMAT_ZLIB, out, clen, d, 64) == 12, "stream compress rt");
+    assert(load8(d) == 72 && load8(d + 11) == 100, "stream compress content");
+    return 0;
+}
+
+fn test_stream_decompress() {
+    var src = alloc(12);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111); store8(src + 5, 44);
+    store8(src + 6, 32); store8(src + 7, 119); store8(src + 8, 111);
+    store8(src + 9, 114); store8(src + 10, 108); store8(src + 11, 100);
+    var c = alloc(128);
+    var clen = gzip_compress(src, 12, c, 128);
+    var ctx = stream_decompress_init(FORMAT_GZIP);
+    var half = clen / 2;
+    stream_write(ctx, c, half);
+    stream_write(ctx, c + half, clen - half);
+    var d = alloc(64);
+    assert(stream_decompress_finish(ctx, d, 64) == 12, "stream decompress rt");
+    assert(load8(d) == 72 && load8(d + 11) == 100, "stream decompress content");
+    return 0;
+}
+
+fn test_stream_reset() {
+    # stream_reset is meaningful only on decompress contexts now
+    # (compressors can't be rewound — output has already been emitted).
+    # Verify reset empties the decompress input buffer.
+    var src = alloc(8);
+    var i = 0;
+    while (i < 8) { store8(src + i, i + 65); i = i + 1; }
+    var c = alloc(64);
+    var clen = gzip_compress(src, 8, c, 64);
+
+    var ctx = stream_decompress_init(FORMAT_GZIP);
+    stream_write(ctx, c, clen);
+    assert(stream_buffered(ctx) == clen, "dec buffered before reset");
+    stream_reset(ctx);
+    assert(stream_buffered(ctx) == 0, "dec buffered after reset");
+
+    # After reset, we can reuse the context for a fresh stream.
+    stream_write(ctx, c, clen);
+    var d = alloc(64);
+    assert(stream_decompress_finish(ctx, d, 64) == 8, "dec rt after reset");
+    return 0;
+}
+
+fn test_stream_dec_inc_deflate() {
+    var c = alloc(64);
+    var clen = _bite6_compress_hello(FORMAT_DEFLATE, c, 64);
+    assert(clen > 0, "sdi deflate compress");
+
+    var d = alloc(16);
+    var ctx = stream_decompress_init_inc(FORMAT_DEFLATE, d, 16);
+    assert(ctx != 0, "sdi deflate init");
+    assert(stream_write(ctx, c, clen) >= 0, "sdi deflate write");
+    var n = stream_decompress_finish_inc(ctx);
+    assert(n == 5, "sdi deflate len");
+    assert(load8(d + 0) == 72 && load8(d + 4) == 111, "sdi deflate content");
+    return 0;
+}
+
+fn test_stream_dec_inc_zlib() {
+    var c = alloc(64);
+    var clen = _bite6_compress_hello(FORMAT_ZLIB, c, 64);
+    assert(clen > 0, "sdi zlib compress");
+
+    var d = alloc(16);
+    var ctx = stream_decompress_init_inc(FORMAT_ZLIB, d, 16);
+    assert(ctx != 0, "sdi zlib init");
+    assert(stream_write(ctx, c, clen) >= 0, "sdi zlib write");
+    var n = stream_decompress_finish_inc(ctx);
+    assert(n == 5, "sdi zlib len");
+    return 0;
+}
+
+fn test_stream_dec_inc_gzip() {
+    var c = alloc(64);
+    var clen = _bite6_compress_hello(FORMAT_GZIP, c, 64);
+    assert(clen > 0, "sdi gzip compress");
+
+    var d = alloc(16);
+    var ctx = stream_decompress_init_inc(FORMAT_GZIP, d, 16);
+    assert(ctx != 0, "sdi gzip init");
+    assert(stream_write(ctx, c, clen) >= 0, "sdi gzip write");
+    var n = stream_decompress_finish_inc(ctx);
+    assert(n == 5, "sdi gzip len");
+    return 0;
+}
+
+fn test_stream_dec_inc_lz4f() {
+    var c = alloc(64);
+    var clen = _bite6_compress_hello(FORMAT_LZ4F, c, 64);
+    assert(clen > 0, "sdi lz4f compress");
+
+    var d = alloc(16);
+    var ctx = stream_decompress_init_inc(FORMAT_LZ4F, d, 16);
+    assert(ctx != 0, "sdi lz4f init");
+    assert(stream_write(ctx, c, clen) >= 0, "sdi lz4f write");
+    var n = stream_decompress_finish_inc(ctx);
+    assert(n == 5, "sdi lz4f len");
+    return 0;
+}
+
+fn test_stream_dec_inc_byte_at_a_time() {
+    # 20-byte gzip stream fed one byte per stream_write call to drive
+    # the inner gzip_dec_* state machine across every transition.
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = gzip_compress(src, 20, c, 64);
+    assert(clen > 0, "sdi BAAT compress");
+
+    var d = alloc(32);
+    var ctx = stream_decompress_init_inc(FORMAT_GZIP, d, 32);
+    assert(ctx != 0, "sdi BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(stream_write(ctx, c + i, 1) >= 0, "sdi BAAT write");
+        i = i + 1;
+    }
+    var n = stream_decompress_finish_inc(ctx);
+    assert(n == 20, "sdi BAAT len");
+    i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "sdi BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_stream_dec_inc_raw_lz4_rejected() {
+    # FORMAT_LZ4 (raw block) has no streaming decoder; init must
+    # return 0 instead of trying to route to one.
+    var d = alloc(16);
+    var ctx = stream_decompress_init_inc(FORMAT_LZ4, d, 16);
+    assert(ctx == 0, "sdi LZ4 raw rejected");
+    return 0;
+}
+
+fn test_stream_dec_inc_mode_mismatch() {
+    # Finish-function dispatch must reject ctxs in the wrong mode.
+    # 1. Legacy finish on an INC ctx → error.
+    var d = alloc(16);
+    var ictx = stream_decompress_init_inc(FORMAT_GZIP, d, 16);
+    assert(ictx != 0, "mode mismatch INC init");
+    assert(stream_decompress_finish(ictx, d, 16) == 0 - ERR_INVALID_INPUT,
+    "legacy finish on INC ctx");
+    # Drain the inner so the lock is released cleanly.
+    stream_decompress_finish_inc(ictx);
+
+    # 2. INC finish on a legacy ctx → error.
+    var lctx = stream_decompress_init(FORMAT_GZIP);
+    assert(stream_decompress_finish_inc(lctx) == 0 - ERR_INVALID_INPUT,
+    "INC finish on legacy ctx");
+
+    # 3. INC finish on a compress ctx → error.
+    var c = alloc(64);
+    var cctx = stream_compress_init(FORMAT_GZIP, 6, c, 64);
+    assert(stream_decompress_finish_inc(cctx) == 0 - ERR_INVALID_INPUT,
+    "INC finish on compress ctx");
+    stream_compress_finish(cctx);
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_stream_mode_mismatch();
+    test_stream_format_dispatch();
+    test_stream_compress();
+    test_stream_decompress();
+    test_stream_reset();
+    test_stream_dec_inc_deflate();
+    test_stream_dec_inc_zlib();
+    test_stream_dec_inc_gzip();
+    test_stream_dec_inc_lz4f();
+    test_stream_dec_inc_byte_at_a_time();
+    test_stream_dec_inc_raw_lz4_rejected();
+    test_stream_dec_inc_mode_mismatch();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

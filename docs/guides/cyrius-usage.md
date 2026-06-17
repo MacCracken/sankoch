@@ -33,12 +33,19 @@ compile errors across the full include chain before running tests.
 ### Test
 
 ```bash
-cyrius test tests/tcyr/sankoch.tcyr      # main test suite
+cyrius test                              # all tcyr suites (auto-discovered)
+cyrius test tests/tcyr/xz_compress.tcyr  # a single split suite
 cyrius test tests/tcyr/git_object.tcyr   # git-object regressions (grew with 2.0.2 / 2.0.3 cl-tree fixtures)
 ```
 
-Both tcyr files include `src/lib.cyr` (full chain) + `lib/assert.cyr`.
-No manual stdlib imports — `src/lib.cyr` owns that.
+The suite is split by **codec × direction** (2.4.1 post-ship): 15 files
+under `tests/tcyr/` (e.g. `deflate_compress.tcyr`, `xz_decompress.tcyr`)
+plus `git_object.tcyr`. Each suite `include "tests/tcyr/_harness.tcyr"` —
+the shared harness owns the `src/lib.cyr` (full chain) + `lib/assert.cyr`
+includes, the 4 MB heap setup (`_test_init`), and the cross-cutting
+helpers; it has no `main()`, so it is never run directly (the CI Test
+loop skips `_`-prefixed files). Suites carry no manual stdlib imports.
+Bare `cyrius test` auto-discovers and runs every suite.
 
 Current test-function and assertion totals live in
 [`../development/state.md`](../development/state.md) — refreshed every

@@ -1,0 +1,416 @@
+# sankoch — gzip — decompress (errors, concat, streaming decode)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/gzip_decompress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_gzip_corrupt_crc() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var clen = gzip_compress(src, 5, c, 128);
+    store8(c + clen - 5, load8(c + clen - 5) ^ 1);
+    var d = alloc(64);
+    assert(gzip_decompress(c, clen, d, 64) < 0, "gzip corrupt CRC should fail");
+    return 0;
+}
+
+fn test_gzip_truncated() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var clen = gzip_compress(src, 5, c, 128);
+    var d = alloc(64);
+    assert(gzip_decompress(c, 10, d, 64) < 0, "gzip truncated should fail");
+    return 0;
+}
+
+fn test_gzip_concat() {
+    # Compress two separate payloads, concatenate, decompress as one stream
+    var s1 = alloc(5);
+    store8(s1+0,72); store8(s1+1,101); store8(s1+2,108);
+    store8(s1+3,108); store8(s1+4,111);
+    var s2 = alloc(5);
+    store8(s2+0,87); store8(s2+1,111); store8(s2+2,114);
+    store8(s2+3,108); store8(s2+4,100);
+    var c1 = alloc(128);
+    var c2 = alloc(128);
+    var clen1 = gzip_compress(s1, 5, c1, 128);
+    var clen2 = gzip_compress(s2, 5, c2, 128);
+    assert(clen1 > 0 && clen2 > 0, "gzip concat compress");
+    # Concatenate into one buffer
+    var cat = alloc(256);
+    var i = 0;
+    while (i < clen1) { store8(cat + i, load8(c1 + i)); i = i + 1; }
+    i = 0;
+    while (i < clen2) { store8(cat + clen1 + i, load8(c2 + i)); i = i + 1; }
+    var d = alloc(64);
+    var dlen = gzip_decompress(cat, clen1 + clen2, d, 64);
+    assert(dlen == 10, "gzip concat total size");
+    assert(load8(d) == 72 && load8(d + 4) == 111, "gzip concat part 1");
+    assert(load8(d + 5) == 87 && load8(d + 9) == 100, "gzip concat part 2");
+    return 0;
+}
+
+fn test_err_gzip_bad_magic() {
+    var src = alloc(18);
+    store8(src, 0); store8(src + 1, 0);
+    var dst = alloc(64);
+    assert(gzip_decompress(src, 18, dst, 64) < 0, "gzip bad magic");
+    return 0;
+}
+
+# LOW-2: gzip header with a reserved FLG bit set (bits 5-7 must be
+# zero per RFC 1952 §2.3.1.2).
+fn test_err_gzip_reserved_flg() {
+    var src = alloc(18);
+    store8(src + 0, 31);    # ID1 0x1F
+    store8(src + 1, 139);   # ID2 0x8B
+    store8(src + 2, 8);     # CM = 8 (deflate)
+    store8(src + 3, 32);    # FLG = 0x20 — reserved bit 5 set
+    var i = 4;
+    while (i < 18) { store8(src + i, 0); i = i + 1; }
+    var dst = alloc(64);
+    assert(gzip_decompress(src, 18, dst, 64) < 0,
+    "gzip reserved FLG bit set must reject");
+    return 0;
+}
+
+fn test_gdec_short_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 5, c, 64, 6);
+    assert(clen > 0, "gdec short compress");
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "gdec short init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    assert(rc >= 0, "gdec short write");
+    var n = gzip_dec_finish(ctx);
+    assert(n == 5, "gdec short len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "gdec short content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_byte_at_a_time() {
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 20, c, 64, 6);
+    assert(clen > 0, "gdec BAAT compress");
+
+    var d = alloc(32);
+    var ctx = gzip_dec_init(d, 32);
+    assert(ctx != 0, "gdec BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(gzip_dec_write(ctx, c + i, 1) >= 0, "gdec BAAT write");
+        i = i + 1;
+    }
+    var n = gzip_dec_finish(ctx);
+    assert(n == 20, "gdec BAAT len");
+    i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "gdec BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_1kb_chunked() {
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = gzip_compress_level(src, 1024, c, 2048, 6);
+    assert(clen > 0, "gdec 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = gzip_dec_init(d, 1024);
+    assert(ctx != 0, "gdec 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 16;
+        if (off + step > clen) { step = clen - off; }
+        assert(gzip_dec_write(ctx, c + off, step) >= 0, "gdec 1kb chunk");
+        off = off + step;
+    }
+    var n = gzip_dec_finish(ctx);
+    assert(n == 1024, "gdec 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "gdec 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_bad_magic() {
+    var src = alloc(2);
+    store8(src + 0, 30);   # not 0x1F
+    store8(src + 1, 139);
+    var dst = alloc(8);
+    var ctx = gzip_dec_init(dst, 8);
+    assert(ctx != 0, "bad magic init");
+    var rc = gzip_dec_write(ctx, src, 2);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad magic rejected");
+    return 0;
+}
+
+fn test_gdec_reserved_flg() {
+    # LOW-02 (2.1.3): FLG reserved bits 5-7 must be zero.
+    var src = alloc(4);
+    store8(src + 0, 31); store8(src + 1, 139); store8(src + 2, 8);
+    store8(src + 3, 32);  # FLG = 0x20 — reserved bit 5 set
+    var dst = alloc(8);
+    var ctx = gzip_dec_init(dst, 8);
+    assert(ctx != 0, "reserved FLG init");
+    var rc = gzip_dec_write(ctx, src, 4);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "gdec reserved FLG rejected");
+    return 0;
+}
+
+fn test_gdec_bad_crc_trailer() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 5, c, 64, 6);
+    assert(clen > 8, "bad CRC compress");
+    # Trailer is the last 8 bytes; corrupt the CRC-32 (bytes [clen-8..clen-4]).
+    store8(c + clen - 8, load8(c + clen - 8) ^ 1);
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "bad CRC init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad CRC rejected");
+    return 0;
+}
+
+fn test_gdec_bad_isize() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = gzip_compress_level(src, 5, c, 64, 6);
+    assert(clen > 8, "bad ISIZE compress");
+    # ISIZE is bytes [clen-4..clen]; corrupt one of them.
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "bad ISIZE init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad ISIZE rejected");
+    return 0;
+}
+
+fn test_gdec_fname_field() {
+    # Hand-craft a gzip stream with FNAME set: header byte 3 = FLG=8
+    # (FNAME bit), then "myfile\0" before the deflate payload. Splice
+    # against a normal gzip_compress payload for the deflate + trailer.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var base = alloc(64);
+    var baselen = gzip_compress_level(src, 5, base, 64, 6);
+    assert(baselen > 18, "fname base compress");
+
+    # Build modified stream: copy 10-byte header (with FLG=8), insert
+    # "name\0" (5 bytes), then copy the deflate + trailer from baselen-8 onward.
+    var c = alloc(96);
+    var i = 0;
+    while (i < 10) { store8(c + i, load8(base + i)); i = i + 1; }
+    store8(c + 3, 8);                              # FLG = FNAME
+    store8(c + 10, 110); store8(c + 11, 97); store8(c + 12, 109);
+    store8(c + 13, 101); store8(c + 14, 0);        # "name\0"
+    var deflate_off = 10;
+    var deflate_len = baselen - 10;
+    var j = 0;
+    while (j < deflate_len) {
+        store8(c + 15 + j, load8(base + deflate_off + j));
+        j = j + 1;
+    }
+    var clen = 15 + deflate_len;
+
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "fname decode init");
+    var rc = gzip_dec_write(ctx, c, clen);
+    assert(rc >= 0, "fname decode write");
+    var n = gzip_dec_finish(ctx);
+    assert(n == 5, "fname decode len");
+    i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "fname decode content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_gdec_fhcrc_field() {
+    # 2.3.5: gzip stream with FHCRC set (FLG=2). FHCRC = low 16 bits of
+    # crc32 over the 10-byte header (RFC 1952 — not CRC-16-IBM). Splice
+    # the deflate + trailer from a gzip_compress base. Both batch and
+    # streaming must validate it, and reject a corrupted FHCRC byte.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var base = alloc(64);
+    var baselen = gzip_compress_level(src, 5, base, 64, 6);
+    assert(baselen > 18, "fhcrc base compress");
+
+    var c = alloc(96);
+    var i = 0;
+    while (i < 10) { store8(c + i, load8(base + i)); i = i + 1; }
+    store8(c + 3, 2);                      # FLG = FHCRC
+    crc32_init_table();
+    var hc = crc32(c, 10) & 65535;
+    store8(c + 10, hc & 255);
+    store8(c + 11, (hc >> 8) & 255);
+    var deflate_len = baselen - 10;
+    var j = 0;
+    while (j < deflate_len) {
+        store8(c + 12 + j, load8(base + 10 + j));
+        j = j + 1;
+    }
+    var clen = 12 + deflate_len;
+
+    # Batch decode.
+    var db = alloc(16);
+    assert(gzip_decompress(c, clen, db, 16) == 5, "fhcrc batch len");
+    i = 0;
+    while (i < 5) { assert(load8(db + i) == load8(src + i), "fhcrc batch content"); i = i + 1; }
+
+    # Streaming decode.
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "fhcrc decode init");
+    assert(gzip_dec_write(ctx, c, clen) >= 0, "fhcrc decode write");
+    assert(gzip_dec_finish(ctx) == 5, "fhcrc decode len");
+    i = 0;
+    while (i < 5) { assert(load8(d + i) == load8(src + i), "fhcrc decode content"); i = i + 1; }
+
+    # Corrupt the FHCRC low byte — both paths must reject.
+    store8(c + 10, load8(c + 10) ^ 1);
+    var db2 = alloc(16);
+    assert(gzip_decompress(c, clen, db2, 16) < 0, "fhcrc batch rejects corruption");
+    var d2 = alloc(16);
+    var ctx2 = gzip_dec_init(d2, 16);
+    var rc2 = gzip_dec_write(ctx2, c, clen);
+    var fin2 = gzip_dec_finish(ctx2);
+    assert(rc2 < 0 || fin2 < 0, "fhcrc stream rejects corruption");
+    return 0;
+}
+
+fn test_gdec_concatenated_members() {
+    # 2.3.5: two gzip members concatenated. The streaming decoder must
+    # decode both (resetting the inner DEFLATE at the boundary) and
+    # produce the concatenation — matching batch gzip_decompress.
+    var p1 = alloc(5);   # "Hello"
+    store8(p1 + 0, 72); store8(p1 + 1, 101); store8(p1 + 2, 108);
+    store8(p1 + 3, 108); store8(p1 + 4, 111);
+    var p2 = alloc(6);   # "World!"
+    store8(p2 + 0, 87); store8(p2 + 1, 111); store8(p2 + 2, 114);
+    store8(p2 + 3, 108); store8(p2 + 4, 100); store8(p2 + 5, 33);
+
+    var m1 = alloc(64);
+    var m1len = gzip_compress_level(p1, 5, m1, 64, 6);
+    var m2 = alloc(64);
+    var m2len = gzip_compress_level(p2, 6, m2, 64, 6);
+    assert(m1len > 0, "concat m1 compress");
+    assert(m2len > 0, "concat m2 compress");
+
+    var c = alloc(160);
+    var i = 0;
+    while (i < m1len) { store8(c + i, load8(m1 + i)); i = i + 1; }
+    var j = 0;
+    while (j < m2len) { store8(c + m1len + j, load8(m2 + j)); j = j + 1; }
+    var clen = m1len + m2len;
+
+    # Batch cross-check (already supports concatenation).
+    var db = alloc(16);
+    assert(gzip_decompress(c, clen, db, 16) == 11, "concat batch len");
+
+    # Streaming decode (whole input).
+    var d = alloc(16);
+    var ctx = gzip_dec_init(d, 16);
+    assert(ctx != 0, "concat init");
+    assert(gzip_dec_write(ctx, c, clen) >= 0, "concat write");
+    assert(gzip_dec_finish(ctx) == 11, "concat len");
+    i = 0;
+    while (i < 5) { assert(load8(d + i) == load8(p1 + i), "concat content m1"); i = i + 1; }
+    i = 0;
+    while (i < 6) { assert(load8(d + 5 + i) == load8(p2 + i), "concat content m2"); i = i + 1; }
+
+    # Streaming byte-at-a-time — exercises the member boundary across chunks.
+    var d2 = alloc(16);
+    var ctx2 = gzip_dec_init(d2, 16);
+    assert(ctx2 != 0, "concat baat init");
+    var k = 0;
+    while (k < clen) {
+        assert(gzip_dec_write(ctx2, c + k, 1) >= 0, "concat baat write");
+        k = k + 1;
+    }
+    assert(gzip_dec_finish(ctx2) == 11, "concat baat len");
+    i = 0;
+    while (i < 11) { assert(load8(d2 + i) == load8(d + i), "concat baat content"); i = i + 1; }
+
+    # Corrupt member 2's trailer CRC — the streaming decoder must reject.
+    store8(c + m1len + m2len - 5, load8(c + m1len + m2len - 5) ^ 1);
+    var d3 = alloc(16);
+    var ctx3 = gzip_dec_init(d3, 16);
+    var rc3 = gzip_dec_write(ctx3, c, clen);
+    var fin3 = gzip_dec_finish(ctx3);
+    assert(rc3 < 0 || fin3 < 0, "concat rejects corrupt 2nd member");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_gzip_corrupt_crc();
+    test_gzip_truncated();
+    test_gzip_concat();
+    test_err_gzip_bad_magic();
+    test_err_gzip_reserved_flg();
+    test_gdec_short_roundtrip();
+    test_gdec_byte_at_a_time();
+    test_gdec_1kb_chunked();
+    test_gdec_bad_magic();
+    test_gdec_reserved_flg();
+    test_gdec_bad_crc_trailer();
+    test_gdec_bad_isize();
+    test_gdec_fname_field();
+    test_gdec_fhcrc_field();
+    test_gdec_concatenated_members();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

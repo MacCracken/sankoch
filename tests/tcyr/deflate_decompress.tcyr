@@ -1,0 +1,723 @@
+# sankoch — DEFLATE — decompress (known vectors, errors, streaming decode)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/deflate_decompress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_deflate_dec_empty() {
+    var src = alloc(2);
+    store8(src, 3); store8(src + 1, 0);
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 2, dst, 64) == 0, "deflate dec empty");
+    return 0;
+}
+
+fn test_deflate_dec_hello() {
+    var src = alloc(7);
+    store8(src + 0, 243); store8(src + 1, 72); store8(src + 2, 205);
+    store8(src + 3, 201); store8(src + 4, 201); store8(src + 5, 7); store8(src + 6, 0);
+    var dst = alloc(64);
+    var dlen = deflate_decompress(src, 7, dst, 64);
+    assert(dlen == 5, "deflate dec Hello size");
+    assert(load8(dst) == 72 && load8(dst + 4) == 111, "deflate dec Hello content");
+    return 0;
+}
+
+fn test_deflate_dec_stored() {
+    var src = alloc(9);
+    store8(src + 0, 1); store8(src + 1, 4); store8(src + 2, 0);
+    store8(src + 3, 251); store8(src + 4, 255);
+    store8(src + 5, 65); store8(src + 6, 66); store8(src + 7, 67); store8(src + 8, 68);
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 9, dst, 64) == 4, "deflate dec stored size");
+    assert(load8(dst) == 65 && load8(dst + 3) == 68, "deflate dec stored content");
+    return 0;
+}
+
+fn test_deflate_dec_zero_stored() {
+    var src = alloc(5);
+    store8(src + 0, 1); store8(src + 1, 0); store8(src + 2, 0);
+    store8(src + 3, 255); store8(src + 4, 255);
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 5, dst, 64) == 0, "deflate dec zero-length stored");
+    return 0;
+}
+
+fn test_deflate_dec_backref() {
+    var src = alloc(7);
+    store8(src + 0, 115); store8(src + 1, 116); store8(src + 2, 114);
+    store8(src + 3, 118); store8(src + 4, 68); store8(src + 5, 69); store8(src + 6, 0);
+    var dst = alloc(64);
+    var dlen = deflate_decompress(src, 7, dst, 64);
+    assert(dlen == 18, "deflate dec backref size");
+    var i = 0;
+    while (i < 18) { assert(load8(dst + i) == 65 + (i % 3), "deflate dec backref content"); i = i + 1; }
+    return 0;
+}
+
+fn test_deflate_dec_via_api() {
+    var src = alloc(2);
+    store8(src, 3); store8(src + 1, 0);
+    var dst = alloc(64);
+    assert(decompress(FORMAT_DEFLATE, src, 2, dst, 64) == 0, "deflate via API");
+    return 0;
+}
+
+fn test_err_deflate_invalid_btype() {
+    var src = alloc(1);
+    store8(src, 7);
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 1, dst, 64) < 0, "deflate invalid btype");
+    return 0;
+}
+
+fn test_err_deflate_corrupt_stored() {
+    var src = alloc(5);
+    store8(src + 0, 1); store8(src + 1, 4); store8(src + 2, 0);
+    store8(src + 3, 0); store8(src + 4, 0);
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 5, dst, 64) < 0, "deflate corrupt stored NLEN");
+    return 0;
+}
+
+# HIGH-1: stored block declares LEN > bytes remaining in stream.
+# Header: BFINAL=1, BTYPE=00 (stored) = 0x01 in byte 0.
+# After br_align, LEN (LE u16) = 100, NLEN = 65435 (~LEN). NLEN check
+# passes; previously the raw-byte copy would walk 100 bytes past the
+# 5-byte source buffer. Now the bound check rejects.
+fn test_err_deflate_stored_oob() {
+    var src = alloc(5);
+    store8(src + 0, 1);              # BFINAL=1, BTYPE=00
+    store8(src + 1, 100);             # LEN low
+    store8(src + 2, 0);               # LEN high
+    store8(src + 3, 155);             # NLEN low  (~100 & 0xFF = 0x9B = 155)
+    store8(src + 4, 255);             # NLEN high (~0   & 0xFF = 0xFF = 255)
+    var dst = alloc(256);
+    assert(deflate_decompress(src, 5, dst, 256) < 0,
+    "deflate stored len>remaining must reject");
+    return 0;
+}
+
+# MED-1: dynamic block with HLIT field encoding > 29.
+# Byte 0 = 0b11110101 = 0xF5: BFINAL=1 (bit 0), BTYPE=10 dynamic (bits
+# 1-2), HLIT field bits 3-7 = 0b11110 = 30 (LSB-first), giving
+# hlit count = 30 + 257 = 287 > 286 — invalid per RFC 1951 §3.2.7.
+# Trailing bytes are present so any failure here is HLIT-cap rejection
+# (or downstream parse failure if the cap weren't enforced); either
+# way the call must fail negatively without UB.
+fn test_err_deflate_hlit_overflow() {
+    var src = alloc(8);
+    store8(src + 0, 245);    # 0xF5 — HLIT=30 in the encoded field
+    var i = 1;
+    while (i < 8) { store8(src + i, 0); i = i + 1; }
+    var dst = alloc(64);
+    assert(deflate_decompress(src, 8, dst, 64) < 0,
+    "deflate hlit>29 (count>286) must reject");
+    return 0;
+}
+
+fn test_dec_stream_empty_bfinal_stored() {
+    # 5-byte stream: BFINAL=1, BTYPE=00, LEN=0, NLEN=0xFFFF.
+    var src = alloc(5);
+    store8(src + 0, 1);          # 0b00000001
+    store8(src + 1, 0); store8(src + 2, 0);    # LEN=0
+    store8(src + 3, 255); store8(src + 4, 255);# NLEN=0xFFFF
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "dec_init returns ctx");
+    assert(deflate_dec_write(ctx, src, 5) >= 0, "dec_write empty stored");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 0, "dec_finish returns 0 for empty stored");
+    return 0;
+}
+
+fn test_dec_stream_single_stored_block() {
+    # BFINAL=1, BTYPE=00, LEN=5, NLEN=0xFFFA, then "Hello".
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 250); store8(src + 4, 255);
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(16);
+    var ctx = deflate_dec_init(dst, 16);
+    assert(ctx != 0, "single stored init");
+    assert(deflate_dec_write(ctx, src, 10) >= 0, "single stored write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "single stored finish len");
+    assert(load8(dst + 0) == 72 && load8(dst + 4) == 111, "single stored content");
+    return 0;
+}
+
+fn test_dec_stream_byte_at_a_time() {
+    # Same 10-byte stream as above, fed one byte per dec_write call.
+    # Exercises state-machine suspension at every possible point
+    # (header straddles, LEN straddles, NLEN straddles, data straddles).
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 250); store8(src + 4, 255);
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(16);
+    var ctx = deflate_dec_init(dst, 16);
+    assert(ctx != 0, "byte-at-a-time init");
+    var i = 0;
+    while (i < 10) {
+        assert(deflate_dec_write(ctx, src + i, 1) >= 0, "byte-at-a-time write");
+        i = i + 1;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "byte-at-a-time len");
+    i = 0;
+    while (i < 5) {
+        assert(load8(dst + i) == load8(src + 5 + i), "byte-at-a-time content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_multi_block_stored() {
+    # Block 1: BFINAL=0, BTYPE=00, LEN=2, NLEN=0xFFFD, "AB".
+    # Block 2: BFINAL=1, BTYPE=00, LEN=2, NLEN=0xFFFD, "CD".
+    var src = alloc(14);
+    store8(src +  0, 0);                              # BFINAL=0 BTYPE=00
+    store8(src +  1, 2); store8(src +  2, 0);
+    store8(src +  3, 253); store8(src +  4, 255);
+    store8(src +  5, 65); store8(src +  6, 66);       # "AB"
+    store8(src +  7, 1);                              # BFINAL=1 BTYPE=00
+    store8(src +  8, 2); store8(src +  9, 0);
+    store8(src + 10, 253); store8(src + 11, 255);
+    store8(src + 12, 67); store8(src + 13, 68);       # "CD"
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "multi-block init");
+    assert(deflate_dec_write(ctx, src, 14) >= 0, "multi-block write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 4, "multi-block len");
+    assert(load8(dst + 0) == 65 && load8(dst + 1) == 66
+    && load8(dst + 2) == 67 && load8(dst + 3) == 68, "multi-block content");
+    return 0;
+}
+
+fn test_dec_stream_nlen_mismatch() {
+    # Same as single_stored but NLEN=0x0000 (not the complement of LEN=5).
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 0); store8(src + 4, 0);   # NLEN wrong
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(16);
+    var ctx = deflate_dec_init(dst, 16);
+    assert(ctx != 0, "nlen mismatch init");
+    var rc = deflate_dec_write(ctx, src, 10);
+    assert(rc < 0, "nlen mismatch rejected");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "finish propagates error");
+    return 0;
+}
+
+fn test_dec_stream_reserved_block_type() {
+    # BTYPE=11 (reserved) is invalid even after Huffman support lands.
+    var src = alloc(1);
+    store8(src + 0, 7);   # BFINAL=1, BTYPE=11
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "reserved btype init");
+    var rc = deflate_dec_write(ctx, src, 1);
+    assert(rc < 0, "BTYPE=11 rejected");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "reserved finish error");
+    return 0;
+}
+
+fn test_dec_stream_incomplete_stream() {
+    # Header byte only — never a BFINAL=1 EOB seen. finish must error.
+    var src = alloc(1);
+    store8(src + 0, 0);   # BFINAL=0
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "incomplete init");
+    assert(deflate_dec_write(ctx, src, 1) >= 0, "incomplete partial write");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "incomplete stream rejected at finish");
+    return 0;
+}
+
+fn test_dec_stream_buffer_too_small() {
+    # 5-byte payload into a 3-byte dst — must error at NLEN read.
+    var src = alloc(10);
+    store8(src + 0, 1);
+    store8(src + 1, 5); store8(src + 2, 0);
+    store8(src + 3, 250); store8(src + 4, 255);
+    store8(src + 5, 72); store8(src + 6, 101); store8(src + 7, 108);
+    store8(src + 8, 108); store8(src + 9, 111);
+    var dst = alloc(3);
+    var ctx = deflate_dec_init(dst, 3);
+    assert(ctx != 0, "too-small dst init");
+    var rc = deflate_dec_write(ctx, src, 10);
+    assert(rc < 0, "too-small dst rejected");
+    var fin = deflate_dec_finish(ctx);
+    assert(fin < 0, "too-small finish error");
+    return 0;
+}
+
+fn test_dec_stream_post_done_writes_noop() {
+    # After BFINAL=1 EOB seen, further writes return 0 with no error.
+    var src = alloc(5);
+    store8(src + 0, 1);
+    store8(src + 1, 0); store8(src + 2, 0);
+    store8(src + 3, 255); store8(src + 4, 255);
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "post-done init");
+    assert(deflate_dec_write(ctx, src, 5) >= 0, "complete stream");
+    var trailing = alloc(3);
+    store8(trailing + 0, 99); store8(trailing + 1, 99); store8(trailing + 2, 99);
+    assert(deflate_dec_write(ctx, trailing, 3) == 0, "post-done writes no-op");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 0, "post-done finish");
+    return 0;
+}
+
+fn test_dec_stream_finish_releases_lock() {
+    # After dec_finish, an unrelated public API call must succeed
+    # (proves the mutex was released).
+    var src = alloc(5);
+    store8(src + 0, 1);
+    store8(src + 1, 0); store8(src + 2, 0);
+    store8(src + 3, 255); store8(src + 4, 255);
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "lock-release init");
+    deflate_dec_write(ctx, src, 5);
+    deflate_dec_finish(ctx);
+
+    # If the mutex were still held, this batch call would deadlock.
+    # `_sankoch_lock` is non-reentrant in the single-threaded contract,
+    # but a follow-up call from the same thread MUST succeed because
+    # finish released the lock.
+    var src2 = alloc(2);
+    store8(src2 + 0, 65); store8(src2 + 1, 66);
+    var c2 = alloc(32);
+    var n = deflate_compress(src2, 2, c2, 32);
+    assert(n > 0, "follow-up compress succeeds (lock was released)");
+    return 0;
+}
+
+fn test_dec_stream_encoder_empty_roundtrip() {
+    # End-to-end check: deflate_enc_* at level 1 (fixed path) with zero
+    # writes emits a single BFINAL=1 stored-LEN=0 block — the one
+    # codec-emitted shape bite-1 supports. (Level >= 4 emits a dynamic
+    # block instead, which lands in bite-3.)
+    var c = alloc(16);
+    var enc = deflate_enc_init(1, c, 16);
+    assert(enc != 0, "empty rt enc_init");
+    var clen = deflate_enc_finish(enc);
+    assert(clen > 0, "empty rt enc_finish");
+
+    var d = alloc(8);
+    var dec = deflate_dec_init(d, 8);
+    assert(dec != 0, "empty rt dec_init");
+    assert(deflate_dec_write(dec, c, clen) >= 0, "empty rt dec_write");
+    var n = deflate_dec_finish(dec);
+    assert(n == 0, "empty rt dec_finish returns 0");
+    return 0;
+}
+
+fn test_dec_stream_fixed_eob_only() {
+    # Hand-crafted BFINAL=1, BTYPE=01, EOB (7-bit code 0000000), padded.
+    # Byte 0 = 0b00000011 = 3 (BFINAL=1, BTYPE=01, first 5 bits of EOB).
+    # Byte 1 = 0 (last 2 bits of EOB, 6 trailing padding bits).
+    var src = alloc(2);
+    store8(src + 0, 3);
+    store8(src + 1, 0);
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "fixed EOB-only init");
+    assert(deflate_dec_write(ctx, src, 2) >= 0, "fixed EOB-only write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 0, "fixed EOB-only emits zero bytes");
+    return 0;
+}
+
+fn test_dec_stream_fixed_short_literal_roundtrip() {
+    # Encoder at level 1 routes through the fixed-Huffman path. Compress
+    # "Hello" and round-trip through the streaming decoder.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "fixed short rt compress");
+
+    var d = alloc(16);
+    var ctx = deflate_dec_init(d, 16);
+    assert(ctx != 0, "fixed short rt init");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "fixed short rt write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "fixed short rt len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "fixed short rt content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_byte_at_a_time() {
+    # Same level-1 compress of "Hello", but feed the compressed bytes
+    # one at a time. Exercises mid-symbol state-machine suspension
+    # across every chunk boundary in the litlen / EOB sequence.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "fixed BAAT compress");
+
+    var d = alloc(16);
+    var ctx = deflate_dec_init(d, 16);
+    assert(ctx != 0, "fixed BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(deflate_dec_write(ctx, c + i, 1) >= 0, "fixed BAAT write");
+        i = i + 1;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "fixed BAAT len");
+    i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "fixed BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_with_backref() {
+    # Level-1 compress an input long enough to produce LZ77 back-
+    # references (length code + distance code), then round-trip via
+    # the streaming decoder. "abcdefghijabcdefghij" — 20 bytes, the
+    # second half matches the first at distance=10, length=10.
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));   # 'a'..'j' repeated
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 20, c, 64, 1);
+    assert(clen > 0, "fixed backref compress");
+
+    var d = alloc(32);
+    var ctx = deflate_dec_init(d, 32);
+    assert(ctx != 0, "fixed backref init");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "fixed backref write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 20, "fixed backref len");
+    var i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "fixed backref content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_rle_distance_1() {
+    # Run-length encoding via distance=1: encoder back-references the
+    # immediately preceding byte. Compressor at level 1 emits a length
+    # code + dist=1 for a long run. "aaaa....a" (20 'a's).
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) { store8(src + k, 97); k = k + 1; }
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 20, c, 64, 1);
+    assert(clen > 0, "fixed RLE compress");
+
+    var d = alloc(32);
+    var ctx = deflate_dec_init(d, 32);
+    assert(ctx != 0, "fixed RLE init");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "fixed RLE write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 20, "fixed RLE len");
+    var i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == 97, "fixed RLE content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_1kb_roundtrip() {
+    # Longer round-trip — 1024 bytes of mixed text with patterns the
+    # level-1 fixed-Huffman path can compress via both literals and
+    # back-references. Feeds the compressed stream in chunks of 16
+    # bytes (forces multiple suspension/resume cycles).
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));   # 'A'..'Z' cycling
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = deflate_compress_level(src, 1024, c, 2048, 1);
+    assert(clen > 0, "fixed 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = deflate_dec_init(d, 1024);
+    assert(ctx != 0, "fixed 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 16;
+        if (off + step > clen) { step = clen - off; }
+        assert(deflate_dec_write(ctx, c + off, step) >= 0,
+        "fixed 1kb chunk write");
+        off = off + step;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 1024, "fixed 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "fixed 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_fixed_buffer_too_small() {
+    # Level-1 compress "Hello", attempt to decode into a 3-byte dst.
+    # The decoder must error (BUFFER_TOO_SMALL) instead of overrunning.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "fixed too-small compress");
+
+    var d = alloc(3);
+    var ctx = deflate_dec_init(d, 3);
+    assert(ctx != 0, "fixed too-small init");
+    var rc = deflate_dec_write(ctx, c, clen);
+    var fin = deflate_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "fixed too-small rejected");
+    return 0;
+}
+
+fn test_dec_stream_dynamic_short_roundtrip() {
+    # Level 6 routes through the dynamic-Huffman encoder. Round-trip
+    # "Hello" — the simplest dynamic-block stream.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 5, c, 64, 6);
+    assert(clen > 0, "dyn short rt compress");
+
+    var d = alloc(16);
+    var ctx = deflate_dec_init(d, 16);
+    assert(ctx != 0, "dyn short rt init");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "dyn short rt write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 5, "dyn short rt len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "dyn short rt content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_dynamic_byte_at_a_time() {
+    # Level-6 compress of "Hello world!", fed one byte per dec_write.
+    # Exercises mid-symbol suspension across the dynamic-header parse
+    # (HLIT/HDIST/HCLEN, CL_LENS loop, AL_SYM/AL_EXTRA loop) and the
+    # subsequent litlen/dist decode path.
+    var src = alloc(12);
+    store8(src +  0,  72); store8(src +  1, 101); store8(src +  2, 108);
+    store8(src +  3, 108); store8(src +  4, 111); store8(src +  5,  32);
+    store8(src +  6, 119); store8(src +  7, 111); store8(src +  8, 114);
+    store8(src +  9, 108); store8(src + 10, 100); store8(src + 11,  33);
+    var c = alloc(64);
+    var clen = deflate_compress_level(src, 12, c, 64, 6);
+    assert(clen > 0, "dyn BAAT compress");
+
+    var d = alloc(32);
+    var ctx = deflate_dec_init(d, 32);
+    assert(ctx != 0, "dyn BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(deflate_dec_write(ctx, c + i, 1) >= 0, "dyn BAAT write");
+        i = i + 1;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 12, "dyn BAAT len");
+    i = 0;
+    while (i < 12) {
+        assert(load8(d + i) == load8(src + i), "dyn BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_dynamic_with_backref() {
+    # Level-6 compress of a repeating pattern to exercise the dynamic
+    # tree with back-references. Drives the LEN_EXTRA / DIST_EXTRA
+    # state arms through dynamic-table symbols.
+    var src = alloc(40);
+    var k = 0;
+    while (k < 40) {
+        store8(src + k, 97 + (k % 10));   # 'a'..'j' repeated 4 times
+        k = k + 1;
+    }
+    var c = alloc(128);
+    var clen = deflate_compress_level(src, 40, c, 128, 6);
+    assert(clen > 0, "dyn backref compress");
+
+    var d = alloc(64);
+    var ctx = deflate_dec_init(d, 64);
+    assert(ctx != 0, "dyn backref init");
+    assert(deflate_dec_write(ctx, c, clen) >= 0, "dyn backref write");
+    var n = deflate_dec_finish(ctx);
+    assert(n == 40, "dyn backref len");
+    var i = 0;
+    while (i < 40) {
+        assert(load8(d + i) == load8(src + i), "dyn backref content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_dynamic_1kb_chunked() {
+    # 1024 bytes, level-6 dynamic, fed in 8-byte chunks. Many
+    # suspension/resume cycles across both header parse and symbol
+    # decode.
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = deflate_compress_level(src, 1024, c, 2048, 6);
+    assert(clen > 0, "dyn 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = deflate_dec_init(d, 1024);
+    assert(ctx != 0, "dyn 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 8;
+        if (off + step > clen) { step = clen - off; }
+        assert(deflate_dec_write(ctx, c + off, step) >= 0,
+        "dyn 1kb chunk write");
+        off = off + step;
+    }
+    var n = deflate_dec_finish(ctx);
+    assert(n == 1024, "dyn 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "dyn 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_dynamic_levels() {
+    # Round-trip a small input across every level in the dynamic band
+    # (4..9). Each level may pick slightly different tree shapes; all
+    # must round-trip cleanly.
+    var src = alloc(32);
+    var k = 0;
+    while (k < 32) {
+        store8(src + k, 97 + (k % 16));   # 'a'..'p' repeated
+        k = k + 1;
+    }
+    var lvl = 4;
+    while (lvl <= 9) {
+        var c = alloc(128);
+        var clen = deflate_compress_level(src, 32, c, 128, lvl);
+        assert(clen > 0, "dyn levels compress");
+
+        var d = alloc(64);
+        var ctx = deflate_dec_init(d, 64);
+        assert(ctx != 0, "dyn levels init");
+        assert(deflate_dec_write(ctx, c, clen) >= 0, "dyn levels write");
+        var n = deflate_dec_finish(ctx);
+        assert(n == 32, "dyn levels len");
+        var i = 0;
+        while (i < 32) {
+            assert(load8(d + i) == load8(src + i), "dyn levels content");
+            i = i + 1;
+        }
+        lvl = lvl + 1;
+    }
+    return 0;
+}
+
+fn test_dec_stream_dynamic_hlit_overflow() {
+    # MED-01 regression: HLIT field 30 encodes count 287 (out of spec).
+    # The dynamic-header parser must reject the stream cleanly instead
+    # of building a malformed table.
+    # Bit layout (LSB-first within each byte):
+    #   bit 0 = BFINAL = 1
+    #   bits 1-2 = BTYPE = 10 (dynamic)
+    #   bits 3-7 = HLIT_LSB = 30 -> binary 11110
+    # Byte 0 = 0b11110101 = 245.
+    var src = alloc(1);
+    store8(src + 0, 245);
+    var dst = alloc(8);
+    var ctx = deflate_dec_init(dst, 8);
+    assert(ctx != 0, "dyn HLIT overflow init");
+    var rc = deflate_dec_write(ctx, src, 1);
+    var fin = deflate_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "dyn HLIT > 286 rejected");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_deflate_dec_empty();
+    test_deflate_dec_hello();
+    test_deflate_dec_stored();
+    test_deflate_dec_zero_stored();
+    test_deflate_dec_backref();
+    test_deflate_dec_via_api();
+    test_err_deflate_invalid_btype();
+    test_err_deflate_corrupt_stored();
+    test_err_deflate_stored_oob();
+    test_err_deflate_hlit_overflow();
+    test_dec_stream_empty_bfinal_stored();
+    test_dec_stream_single_stored_block();
+    test_dec_stream_byte_at_a_time();
+    test_dec_stream_multi_block_stored();
+    test_dec_stream_nlen_mismatch();
+    test_dec_stream_reserved_block_type();
+    test_dec_stream_incomplete_stream();
+    test_dec_stream_buffer_too_small();
+    test_dec_stream_post_done_writes_noop();
+    test_dec_stream_finish_releases_lock();
+    test_dec_stream_encoder_empty_roundtrip();
+    test_dec_stream_fixed_eob_only();
+    test_dec_stream_fixed_short_literal_roundtrip();
+    test_dec_stream_fixed_byte_at_a_time();
+    test_dec_stream_fixed_with_backref();
+    test_dec_stream_fixed_rle_distance_1();
+    test_dec_stream_fixed_1kb_roundtrip();
+    test_dec_stream_fixed_buffer_too_small();
+    test_dec_stream_dynamic_short_roundtrip();
+    test_dec_stream_dynamic_byte_at_a_time();
+    test_dec_stream_dynamic_with_backref();
+    test_dec_stream_dynamic_1kb_chunked();
+    test_dec_stream_dynamic_levels();
+    test_dec_stream_dynamic_hlit_overflow();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

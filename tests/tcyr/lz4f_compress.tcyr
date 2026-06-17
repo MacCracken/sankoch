@@ -1,0 +1,229 @@
+# sankoch — LZ4 frame (LZ4F) — compress / round-trip / block-max / checksum
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/lz4f_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_lz4f_enc_roundtrip() {
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 19 + j / 3) % 95); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    var ctx = lz4f_enc_init(c, N + 4096);
+    assert(ctx != 0, "lz4f_enc init");
+    # Magic 0x184D2204 little-endian = 04 22 4D 18
+    assert(load8(c) == 4 && load8(c + 1) == 34 && load8(c + 2) == 77 && load8(c + 3) == 24,
+    "lz4f_enc magic");
+    var fed = 0;
+    while (fed < N) {
+        var take = 3000;
+        if (take > N - fed) { take = N - fed; }
+        assert(lz4f_enc_write(ctx, src + fed, take) == 0, "lz4f_enc write");
+        fed = fed + take;
+    }
+    var clen = lz4f_enc_finish(ctx);
+    assert(clen > 0, "lz4f_enc finish");
+
+    var dlen = lz4f_decompress(c, clen, d, N);
+    assert(dlen == N, "lz4f_enc rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_enc_multiblock() {
+    # 150 KB — crosses the 64 KB block boundary multiple times, tests
+    # per-block emit + incremental content-checksum across blocks.
+    var N = 150000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 17)); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    var ctx = lz4f_enc_init(c, N + 4096);
+    # Varied chunk sizes force cross-block buffer boundaries.
+    var fed = 0;
+    while (fed < N) {
+        var take = 7777;
+        if (take > N - fed) { take = N - fed; }
+        assert(lz4f_enc_write(ctx, src + fed, take) == 0, "lz4f_enc mb write");
+        fed = fed + take;
+    }
+    var clen = lz4f_enc_finish(ctx);
+    assert(clen > 0, "lz4f_enc mb finish");
+    var dlen = lz4f_decompress(c, clen, d, N);
+    assert(dlen == N, "lz4f_enc mb rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f_enc mb rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_enc_empty() {
+    var c = alloc(64);
+    var ctx = lz4f_enc_init(c, 64);
+    assert(ctx != 0, "lz4f_enc empty init");
+    var clen = lz4f_enc_finish(ctx);
+    assert(clen > 0, "lz4f_enc empty finish");
+    var d = alloc(16);
+    assert(lz4f_decompress(c, clen, d, 16) == 0, "lz4f_enc empty decompress");
+    return 0;
+}
+
+fn test_compress_dispatch_lz4f() {
+    # Batch compress(FORMAT_LZ4F, ...) — new dispatch added with 1.7.0.
+    var src = alloc(64);
+    var j = 0;
+    while (j < 64) { store8(src + j, 65 + (j % 26)); j = j + 1; }
+    var c = alloc(128);
+    var d = alloc(128);
+    var clen = compress(FORMAT_LZ4F, src, 64, c, 128);
+    assert(clen > 0, "compress FORMAT_LZ4F");
+    assert(decompress(FORMAT_LZ4F, c, clen, d, 128) == 64, "decompress FORMAT_LZ4F");
+    j = 0;
+    while (j < 64) { assert(load8(d + j) == load8(src + j), "lz4f dispatch content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_roundtrip() {
+    var src = alloc(120);
+    var j = 0;
+    while (j < 120) { store8(src + j, 65 + (j % 3)); j = j + 1; }
+    var c = alloc(512);
+    var d = alloc(256);
+    var clen = lz4f_compress(src, 120, c, 512);
+    assert(clen > 0, "lz4f compress");
+    assert(load8(c) == 4 && load8(c+1) == 34 && load8(c+2) == 77 && load8(c+3) == 24, "lz4f magic");
+    var dlen = lz4f_decompress(c, clen, d, 256);
+    assert(dlen == 120, "lz4f rt size");
+    j = 0;
+    while (j < 120) { assert(load8(d + j) == load8(src + j), "lz4f rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_empty() {
+    var src = alloc(1);
+    var c = alloc(64);
+    var d = alloc(64);
+    var clen = lz4f_compress(src, 0, c, 64);
+    assert(clen > 0, "lz4f compress empty");
+    assert(lz4f_decompress(c, clen, d, 64) == 0, "lz4f decompress empty");
+    return 0;
+}
+
+fn test_lz4f_checksum() {
+    var src = alloc(5);
+    store8(src+0,72); store8(src+1,101); store8(src+2,108);
+    store8(src+3,108); store8(src+4,111);
+    var c = alloc(64);
+    var clen = lz4f_compress(src, 5, c, 64);
+    assert(clen > 0, "lz4f compress for checksum");
+    # Corrupt the content checksum (last 4 bytes)
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+    var d = alloc(64);
+    assert(lz4f_decompress(c, clen, d, 64) < 0, "lz4f corrupt checksum should fail");
+    return 0;
+}
+
+fn test_lz4f_multiblock_roundtrip() {
+    var N = 150000;  # 2 full 64KB blocks + 18928B tail
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 65 + (j % 17)); j = j + 1; }
+    var c = alloc(N + 4096);
+    var d = alloc(N);
+    var clen = lz4f_compress(src, N, c, N + 4096);
+    assert(clen > 0, "lz4f multiblock compress");
+    assert(_count_lz4f_blocks(c, clen) == 3, "lz4f 150000B = 3 blocks");
+    var dlen = lz4f_decompress(c, clen, d, N);
+    assert(dlen == N, "lz4f multiblock rt size");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "lz4f multiblock rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_boundary() {
+    var src = alloc(65537);
+    var j = 0;
+    while (j < 65537) { store8(src + j, 65 + (j % 23)); j = j + 1; }
+    var c = alloc(70000);
+    var d = alloc(65537);
+
+    # Exactly 65536 bytes fits in a single 64KB block.
+    var clen = lz4f_compress(src, 65536, c, 70000);
+    assert(clen > 0, "lz4f 65536 compress");
+    assert(_count_lz4f_blocks(c, clen) == 1, "lz4f 65536 = 1 block");
+    var dlen = lz4f_decompress(c, clen, d, 65537);
+    assert(dlen == 65536, "lz4f 65536 rt size");
+    j = 0;
+    while (j < 65536) { assert(load8(d + j) == load8(src + j), "lz4f 65536 rt content"); j = j + 1; }
+
+    # 65537 spills into a second block (1B tail).
+    clen = lz4f_compress(src, 65537, c, 70000);
+    assert(clen > 0, "lz4f 65537 compress");
+    assert(_count_lz4f_blocks(c, clen) == 2, "lz4f 65537 = 2 blocks");
+    dlen = lz4f_decompress(c, clen, d, 65537);
+    assert(dlen == 65537, "lz4f 65537 rt size");
+    j = 0;
+    while (j < 65537) { assert(load8(d + j) == load8(src + j), "lz4f 65537 rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_lz4f_blockmax_256k_single() {
+    # 100K input in a 256K-max frame → one block > 64K (grown buffer).
+    return _lz4f_bm_rt(5, 100000);
+}
+
+fn test_lz4f_blockmax_256k_multi() {
+    # 300K input in a 256K-max frame → 256K block + 44K block.
+    return _lz4f_bm_rt(5, 300000);
+}
+
+fn test_lz4f_blockmax_1m() {
+    # 1M-max frame, single 200K block (exercises the 1M buffer alloc).
+    return _lz4f_bm_rt(6, 200000);
+}
+
+fn test_lz4f_blockmax_4m() {
+    # 4M-max frame, single 200K block (exercises the 4M buffer alloc).
+    return _lz4f_bm_rt(7, 200000);
+}
+
+fn test_lz4f_blockcksum_64k() {
+    # Default 64K block-max with per-block checksum (multi-block).
+    return _lz4f_bc_rt(4, 150000);
+}
+
+fn test_lz4f_blockcksum_256k() {
+    # 256K block-max with per-block checksum (multi-block).
+    return _lz4f_bc_rt(5, 300000);
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_lz4f_enc_roundtrip();
+    test_lz4f_enc_multiblock();
+    test_lz4f_enc_empty();
+    test_compress_dispatch_lz4f();
+    test_lz4f_roundtrip();
+    test_lz4f_empty();
+    test_lz4f_checksum();
+    test_lz4f_multiblock_roundtrip();
+    test_lz4f_boundary();
+    test_lz4f_blockmax_256k_single();
+    test_lz4f_blockmax_256k_multi();
+    test_lz4f_blockmax_1m();
+    test_lz4f_blockmax_4m();
+    test_lz4f_blockcksum_64k();
+    test_lz4f_blockcksum_256k();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -84,8 +84,8 @@ want to feed their own data streams.
 ```sh
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check
-cyrius test tests/tcyr/sankoch.tcyr      # main test suite
-cyrius test tests/tcyr/git_object.tcyr   # git-object regressions
+cyrius test                              # all tcyr suites (auto-discovered)
+cyrius test tests/tcyr/xz_compress.tcyr  # one split suite (codec × direction)
 cyrius fuzz                              # all fuzz harness functions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
 cyrius distlib                           # → dist/sankoch.cyr (full)

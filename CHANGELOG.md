@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Test suite split** (no source/behavior change). The monolithic
+  `tests/tcyr/sankoch.tcyr` (~6,200 lines, 190 tests) is split by
+  **codec × direction** into 15 focused suites
+  (`checksum`, `lz4_{compress,decompress}`, `lz4f_{compress,decompress}`,
+  `deflate_{compress,decompress}`, `zlib_{compress,decompress}`,
+  `gzip_{compress,decompress}`, `xz_{compress,decompress}`, `stream`,
+  `detect_error`) sharing `tests/tcyr/_harness.tcyr` (includes + 4 MB
+  heap setup + cross-cutting helpers). Round-trip tests live with the
+  compress side. Assertion total is unchanged (3,979,611); CI Test step
+  now auto-discovers every suite (skipping `_`-prefixed includes), so
+  future suites need no workflow edits. `git_object.tcyr` is unchanged.
+
 ## [2.4.1] — 2026-06-16
 
 **xz / LZMA encode (`xz_compress` + `compress(FORMAT_XZ, …)`).** Closes

@@ -1,0 +1,126 @@
+# sankoch — gzip — compress (round-trip, dict)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/gzip_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_gzip_enc_roundtrip() {
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 41 + j / 5) % 95); j = j + 1; }
+    var c = alloc(N + 2048);
+    var d = alloc(N);
+    var ctx = gzip_enc_init(6, c, N + 2048);
+    assert(ctx != 0, "gzip_enc init");
+    # Magic bytes 0x1f 0x8b
+    assert(load8(c) == 31 && load8(c + 1) == 139, "gzip_enc magic");
+    var fed = 0;
+    while (fed < N) {
+        var take = 3000;
+        if (take > N - fed) { take = N - fed; }
+        assert(gzip_enc_write(ctx, src + fed, take) == 0, "gzip_enc write");
+        fed = fed + take;
+    }
+    var clen = gzip_enc_finish(ctx);
+    assert(clen > 0, "gzip_enc finish");
+
+    var dlen = gzip_decompress(c, clen, d, N);
+    assert(dlen == N, "gzip_enc rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "gzip_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_gzip_enc_empty() {
+    var c = alloc(64);
+    var ctx = gzip_enc_init(6, c, 64);
+    assert(ctx != 0, "gzip_enc empty init");
+    var clen = gzip_enc_finish(ctx);
+    assert(clen > 0, "gzip_enc empty finish");
+    var d = alloc(16);
+    assert(gzip_decompress(c, clen, d, 16) == 0, "gzip_enc empty decompress");
+    return 0;
+}
+
+fn test_gzip_rt_hello() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var d = alloc(64);
+    var clen = gzip_compress(src, 5, c, 128);
+    assert(clen > 0, "gzip compress Hello");
+    assert(load8(c) == 31 && load8(c + 1) == 139 && load8(c + 2) == 8, "gzip header");
+    assert(gzip_decompress(c, clen, d, 64) == 5, "gzip rt Hello");
+    assert(load8(d) == 72 && load8(d + 4) == 111, "gzip rt Hello content");
+    return 0;
+}
+
+fn test_gzip_rt_via_api() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var d = alloc(64);
+    var clen = compress(FORMAT_GZIP, src, 5, c, 128);
+    assert(clen > 0, "gzip api compress");
+    assert(decompress(FORMAT_GZIP, c, clen, d, 64) == 5, "gzip api decompress");
+    return 0;
+}
+
+# gzip's wire format has no FDICT, so a dict-warmed gzip stream is a
+# private contract between matching encoder/decoder pairs. Sankoch's
+# `gzip_decompress` does not (currently) take a dict; for round-trip
+# coverage we strip the gzip envelope manually and feed the inner
+# DEFLATE payload to `deflate_decompress_dict`.
+fn test_gzip_enc_dict_roundtrip() {
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var dst = alloc(512);
+    var ctx = gzip_enc_init_dict(6, dst, 512, dict, dict_len);
+    assert(ctx != 0, "gzip_enc_init_dict ctx");
+    assert(gzip_enc_write(ctx, input, input_len) == 0, "gzip_enc_write dict");
+    var total = gzip_enc_finish(ctx);
+    assert(total > 18, "gzip dict total > 18 (header+trailer)");
+
+    # Magic bytes still 0x1F 0x8B regardless of dict.
+    assert(load8(dst) == 31, "gzip dict ID1");
+    assert(load8(dst + 1) == 139, "gzip dict ID2");
+    # FLG byte should still be 0 (no FDICT, no other flags).
+    assert(load8(dst + 3) == 0, "gzip dict FLG = 0");
+
+    # Strip 10-byte header + 8-byte trailer; feed inner DEFLATE to
+    # deflate_decompress_dict.
+    var deflate_len = total - 18;
+    var out = alloc(256);
+    var dlen = deflate_decompress_dict(dst + 10, deflate_len, out, 256, dict, dict_len);
+    assert(dlen == input_len, "gzip dict inner-DEFLATE roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "gzip dict inner-DEFLATE byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_gzip_enc_roundtrip();
+    test_gzip_enc_empty();
+    test_gzip_rt_hello();
+    test_gzip_rt_via_api();
+    test_gzip_enc_dict_roundtrip();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

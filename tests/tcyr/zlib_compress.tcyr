@@ -1,0 +1,164 @@
+# sankoch — zlib — compress (round-trip, dict, levels)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/zlib_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_zlib_enc_roundtrip() {
+    # 80K text fed in varied chunks, decoded via zlib_decompress.
+    var N = 80000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 13 + j / 7) % 95); j = j + 1; }
+    var c = alloc(N + 2048);
+    var d = alloc(N);
+    var ctx = zlib_enc_init(6, c, N + 2048);
+    assert(ctx != 0, "zlib_enc init");
+    # CMF=0x78, FLG=0x01 header bytes written up front
+    assert(load8(c) == 120 && load8(c + 1) == 1, "zlib_enc header");
+    var chunks[4];
+    store64(&chunks + 0 * 8, 1);
+    store64(&chunks + 1 * 8, 1024);
+    store64(&chunks + 2 * 8, 4096);
+    store64(&chunks + 3 * 8, N);
+    var fed = 0;
+    var ci = 0;
+    while (fed < N) {
+        var take = load64(&chunks + (ci % 4) * 8);
+        if (take > N - fed) { take = N - fed; }
+        assert(zlib_enc_write(ctx, src + fed, take) == 0, "zlib_enc write");
+        fed = fed + take;
+        ci = ci + 1;
+    }
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 0, "zlib_enc finish");
+
+    var dlen = zlib_decompress(c, clen, d, N);
+    assert(dlen == N, "zlib_enc rt dlen");
+    j = 0;
+    while (j < N) { assert(load8(d + j) == load8(src + j), "zlib_enc rt content"); j = j + 1; }
+    return 0;
+}
+
+fn test_zlib_enc_empty() {
+    # Minimum viable: 2 hdr + empty-dynamic-block (~16B) + 4 adler = ~22B
+    var c = alloc(64);
+    var ctx = zlib_enc_init(6, c, 64);
+    assert(ctx != 0, "zlib_enc empty init");
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 0, "zlib_enc empty finish");
+    var d = alloc(16);
+    assert(zlib_decompress(c, clen, d, 16) == 0, "zlib_enc empty decompress");
+    return 0;
+}
+
+fn test_zlib_rt_hello() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var d = alloc(64);
+    var clen = zlib_compress(src, 5, c, 128);
+    assert(clen > 0, "zlib compress Hello");
+    assert((load8(c) & 15) == 8, "zlib header CM=8");
+    assert(((load8(c) * 256 + load8(c + 1)) % 31) == 0, "zlib header check");
+    assert(zlib_decompress(c, clen, d, 64) == 5, "zlib rt Hello");
+    assert(load8(d) == 72 && load8(d + 4) == 111, "zlib rt Hello content");
+    return 0;
+}
+
+fn test_zlib_rt_via_api() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var d = alloc(64);
+    var clen = compress(FORMAT_ZLIB, src, 5, c, 128);
+    assert(clen > 0, "zlib api compress");
+    assert(decompress(FORMAT_ZLIB, c, clen, d, 64) == 5, "zlib api decompress");
+    return 0;
+}
+
+fn test_levels_zlib() {
+    var src = alloc(120);
+    var i = 0;
+    while (i < 120) { store8(src + i, 65 + (i % 3)); i = i + 1; }
+    var c = alloc(256);
+    var d = alloc(256);
+    var clen = compress_level(FORMAT_ZLIB, src, 120, c, 256, 9);
+    assert(clen > 0, "zlib level 9");
+    assert(decompress(FORMAT_ZLIB, c, clen, d, 256) == 120, "zlib level 9 rt");
+    return 0;
+}
+
+fn test_zlib_enc_dict_roundtrip() {
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var dst = alloc(512);
+    var ctx = zlib_enc_init_dict(6, dst, 512, dict, dict_len);
+    assert(ctx != 0, "zlib_enc_init_dict ctx");
+    assert(zlib_enc_write(ctx, input, input_len) == 0, "zlib_enc_write dict");
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 6, "zlib dict clen > 6 (header+trailer)");
+
+    # Header: CMF=0x78, FLG=0x20 (FDICT=1)
+    assert(load8(dst) == 120, "zlib dict CMF=0x78");
+    assert(load8(dst + 1) == 32, "zlib dict FLG=0x20 (FDICT)");
+    # DICTID: 4-byte big-endian Adler-32 of dict
+    var did = adler32(dict, dict_len);
+    var stored = (load8(dst + 2) << 24) | (load8(dst + 3) << 16) |
+    (load8(dst + 4) << 8) | load8(dst + 5);
+    assert(stored == did, "zlib dict DICTID == adler32(dict)");
+
+    var out = alloc(256);
+    var dlen = zlib_decompress_dict(dst, clen, out, 256, dict, dict_len);
+    assert(dlen == input_len, "zlib dict roundtrip len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(out + i) == load8(input + i), "zlib dict roundtrip byte");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zlib_enc_dict_wrong_dict_rejected() {
+    # Encode with dict A; decompress claiming dict B → DICTID mismatch.
+    var dict_a = "abcdefghijklmnop";
+    var dict_b = "ZZZZZZZZZZZZZZZZ";
+    var input = "hello world";
+    var input_len = strlen(input);
+
+    var dst = alloc(256);
+    var ctx = zlib_enc_init_dict(6, dst, 256, dict_a, 16);
+    zlib_enc_write(ctx, input, input_len);
+    var clen = zlib_enc_finish(ctx);
+    assert(clen > 0, "zlib dict_a clen>0");
+
+    var out = alloc(64);
+    var rc = zlib_decompress_dict(dst, clen, out, 64, dict_b, 16);
+    assert(rc < 0, "zlib decompress with wrong dict must reject");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_zlib_enc_roundtrip();
+    test_zlib_enc_empty();
+    test_zlib_rt_hello();
+    test_zlib_rt_via_api();
+    test_levels_zlib();
+    test_zlib_enc_dict_roundtrip();
+    test_zlib_enc_dict_wrong_dict_rejected();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

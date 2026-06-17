@@ -151,9 +151,15 @@ jobs:
           echo "sankoch-aarch64: $(wc -c < build/sankoch-aarch64) bytes"
 
       - name: Test
+        # Auto-discover every suite so new split files are covered without
+        # editing CI. `_`-prefixed files (_harness.tcyr) are shared
+        # includes with no main() — skip them.
         run: |
-          cyrius test tests/tcyr/sankoch.tcyr
-          cyrius test tests/tcyr/git_object.tcyr
+          for f in tests/tcyr/*.tcyr; do
+            case "$f" in tests/tcyr/_*) continue;; esac
+            echo "=== $f ==="
+            cyrius test "$f"
+          done
 
       - name: Fuzz
         # Round-trip + malformed-input harnesses. Each one calls the

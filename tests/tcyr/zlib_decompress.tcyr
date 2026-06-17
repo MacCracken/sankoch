@@ -1,0 +1,331 @@
+# sankoch — zlib — decompress (errors, FDICT, streaming decode)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/zlib_decompress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_zlib_corrupt_checksum() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(128);
+    var clen = zlib_compress(src, 5, c, 128);
+    assert(clen > 0, "zlib compress for corrupt test");
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+    var d = alloc(64);
+    assert(zlib_decompress(c, clen, d, 64) < 0, "zlib corrupt checksum should fail");
+    return 0;
+}
+
+fn test_zlib_fdict() {
+    # zlib stream with FDICT=1, dictionary="The quick brown fox "
+    # data="fox jumps over the lazy dog" (compressed without dict refs)
+    var stream = alloc(39);
+    store8(stream+0,120); store8(stream+1,187);
+    store8(stream+2,76); store8(stream+3,98); store8(stream+4,7); store8(stream+5,52);
+    store8(stream+6,75); store8(stream+7,203); store8(stream+8,175); store8(stream+9,80);
+    store8(stream+10,200); store8(stream+11,42); store8(stream+12,205); store8(stream+13,45);
+    store8(stream+14,40); store8(stream+15,86); store8(stream+16,200); store8(stream+17,47);
+    store8(stream+18,75); store8(stream+19,45); store8(stream+20,82); store8(stream+21,40);
+    store8(stream+22,201); store8(stream+23,72); store8(stream+24,85); store8(stream+25,200);
+    store8(stream+26,73); store8(stream+27,172); store8(stream+28,170); store8(stream+29,84);
+    store8(stream+30,72); store8(stream+31,201); store8(stream+32,79); store8(stream+33,7);
+    store8(stream+34,0); store8(stream+35,142); store8(stream+36,154); store8(stream+37,10);
+    store8(stream+38,20);
+
+    # Dictionary: "The quick brown fox " (20 bytes)
+    var dict = alloc(20);
+    store8(dict+0,84); store8(dict+1,104); store8(dict+2,101); store8(dict+3,32);
+    store8(dict+4,113); store8(dict+5,117); store8(dict+6,105); store8(dict+7,99);
+    store8(dict+8,107); store8(dict+9,32); store8(dict+10,98); store8(dict+11,114);
+    store8(dict+12,111); store8(dict+13,119); store8(dict+14,110); store8(dict+15,32);
+    store8(dict+16,102); store8(dict+17,111); store8(dict+18,120); store8(dict+19,32);
+
+    var d = alloc(64);
+    # Without dict should fail (FDICT requires dictionary)
+    assert(zlib_decompress(stream, 39, d, 64) < 0, "zlib fdict without dict rejects");
+
+    # With correct dict should succeed
+    var dlen = zlib_decompress_dict(stream, 39, d, 64, dict, 20);
+    assert(dlen == 27, "zlib fdict decompress size");
+    # "fox" = 102 111 120
+    assert(load8(d) == 102 && load8(d+1) == 111 && load8(d+2) == 120, "zlib fdict content");
+
+    # With wrong dict should fail (Adler-32 mismatch)
+    store8(dict, 0);
+    assert(zlib_decompress_dict(stream, 39, d, 64, dict, 20) < 0, "zlib fdict wrong dict rejects");
+    return 0;
+}
+
+fn test_err_zlib_bad_header() {
+    var src = alloc(6);
+    store8(src, 120); store8(src + 1, 0);
+    store8(src + 2, 3); store8(src + 3, 0);
+    store8(src + 4, 0); store8(src + 5, 0);
+    var dst = alloc(64);
+    assert(zlib_decompress(src, 6, dst, 64) < 0, "zlib bad header");
+    return 0;
+}
+
+# LOW-1: zlib header with CINFO > 7 (window > 32K — disallowed by
+# RFC 1950 §2.2).
+# CMF = 0x88 (CINFO=8, CM=8), FLG=0x1C — chosen so
+# (0x88*256 + 0x1C) % 31 == 0 (FCHECK passes).
+fn test_err_zlib_cinfo_overflow() {
+    var src = alloc(6);
+    store8(src + 0, 136);   # CMF: CINFO=8, CM=8
+    store8(src + 1, 28);    # FLG: FCHECK chosen so the % 31 == 0
+    store8(src + 2, 3); store8(src + 3, 0); store8(src + 4, 0); store8(src + 5, 0);
+    var dst = alloc(64);
+    assert(zlib_decompress(src, 6, dst, 64) < 0,
+    "zlib CINFO>7 must reject");
+    return 0;
+}
+
+fn test_zlib_dec_dict_streaming() {
+    # 2.3.6: streaming decode of an FDICT zlib stream. The input overlaps
+    # the dict heavily, so the encoder emits back-references INTO the dict
+    # — exercising the dict-aware match-copy (negative source offsets).
+    var dict = _dict_test_dict();
+    var input = _dict_test_input();
+    var dict_len = strlen(dict);
+    var input_len = strlen(input);
+
+    var enc = alloc(512);
+    var ec = zlib_enc_init_dict(6, enc, 512, dict, dict_len);
+    assert(ec != 0, "zdec dict enc init");
+    assert(zlib_enc_write(ec, input, input_len) == 0, "zdec dict enc write");
+    var clen = zlib_enc_finish(ec);
+    assert(clen > 6, "zdec dict enc clen");
+
+    # Streaming decode (whole) with the matching dict.
+    var d = alloc(256);
+    var ctx = zlib_dec_init_dict(d, 256, dict, dict_len);
+    assert(ctx != 0, "zdec dict init");
+    assert(zlib_dec_write(ctx, enc, clen) >= 0, "zdec dict write");
+    assert(zlib_dec_finish(ctx) == input_len, "zdec dict len");
+    var i = 0;
+    while (i < input_len) {
+        assert(load8(d + i) == load8(input + i), "zdec dict content");
+        i = i + 1;
+    }
+
+    # Streaming byte-at-a-time — DICTID + dict match-copy across chunks.
+    var d2 = alloc(256);
+    var ctx2 = zlib_dec_init_dict(d2, 256, dict, dict_len);
+    assert(ctx2 != 0, "zdec dict baat init");
+    var k = 0;
+    while (k < clen) {
+        assert(zlib_dec_write(ctx2, enc + k, 1) >= 0, "zdec dict baat write");
+        k = k + 1;
+    }
+    assert(zlib_dec_finish(ctx2) == input_len, "zdec dict baat len");
+    i = 0;
+    while (i < input_len) {
+        assert(load8(d2 + i) == load8(input + i), "zdec dict baat content");
+        i = i + 1;
+    }
+
+    # Wrong dict (same length, different content) → DICTID mismatch.
+    var wrong = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    var d3 = alloc(256);
+    var ctx3 = zlib_dec_init_dict(d3, 256, wrong, dict_len);
+    var rc3 = zlib_dec_write(ctx3, enc, clen);
+    var fin3 = zlib_dec_finish(ctx3);
+    assert(rc3 < 0 || fin3 < 0, "zdec wrong dict rejected");
+
+    # FDICT stream through the no-dict zlib_dec_init → rejected.
+    var d4 = alloc(256);
+    var ctx4 = zlib_dec_init(d4, 256);
+    var rc4 = zlib_dec_write(ctx4, enc, clen);
+    var fin4 = zlib_dec_finish(ctx4);
+    assert(rc4 < 0 || fin4 < 0, "zdec FDICT without dict rejected");
+    return 0;
+}
+
+fn test_zdec_short_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 5, c, 64, 6);
+    assert(clen > 0, "zdec short compress");
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "zdec short init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    assert(rc >= 0, "zdec short write");
+    var n = zlib_dec_finish(ctx);
+    assert(n == 5, "zdec short len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "zdec short content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_level_1_roundtrip() {
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 5, c, 64, 1);
+    assert(clen > 0, "zdec L1 compress");
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "zdec L1 init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    assert(rc >= 0, "zdec L1 write");
+    var n = zlib_dec_finish(ctx);
+    assert(n == 5, "zdec L1 len");
+    var i = 0;
+    while (i < 5) {
+        assert(load8(d + i) == load8(src + i), "zdec L1 content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_byte_at_a_time() {
+    var src = alloc(20);
+    var k = 0;
+    while (k < 20) {
+        store8(src + k, 97 + (k % 10));
+        k = k + 1;
+    }
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 20, c, 64, 6);
+    assert(clen > 0, "zdec BAAT compress");
+
+    var d = alloc(32);
+    var ctx = zlib_dec_init(d, 32);
+    assert(ctx != 0, "zdec BAAT init");
+    var i = 0;
+    while (i < clen) {
+        assert(zlib_dec_write(ctx, c + i, 1) >= 0, "zdec BAAT write");
+        i = i + 1;
+    }
+    var n = zlib_dec_finish(ctx);
+    assert(n == 20, "zdec BAAT len");
+    i = 0;
+    while (i < 20) {
+        assert(load8(d + i) == load8(src + i), "zdec BAAT content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_1kb_chunked() {
+    var src = alloc(1024);
+    var k = 0;
+    while (k < 1024) {
+        store8(src + k, 65 + (k % 26));
+        k = k + 1;
+    }
+    var c = alloc(2048);
+    var clen = zlib_compress_level(src, 1024, c, 2048, 6);
+    assert(clen > 0, "zdec 1kb compress");
+
+    var d = alloc(1024);
+    var ctx = zlib_dec_init(d, 1024);
+    assert(ctx != 0, "zdec 1kb init");
+    var off = 0;
+    while (off < clen) {
+        var step = 16;
+        if (off + step > clen) { step = clen - off; }
+        assert(zlib_dec_write(ctx, c + off, step) >= 0, "zdec 1kb chunk");
+        off = off + step;
+    }
+    var n = zlib_dec_finish(ctx);
+    assert(n == 1024, "zdec 1kb len");
+    var i = 0;
+    while (i < 1024) {
+        assert(load8(d + i) == load8(src + i), "zdec 1kb content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zdec_bad_fcheck() {
+    # Hand-crafted: CMF=0x78, FLG=0x02 → (0x78*256 + 0x02) % 31 = 1, not 0.
+    var src = alloc(8);
+    store8(src + 0, 120); store8(src + 1, 2);  # bad FCHECK
+    var dst = alloc(8);
+    var ctx = zlib_dec_init(dst, 8);
+    assert(ctx != 0, "bad FCHECK init");
+    var rc = zlib_dec_write(ctx, src, 2);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad FCHECK rejected");
+    return 0;
+}
+
+fn test_zdec_fdict_rejected() {
+    # Use zlib_enc_init_dict to produce a FDICT-bearing stream; the
+    # bite-4 streaming decoder rejects FDICT with -ERR_UNSUPPORTED_FORMAT.
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var dict = alloc(3);
+    store8(dict + 0, 97); store8(dict + 1, 98); store8(dict + 2, 99);
+    var c = alloc(64);
+    var enc = zlib_enc_init_dict(6, c, 64, dict, 3);
+    assert(enc != 0, "FDICT compress init");
+    assert(zlib_enc_write(enc, src, 5) >= 0, "FDICT compress write");
+    var clen = zlib_enc_finish(enc);
+    assert(clen > 0, "FDICT compress finish");
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "FDICT decode init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "FDICT rejected");
+    return 0;
+}
+
+fn test_zdec_bad_trailer() {
+    # Compress, then corrupt the final 4 bytes (Adler-32 trailer).
+    var src = alloc(5);
+    store8(src + 0, 72); store8(src + 1, 101); store8(src + 2, 108);
+    store8(src + 3, 108); store8(src + 4, 111);
+    var c = alloc(64);
+    var clen = zlib_compress_level(src, 5, c, 64, 6);
+    assert(clen > 5, "bad trailer compress");
+    store8(c + clen - 1, load8(c + clen - 1) ^ 1);
+
+    var d = alloc(16);
+    var ctx = zlib_dec_init(d, 16);
+    assert(ctx != 0, "bad trailer init");
+    var rc = zlib_dec_write(ctx, c, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc < 0 || fin < 0, "bad Adler-32 rejected");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_zlib_corrupt_checksum();
+    test_zlib_fdict();
+    test_err_zlib_bad_header();
+    test_err_zlib_cinfo_overflow();
+    test_zlib_dec_dict_streaming();
+    test_zdec_short_roundtrip();
+    test_zdec_level_1_roundtrip();
+    test_zdec_byte_at_a_time();
+    test_zdec_1kb_chunked();
+    test_zdec_bad_fcheck();
+    test_zdec_fdict_rejected();
+    test_zdec_bad_trailer();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

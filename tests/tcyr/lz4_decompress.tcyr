@@ -1,0 +1,31 @@
+# sankoch — LZ4 block — decompress
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/lz4_decompress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+fn test_lz4_buffer_too_small() {
+    var src = alloc(16);
+    var i = 0;
+    while (i < 16) { store8(src + i, 42); i = i + 1; }
+    var c = alloc(64);
+    var clen = lz4_compress(src, 16, c, 64);
+    assert(clen > 0, "lz4 compress for buf test");
+    var tiny = alloc(4);
+    assert(lz4_decompress(c, clen, tiny, 4) < 0, "lz4 decompress tiny buf should fail");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_lz4_buffer_too_small();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

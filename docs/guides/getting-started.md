@@ -15,9 +15,9 @@ cd sankoch
 
 cyrius deps                              # resolve stdlib into lib/
 cyrius build src/lib.cyr build/sankoch   # compile-check the library
-cyrius test tests/tcyr/sankoch.tcyr      # main test suite (~few seconds)
-cyrius test tests/tcyr/git_object.tcyr   # git-object regression suite
-cyrius fuzz                              # all 12 harness functions
+cyrius test                              # all tcyr suites (auto-discovered)
+cyrius test tests/tcyr/deflate_decompress.tcyr   # one split suite
+cyrius fuzz                              # all fuzz harness functions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + SIZE lines
 cyrius distlib                           # → dist/sankoch.cyr
 cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe)
