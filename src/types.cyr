@@ -8,6 +8,7 @@ enum Format {
     FORMAT_ZLIB = 3;
     FORMAT_GZIP = 4;
     FORMAT_LZ4F = 5;      # LZ4 frame format (magic + header + blocks + trailer)
+    FORMAT_XZ = 6;        # .xz container (LZMA2) — decode only (2.4.0)
 }
 
 # Error codes

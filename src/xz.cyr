@@ -1,0 +1,729 @@
+# sankoch — .xz container + LZMA2 / LZMA decode (decode-only)
+#
+# Decompresses the .xz stream format (the common modern source-tarball
+# container). Decode only — no encoder. Added at 2.4.0 to unblock
+# takumi `.tar.xz` extraction.
+#
+# Layout owned here:
+#   - .xz container parse: stream header / block header(s) / index /
+#     stream footer, with CRC-32 / CRC-64 check-field validation
+#     (checksum.cyr supplies both; "none" and SHA-256 checks are parsed
+#     but not verified — SHA-256 is excluded by roadmap.md § 2.4.0
+#     (CRC-32 / CRC-64 only); the per-block header CRC32 still gates
+#     structural integrity).
+#   - LZMA2 chunk framing: control bytes, dict/state/props resets,
+#     uncompressed chunks, LZMA chunks.
+#   - LZMA decode: range (arithmetic) decoder + the literal/match state
+#     machine with rep-distance history.
+#
+# References:
+#   - "The .xz File Format" v1.1.0 (tukaani.org/xz/xz-file-format.txt)
+#   - LZMA SDK LzmaDec.c / xz-embedded xz_dec_lzma2.c (decoder shape)
+#   - The probability-model layout matches the canonical LZMA decoder.
+#
+# All state lives in flat globals behind `_sankoch_mtx` (taken by the
+# public entry in lib.cyr), consistent with the rest of the library —
+# no per-call allocation on the decode path beyond the one-time prob
+# table. `>>` is a logical shift on i64 in Cyrius, so the u32 range-coder
+# words and the full-width masks below are sign-extension-safe.
+
+# Probability-model offsets, in units of one 11-bit probability (each
+# stored as an i64 slot). kNumStates = 12, kNumPosBitsMax = 4 → up to 16
+# pos-states. Cumulative layout — see LzmaDec.c CLzmaDec.probs.
+enum XzProb {
+    XZ_OFF_ISMATCH    = 0;       # 12 * 16 = 192
+    XZ_OFF_ISREP      = 192;     # 12
+    XZ_OFF_ISREPG0    = 204;     # 12
+    XZ_OFF_ISREPG1    = 216;     # 12
+    XZ_OFF_ISREPG2    = 228;     # 12
+    XZ_OFF_ISREP0LONG = 240;     # 12 * 16 = 192
+    XZ_OFF_POSSLOT    = 432;     # 4 * 64 = 256
+    XZ_OFF_SPECPOS    = 688;     # 115
+    XZ_OFF_ALIGN      = 803;     # 16
+    XZ_OFF_LENCODER   = 819;     # 514
+    XZ_OFF_REPLEN     = 1333;    # 514
+    XZ_OFF_LITERAL    = 1847;    # 0x300 << (lc+lp), lc+lp <= 4 → max 12288
+    XZ_PROBS_TOTAL    = 14135;   # 1847 + 12288
+    XZ_PROB_INIT      = 1024;    # (1 << 11) / 2
+}
+
+# ---- shared cursor / range-coder / lzma state ----
+var _xz_in = 0;        # base pointer of the compressed stream
+var _xz_in_pos = 0;    # parse cursor (container + LZMA2 framing)
+var _xz_in_end = 0;    # end of available input (stream length)
+var _xz_err = 0;       # sticky corruption flag set by bounded reads
+
+var _xz_rc_end = 0;    # range-decoder read bound (current LZMA chunk end)
+var _xz_rc_code = 0;
+var _xz_rc_range = 0;
+
+var _xz_probs = 0;     # prob table base (XZ_PROBS_TOTAL i64 slots)
+
+var _xz_state = 0;     # LZMA state 0..11
+var _xz_rep0 = 0;
+var _xz_rep1 = 0;
+var _xz_rep2 = 0;
+var _xz_rep3 = 0;
+var _xz_lc = 0;
+var _xz_lp = 0;
+var _xz_pb = 0;
+var _xz_pos_mask = 0;  # (1 << pb) - 1
+var _xz_lit_mask = 0;  # (1 << lp) - 1
+
+# Output window (== the destination buffer; whole output retained, so
+# match back-references are always in range).
+var _xz_dst = 0;
+var _xz_dp = 0;
+var _xz_dst_cap = 0;
+var _xz_dict_start = 0;  # dp at the last dict reset (match floor)
+
+# ============================================================
+# Range decoder (LZMA arithmetic coder)
+# ============================================================
+
+# Read one input byte for the range coder, clamped to the chunk bound.
+# Past the bound feeds 0 and trips _xz_err — never reads OOB memory.
+fn _xz_rc_byte(): i64 {
+    if (_xz_in_pos >= _xz_rc_end) {
+        _xz_err = 1;
+        return 0;
+    }
+    var b = load8(_xz_in + _xz_in_pos);
+    _xz_in_pos = _xz_in_pos + 1;
+    return b;
+}
+
+# Initialize the range coder for one LZMA chunk: first byte must be 0,
+# then 4 big-endian bytes seed `code`; range = 0xFFFFFFFF.
+fn _xz_rc_init(): i64 {
+    if (_xz_rc_byte() != 0) { _xz_err = 1; }
+    _xz_rc_code = 0;
+    var i = 0;
+    while (i < 4) {
+        _xz_rc_code = ((_xz_rc_code << 8) | _xz_rc_byte()) & 0xFFFFFFFF;
+        i = i + 1;
+    }
+    _xz_rc_range = 0xFFFFFFFF;
+    return 0;
+}
+
+# Renormalize: if range dropped below kTopValue (1<<24), shift in a byte.
+# A single shift suffices (range stays >= 1<<16 after any decode step).
+fn _xz_rc_normalize(): i64 {
+    if (_xz_rc_range < 16777216) {
+        _xz_rc_range = (_xz_rc_range << 8) & 0xFFFFFFFF;
+        _xz_rc_code = ((_xz_rc_code << 8) | _xz_rc_byte()) & 0xFFFFFFFF;
+    }
+    return 0;
+}
+
+# Decode one bit against the probability at slot `idx`; update the prob.
+fn _xz_rc_bit(idx): i64 {
+    var p = load64(_xz_probs + idx * 8);
+    var bound = ((_xz_rc_range >> 11) * p) & 0xFFFFFFFF;
+    var sym = 0;
+    if (_xz_rc_code < bound) {
+        _xz_rc_range = bound;
+        p = p + ((2048 - p) >> 5);
+        sym = 0;
+    } else {
+        _xz_rc_range = (_xz_rc_range - bound) & 0xFFFFFFFF;
+        _xz_rc_code = (_xz_rc_code - bound) & 0xFFFFFFFF;
+        p = p - (p >> 5);
+        sym = 1;
+    }
+    store64(_xz_probs + idx * 8, p);
+    _xz_rc_normalize();
+    return sym;
+}
+
+# Bit-tree decode, MSB-first, `nbits` bits rooted at slot `base`.
+fn _xz_bittree(base, nbits): i64 {
+    var m = 1;
+    var i = 0;
+    while (i < nbits) {
+        m = (m << 1) | _xz_rc_bit(base + m);
+        i = i + 1;
+    }
+    return m - (1 << nbits);
+}
+
+# Reverse bit-tree decode, LSB-first — for SpecPos and Align slots.
+fn _xz_bittree_rev(base, nbits): i64 {
+    var m = 1;
+    var sym = 0;
+    var i = 0;
+    while (i < nbits) {
+        var b = _xz_rc_bit(base + m);
+        m = (m << 1) | b;
+        sym = sym | (b << i);
+        i = i + 1;
+    }
+    return sym;
+}
+
+# Decode `nbits` equiprobable bits (no model) — high distance bits.
+fn _xz_rc_direct(nbits): i64 {
+    var res = 0;
+    var i = 0;
+    while (i < nbits) {
+        _xz_rc_range = (_xz_rc_range >> 1) & 0xFFFFFFFF;
+        var bit = 0;
+        if (_xz_rc_code >= _xz_rc_range) {
+            _xz_rc_code = (_xz_rc_code - _xz_rc_range) & 0xFFFFFFFF;
+            bit = 1;
+        }
+        res = (res << 1) | bit;
+        _xz_rc_normalize();
+        i = i + 1;
+    }
+    return res;
+}
+
+# LZMA length decoder. `base` is XZ_OFF_LENCODER or XZ_OFF_REPLEN.
+# Returns a 0-based length (caller adds kMatchMinLen = 2).
+#   choice  @ base+0       choice2 @ base+1
+#   low[posState][8]  @ base+2   + posState*8     (3-bit tree)  → 0..7
+#   mid[posState][8]  @ base+130 + posState*8     (3-bit tree)  → 8..15
+#   high[256]         @ base+258                  (8-bit tree)  → 16..271
+fn _xz_len(base, pos_state): i64 {
+    if (_xz_rc_bit(base) == 0) {
+        return _xz_bittree(base + 2 + pos_state * 8, 3);
+    }
+    if (_xz_rc_bit(base + 1) == 0) {
+        return 8 + _xz_bittree(base + 130 + pos_state * 8, 3);
+    }
+    return 16 + _xz_bittree(base + 258, 8);
+}
+
+# ============================================================
+# LZMA core decode
+# ============================================================
+
+# Reset all probabilities to the neutral value (state reset).
+fn _xz_reset_probs(): i64 {
+    var i = 0;
+    while (i < XZ_PROBS_TOTAL) {
+        store64(_xz_probs + i * 8, XZ_PROB_INIT);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Reset the LZMA literal/match state (state, rep distances).
+fn _xz_reset_state(): i64 {
+    _xz_state = 0;
+    _xz_rep0 = 0;
+    _xz_rep1 = 0;
+    _xz_rep2 = 0;
+    _xz_rep3 = 0;
+    return 0;
+}
+
+# Emit one output byte, with capacity + ceiling guards.
+fn _xz_put(b): i64 {
+    if (_xz_dp >= _xz_dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    if (_xz_dp >= DECOMPRESS_MAX_OUTPUT) { return 0 - ERR_OUTPUT_LIMIT; }
+    store8(_xz_dst + _xz_dp, b & 255);
+    _xz_dp = _xz_dp + 1;
+    return 0;
+}
+
+# Decode one literal byte (state < 7: plain; state >= 7: match-predicted).
+fn _xz_decode_literal(): i64 {
+    var prev = 0;
+    if (_xz_dp > _xz_dict_start) { prev = load8(_xz_dst + _xz_dp - 1); }
+    var lit_state = ((_xz_dp & _xz_lit_mask) << _xz_lc) + (prev >> (8 - _xz_lc));
+    var base = XZ_OFF_LITERAL + 768 * lit_state;   # 0x300 = 768
+    var sym = 1;
+
+    if (_xz_state >= 7) {
+        # Match-predicted literal: track the byte at the last rep0 match.
+        var match_byte = load8(_xz_dst + _xz_dp - _xz_rep0 - 1);
+        while (sym < 256) {
+            var match_bit = (match_byte >> 7) & 1;
+            match_byte = (match_byte << 1) & 255;
+            var bit = _xz_rc_bit(base + ((1 + match_bit) << 8) + sym);
+            sym = (sym << 1) | bit;
+            if (match_bit != bit) { break; }
+        }
+    }
+    while (sym < 256) {
+        sym = (sym << 1) | _xz_rc_bit(base + sym);
+    }
+    return _xz_put(sym);
+}
+
+# Copy a match of `len` bytes from distance rep0+1 back in the window.
+# Byte-by-byte to honor LZ77 overlapping-copy semantics.
+fn _xz_copy_match(len): i64 {
+    var dist = _xz_rep0 + 1;
+    if (_xz_dp - dist < _xz_dict_start) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+    if (_xz_dp + len > _xz_dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    if (_xz_dp + len > DECOMPRESS_MAX_OUTPUT) { return 0 - ERR_OUTPUT_LIMIT; }
+    var i = 0;
+    while (i < len) {
+        store8(_xz_dst + _xz_dp, load8(_xz_dst + _xz_dp - dist));
+        _xz_dp = _xz_dp + 1;
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Decode the match distance into rep0 (after a new-match len decode).
+# `len` is the 0-based length (pre +2). Returns 0, or 1 if the end
+# marker (dist == 0xFFFFFFFF) was decoded, or negative on error.
+fn _xz_decode_distance(len): i64 {
+    var len_state = len;
+    if (len_state > 3) { len_state = 3; }
+    var pos_slot = _xz_bittree(XZ_OFF_POSSLOT + len_state * 64, 6);
+
+    if (pos_slot < 4) {
+        _xz_rep0 = pos_slot;
+        return 0;
+    }
+
+    var num_direct = (pos_slot >> 1) - 1;
+    var dist = (2 | (pos_slot & 1)) << num_direct;
+    if (pos_slot < 14) {
+        dist = dist + _xz_bittree_rev(XZ_OFF_SPECPOS + dist - pos_slot, num_direct);
+    } else {
+        dist = dist + (_xz_rc_direct(num_direct - 4) << 4);
+        dist = dist + _xz_bittree_rev(XZ_OFF_ALIGN, 4);
+    }
+    _xz_rep0 = dist & 0xFFFFFFFF;
+    if (_xz_rep0 == 0xFFFFFFFF) { return 1; }   # end-of-stream marker
+    return 0;
+}
+
+# Decode exactly `out_len` bytes of one LZMA chunk into the window.
+# Range coder must already be initialized for this chunk.
+fn _xz_lzma_run(out_len): i64 {
+    var target = _xz_dp + out_len;
+    while (_xz_dp < target) {
+        if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+        var pos_state = _xz_dp & _xz_pos_mask;
+
+        if (_xz_rc_bit(XZ_OFF_ISMATCH + (_xz_state << 4) + pos_state) == 0) {
+            # --- literal ---
+            var lr = _xz_decode_literal();
+            if (lr < 0) { return lr; }
+            if (_xz_state < 4) { _xz_state = 0; }
+            elif (_xz_state < 10) { _xz_state = _xz_state - 3; }
+            else { _xz_state = _xz_state - 6; }
+            continue;
+        }
+
+        # --- match ---
+        var len = 0;
+        if (_xz_rc_bit(XZ_OFF_ISREP + _xz_state) != 0) {
+            # repeated match
+            if (_xz_rc_bit(XZ_OFF_ISREPG0 + _xz_state) == 0) {
+                if (_xz_rc_bit(XZ_OFF_ISREP0LONG + (_xz_state << 4) + pos_state) == 0) {
+                    # short rep — single byte at rep0
+                    if (_xz_state < 7) { _xz_state = 9; } else { _xz_state = 11; }
+                    var sr = _xz_copy_match(1);
+                    if (sr < 0) { return sr; }
+                    continue;
+                }
+            } else {
+                var dist = 0;
+                if (_xz_rc_bit(XZ_OFF_ISREPG1 + _xz_state) == 0) {
+                    dist = _xz_rep1;
+                } else {
+                    if (_xz_rc_bit(XZ_OFF_ISREPG2 + _xz_state) == 0) {
+                        dist = _xz_rep2;
+                    } else {
+                        dist = _xz_rep3;
+                        _xz_rep3 = _xz_rep2;
+                    }
+                    _xz_rep2 = _xz_rep1;
+                }
+                _xz_rep1 = _xz_rep0;
+                _xz_rep0 = dist;
+            }
+            len = _xz_len(XZ_OFF_REPLEN, pos_state);
+            if (_xz_state < 7) { _xz_state = 8; } else { _xz_state = 11; }
+        } else {
+            # new match
+            _xz_rep3 = _xz_rep2;
+            _xz_rep2 = _xz_rep1;
+            _xz_rep1 = _xz_rep0;
+            len = _xz_len(XZ_OFF_LENCODER, pos_state);
+            if (_xz_state < 7) { _xz_state = 7; } else { _xz_state = 10; }
+            var dr = _xz_decode_distance(len);
+            if (dr < 0) { return dr; }
+            if (dr == 1) {
+                # end marker — only legal if the chunk produced its bytes.
+                if (_xz_dp != target) { return 0 - ERR_CORRUPT_DATA; }
+                return 0;
+            }
+        }
+        var cr = _xz_copy_match(len + 2);   # kMatchMinLen
+        if (cr < 0) { return cr; }
+    }
+    if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+    return 0;
+}
+
+# ============================================================
+# LZMA2 chunk framing
+# ============================================================
+
+# Apply the lc/lp/pb properties byte (d = (pb*5 + lp)*9 + lc).
+fn _xz_set_props(d): i64 {
+    if (d >= 225) { return 0 - ERR_CORRUPT_DATA; }
+    var lc = d % 9;
+    var r = (d - lc) / 9;
+    var lp = r % 5;
+    var pb = (r - lp) / 5;
+    if (lc + lp > 4) { return 0 - ERR_CORRUPT_DATA; }
+    _xz_lc = lc;
+    _xz_lp = lp;
+    _xz_pb = pb;
+    _xz_pos_mask = (1 << pb) - 1;
+    _xz_lit_mask = (1 << lp) - 1;
+    return 0;
+}
+
+# Decode an LZMA2 stream occupying _xz_in[_xz_in_pos .. _xz_in_end).
+# Output goes to the window (_xz_dst / _xz_dp). Returns 0 or negative.
+# On return _xz_in_pos points just past the 0x00 end-control byte.
+fn _xz_lzma2_run(): i64 {
+    var have_props = 0;
+    var need_dict_reset = 1;
+    while (1) {
+        if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        var ctrl = load8(_xz_in + _xz_in_pos);
+        _xz_in_pos = _xz_in_pos + 1;
+
+        if (ctrl == 0) { return 0; }   # end of LZMA2 stream
+
+        if (ctrl < 3) {
+            # Uncompressed chunk: ctrl 1 = reset dict, 2 = no reset.
+            if (ctrl == 1) {
+                _xz_dict_start = _xz_dp;
+                need_dict_reset = 0;
+            } else {
+                if (need_dict_reset != 0) { return 0 - ERR_CORRUPT_DATA; }
+            }
+            if (_xz_in_pos + 2 > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+            var usize = ((load8(_xz_in + _xz_in_pos) << 8)
+                | load8(_xz_in + _xz_in_pos + 1)) + 1;
+            _xz_in_pos = _xz_in_pos + 2;
+            if (_xz_in_pos + usize > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+            var i = 0;
+            while (i < usize) {
+                var pr = _xz_put(load8(_xz_in + _xz_in_pos));
+                if (pr < 0) { return pr; }
+                _xz_in_pos = _xz_in_pos + 1;
+                i = i + 1;
+            }
+            # After raw data the LZMA state is stale; the next LZMA chunk
+            # is required by the format to carry a state reset.
+            _xz_state = 0;
+            continue;
+        }
+
+        if (ctrl < 0x80) { return 0 - ERR_CORRUPT_DATA; }
+
+        # LZMA chunk. ctrl bits: [7]=1, [6:5]=reset mode, [4:0]=usize hi.
+        if (_xz_in_pos + 4 > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        var unpacked = (((ctrl & 31) << 16)
+            | (load8(_xz_in + _xz_in_pos) << 8)
+            | load8(_xz_in + _xz_in_pos + 1)) + 1;
+        var packed = ((load8(_xz_in + _xz_in_pos + 2) << 8)
+            | load8(_xz_in + _xz_in_pos + 3)) + 1;
+        _xz_in_pos = _xz_in_pos + 4;
+        var reset = (ctrl >> 5) & 3;
+
+        if (reset >= 2) {
+            if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+            var sp = _xz_set_props(load8(_xz_in + _xz_in_pos));
+            if (sp < 0) { return sp; }
+            _xz_in_pos = _xz_in_pos + 1;
+            have_props = 1;
+        }
+        if (have_props == 0) { return 0 - ERR_CORRUPT_DATA; }
+        if (reset >= 1) {
+            _xz_reset_probs();
+            _xz_reset_state();
+        }
+        if (reset == 3) {
+            _xz_dict_start = _xz_dp;
+            need_dict_reset = 0;
+        }
+        if (need_dict_reset != 0) { return 0 - ERR_CORRUPT_DATA; }
+
+        # Range-decode `unpacked` bytes from the next `packed` input bytes.
+        if (_xz_in_pos + packed > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        var chunk_start = _xz_in_pos;
+        _xz_rc_end = chunk_start + packed;
+        _xz_rc_init();
+        var rr = _xz_lzma_run(unpacked);
+        if (rr < 0) { return rr; }
+        # Advance past the whole compressed chunk regardless of exact
+        # range-coder consumption.
+        _xz_in_pos = chunk_start + packed;
+    }
+    return 0;
+}
+
+# ============================================================
+# .xz container parse
+# ============================================================
+
+# Decode a multibyte (LEB128-style, 7 bits/byte) integer at _xz_in_pos,
+# advancing the cursor. xz caps these at 9 bytes. Trips _xz_err on
+# overrun / over-length.
+fn _xz_varint(): i64 {
+    var result = 0;
+    var i = 0;
+    while (i < 9) {
+        if (_xz_in_pos >= _xz_in_end) { _xz_err = 1; return 0; }
+        var b = load8(_xz_in + _xz_in_pos);
+        _xz_in_pos = _xz_in_pos + 1;
+        result = result | ((b & 127) << (i * 7));
+        if ((b & 128) == 0) { return result; }
+        i = i + 1;
+    }
+    _xz_err = 1;
+    return 0;
+}
+
+# Read a 4-byte little-endian field at `off`.
+fn _xz_le32(off): i64 {
+    return load8(_xz_in + off) | (load8(_xz_in + off + 1) << 8)
+        | (load8(_xz_in + off + 2) << 16) | (load8(_xz_in + off + 3) << 24);
+}
+
+# Validate the block check field over this block's output slice
+# data[0..dlen). check_type: 0 none, 1 CRC32, 4 CRC64, 10 SHA-256
+# (parsed, not verified). `at` points at the check field; `data` at the
+# start of this block's decoded bytes. Returns the field length, or
+# negative error.
+fn _xz_verify_check(check_type, at, data, dlen): i64 {
+    if (check_type == 0) { return 0; }
+    if (check_type == 1) {
+        if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
+        var got = crc32(data, dlen);
+        var want = _xz_le32(at) & 0xFFFFFFFF;
+        if (got != want) { return 0 - ERR_CHECKSUM_MISMATCH; }
+        return 4;
+    }
+    if (check_type == 4) {
+        if (crc64_init_table() < 0) { return 0 - ERR_OOM; }
+        var got64 = crc64(data, dlen);
+        var lo = _xz_le32(at) & 0xFFFFFFFF;
+        var hi = _xz_le32(at + 4) & 0xFFFFFFFF;
+        var want64 = (hi << 32) | lo;
+        if (got64 != want64) { return 0 - ERR_CHECKSUM_MISMATCH; }
+        return 8;
+    }
+    if (check_type == 10) { return 32; }   # SHA-256: skip verification
+    return 0 - ERR_UNSUPPORTED_FORMAT;
+}
+
+# Parse + decode one .xz block starting at _xz_in_pos. check_type from
+# the stream header. Returns decoded length (cumulative dp advance is the
+# real output); sets _xz_in_pos past the block's check field.
+fn _xz_decode_block(check_type): i64 {
+    var block_start = _xz_in_pos;
+    var hsize_byte = load8(_xz_in + _xz_in_pos);
+    var header_size = (hsize_byte + 1) * 4;
+    if (block_start + header_size > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+
+    # Header CRC32 covers the header bytes excluding its own trailing CRC.
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
+    var hdr_crc = crc32(_xz_in + block_start, header_size - 4);
+    var stored_hdr_crc = _xz_le32(block_start + header_size - 4) & 0xFFFFFFFF;
+    if (hdr_crc != stored_hdr_crc) { return 0 - ERR_CHECKSUM_MISMATCH; }
+
+    _xz_in_pos = block_start + 1;
+    var flags = load8(_xz_in + _xz_in_pos);
+    _xz_in_pos = _xz_in_pos + 1;
+    var num_filters = (flags & 3) + 1;
+
+    # Optional compressed / uncompressed size fields (varints, ignored —
+    # we drive decode off the LZMA2 end marker and the block check).
+    if ((flags & 64) != 0) { _xz_varint(); }
+    if ((flags & 128) != 0) { _xz_varint(); }
+    if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+
+    # Filter flags. Only a single LZMA2 filter (ID 0x21) is supported.
+    if (num_filters != 1) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+    var filter_id = _xz_varint();
+    var prop_size = _xz_varint();
+    if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+    if (filter_id != 0x21) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+    # LZMA2 properties = 1 byte (dictionary-size code). We retain the full
+    # output as the window, so the dict-size value itself is not needed.
+    if (prop_size != 1) { return 0 - ERR_CORRUPT_DATA; }
+    _xz_in_pos = _xz_in_pos + 1;
+
+    # Skip header padding to the stored CRC (already validated).
+    _xz_in_pos = block_start + header_size;
+
+    # Decode the LZMA2 payload. _xz_in_end stays the stream end; the
+    # framing stops at the 0x00 control byte.
+    var dp_before = _xz_dp;
+    var lr = _xz_lzma2_run();
+    if (lr < 0) { return lr; }
+    var dlen = _xz_dp - dp_before;
+    var out_start = _xz_dst + dp_before;
+
+    # Block padding: pad the compressed data (from block_start) to a
+    # 4-byte boundary before the check field.
+    var consumed = _xz_in_pos - block_start;
+    while ((consumed & 3) != 0) {
+        if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        if (load8(_xz_in + _xz_in_pos) != 0) { return 0 - ERR_CORRUPT_DATA; }
+        _xz_in_pos = _xz_in_pos + 1;
+        consumed = consumed + 1;
+    }
+
+    # Check field over this block's output slice.
+    var clen = _xz_verify_check(check_type, _xz_in_pos, out_start, dlen);
+    if (clen < 0) { return clen; }
+    if (_xz_in_pos + clen > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+    _xz_in_pos = _xz_in_pos + clen;
+    return dlen;
+}
+
+# Decode one .xz stream beginning at offset `s` in _xz_in. Appends to the
+# output window (_xz_dp) and returns the absolute offset just past the
+# stream footer, or a negative error. Assumes _xz_in / _xz_in_end /
+# _xz_probs / _xz_dst already set up by the caller.
+fn _xz_decode_stream(s): i64 {
+    var src = _xz_in;
+    if (s + 32 > _xz_in_end) { return 0 - ERR_INVALID_INPUT; }
+
+    # Stream header: magic FD 37 7A 58 5A 00.
+    if (load8(src + s) != 0xFD || load8(src + s + 1) != 0x37
+        || load8(src + s + 2) != 0x7A || load8(src + s + 3) != 0x58
+        || load8(src + s + 4) != 0x5A || load8(src + s + 5) != 0x00) {
+        return 0 - ERR_CORRUPT_DATA;
+    }
+    # Stream flags: byte 6 reserved (0), byte 7 = check type.
+    if (load8(src + s + 6) != 0) { return 0 - ERR_CORRUPT_DATA; }
+    var check_type = load8(src + s + 7);
+    if (check_type > 15) { return 0 - ERR_CORRUPT_DATA; }
+
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
+    var sf_crc = crc32(src + s + 6, 2);
+    if (sf_crc != (_xz_le32(s + 8) & 0xFFFFFFFF)) { return 0 - ERR_CHECKSUM_MISMATCH; }
+
+    # Each stream resets the dictionary floor.
+    _xz_dict_start = _xz_dp;
+
+    # Blocks until the index indicator (0x00).
+    _xz_in_pos = s + 12;   # past the 12-byte stream header
+    while (1) {
+        if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        if (load8(src + _xz_in_pos) == 0) { break; }   # index indicator
+        var br = _xz_decode_block(check_type);
+        if (br < 0) { return br; }
+    }
+
+    # Index: indicator(0) + count + records, padded to 4, then CRC32. We
+    # don't re-validate the record sizes (the per-block checks and header
+    # CRCs already gate integrity); we parse the index to locate the
+    # stream footer and validate its CRC32.
+    var index_start = _xz_in_pos;
+    _xz_in_pos = _xz_in_pos + 1;   # indicator
+    var num_records = _xz_varint();
+    if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+    var rec = 0;
+    while (rec < num_records) {
+        _xz_varint();   # unpadded size
+        _xz_varint();   # uncompressed size
+        rec = rec + 1;
+    }
+    if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+    var idx_consumed = _xz_in_pos - index_start;
+    while ((idx_consumed & 3) != 0) {
+        if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        _xz_in_pos = _xz_in_pos + 1;
+        idx_consumed = idx_consumed + 1;
+    }
+    var index_size = idx_consumed + 4;   # + the index's own CRC32
+    if (index_start + index_size > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+    var idx_crc = crc32(src + index_start, idx_consumed);
+    if (idx_crc != (_xz_le32(index_start + idx_consumed) & 0xFFFFFFFF)) {
+        return 0 - ERR_CHECKSUM_MISMATCH;
+    }
+    _xz_in_pos = index_start + index_size;
+
+    # Stream footer (12 bytes): CRC32 | Backward Size | Stream Flags | YZ.
+    if (_xz_in_pos + 12 > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+    var foot = _xz_in_pos;
+    if (load8(src + foot + 10) != 0x59 || load8(src + foot + 11) != 0x5A) {
+        return 0 - ERR_CORRUPT_DATA;
+    }
+    # Stream flags must match the header's.
+    if (load8(src + foot + 8) != 0 || load8(src + foot + 9) != check_type) {
+        return 0 - ERR_CORRUPT_DATA;
+    }
+    # Backward Size encodes the index size: (stored+1)*4.
+    var back = _xz_le32(foot + 4) & 0xFFFFFFFF;
+    if ((back + 1) * 4 != index_size) { return 0 - ERR_CORRUPT_DATA; }
+    # Footer CRC32 over Backward Size + Stream Flags (bytes foot+4 .. foot+9).
+    var foot_crc = crc32(src + foot + 4, 6);
+    if (foot_crc != (_xz_le32(foot) & 0xFFFFFFFF)) {
+        return 0 - ERR_CHECKSUM_MISMATCH;
+    }
+
+    return foot + 12;
+}
+
+# Decompress a full .xz file. Supports concatenated streams (each its own
+# header/blocks/index/footer) separated by optional 4-byte-aligned zero
+# Stream Padding — matching `xz -dc`. Inner entry — caller holds the lock.
+fn _xz_decompress_inner(src, src_len, dst, dst_cap): i64 {
+    if (src_len < 32) { return 0 - ERR_INVALID_INPUT; }
+
+    _xz_in = src;
+    _xz_in_end = src_len;
+    _xz_err = 0;
+
+    # Allocate the probability table once (reused across calls).
+    if (_xz_probs == 0) {
+        _xz_probs = _sankoch_alloc(XZ_PROBS_TOTAL * 8);
+        if (_xz_probs == 0) { return 0 - ERR_OOM; }
+    }
+
+    # Output window — contiguous across all streams.
+    _xz_dst = dst;
+    _xz_dp = 0;
+    _xz_dst_cap = dst_cap;
+    _xz_dict_start = 0;
+
+    var off = 0;
+    while (off < src_len) {
+        # Stream Padding: runs of zero bytes (multiple of 4) between or
+        # after streams. Skip them; reaching EOF ends decode.
+        if (load8(src + off) == 0) {
+            var pad = 0;
+            while (off < src_len && load8(src + off) == 0) {
+                off = off + 1;
+                pad = pad + 1;
+            }
+            if ((pad & 3) != 0) { return 0 - ERR_CORRUPT_DATA; }
+            continue;
+        }
+        var r = _xz_decode_stream(off);
+        if (r < 0) { return r; }
+        off = r;
+    }
+
+    return _xz_dp;
+}
+
+# Public: decompress a .xz stream. Thread-safe wrapper.
+fn xz_decompress(src, src_len, dst, dst_cap): i64 {
+    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    _sankoch_lock();
+    var r = _xz_decompress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
+}

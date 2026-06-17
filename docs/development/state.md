@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-16 (v2.3.8 cut — P(-1) closeout; 2.3.x line complete) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-06-16 (v2.4.0 cut — xz/LZMA decode shipped; 2.4.x arc opened) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.3.8` — single source of truth
+- **`VERSION`**: `2.4.0` — single source of truth
 - **`cyrius.cyml [package].cyrius`**: `6.2.15` — toolchain pin
-- **Tag**: `2.3.8` (bare semver, no `v` prefix)
+- **Tag**: `2.4.0` (bare semver, no `v` prefix)
 - **Released**: 2026-06-16
 
 ## Distribution
@@ -28,44 +28,45 @@ type: state
 
 ## Source
 
-- **Source**: **6,729 lines** across 14 domain modules (`src/*.cyr`).
+- **Source**: **7,548 lines** across 15 domain modules (`src/*.cyr`) — `src/xz.cyr` (729) new at 2.4.0.
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
 
 | Suite                          | Functions | Assertions |
 |--------------------------------|----------:|-----------:|
-| `tests/tcyr/sankoch.tcyr`      |       172 |  3,862,492 |
+| `tests/tcyr/sankoch.tcyr`      |       182 |  3,869,551 |
 | `tests/tcyr/git_object.tcyr`   |        10 |    346,583 |
-| **Total**                      |   **182** | **4,209,075** |
+| **Total**                      |   **192** | **4,216,134** |
 
 The assertion total is heavily inflated by per-byte content-loop checks on streaming round-trips (a single 128 KB round-trip contributes 131,072 assertions through one `while (i < N) assert(load8(d+i) == load8(s+i))` loop). Read as a coverage-**density** number, not a coverage-**breadth** number. See [`guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large) for the full explanation.
 
 ## Fuzz totals
 
-- **1,649 iterations** across 12 harness functions in 2 files:
+- **2,149 iterations** across 13 harness functions in 3 files:
   - `fuzz/fuzz_lz4.fcyr`: 700 (round-trip 500 + malformed 200)
   - `fuzz/fuzz_deflate.fcyr`: 949 (deflate batch 340 + zlib 160 + gzip 160 + 4 streaming variants 204 + tree-shape 55 + skewed-freq 30)
+  - `fuzz/fuzz_xz.fcyr`: 500 (random-input 300 + corruption 200) — new at 2.4.0
 
 ## Dist bundles
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 6,709 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F, batch + streaming on both sides |
-| `dist/sankoch-core.cyr`      |   313 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
+| `dist/sankoch.cyr`           | 7,527 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F + xz decode, batch + streaming |
+| `dist/sankoch-core.cyr`      |   314 | Kernel-safe LZ4 batch decompress only (AGNOS initrd) |
 
 Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
 
 ## In-flight slots
 
-**The 2.3.x line is complete** (2.3.8 P(-1) closeout shipped, zero audit
-findings). Next is the 2.4.x decode-only xz/bzip2 (takumi-driven) arc per
-[`roadmap.md`](roadmap.md):
+**2.4.0 (xz / LZMA decode) shipped** 2026-06-16 — `FORMAT_XZ` +
+`xz_decompress` + CRC-64/XZ, decode-only, validated against `xz -dc`.
+The 2.4.x arc continues with bzip2 decode per [`roadmap.md`](roadmap.md):
 
 | Slot       | Theme                                                                           | Sizing       |
 |------------|---------------------------------------------------------------------------------|--------------|
-| **2.4.0**  | xz / LZMA decode (`FORMAT_XZ`) — unblocks takumi `.tar.xz` extraction            | large        |
-| **2.4.1**  | bzip2 decode (`FORMAT_BZIP2`) — takumi `.tar.bz2` extraction                     | medium-large |
+| ✅ 2.4.0   | xz / LZMA decode (`FORMAT_XZ`) — **shipped**; unblocks takumi `.tar.xz`          | large        |
+| **2.4.1**  | bzip2 decode (`FORMAT_BZIP2`) — takumi `.tar.bz2` extraction ← next             | medium-large |
 
 DEFLATE throughput round 2 (the old 2.3.4 slot) partially delivered as
 CRC-32 slice-by-8; `good_match` dropped and PCLMULQDQ deferred — see the
@@ -80,12 +81,13 @@ two deferred markers in [`roadmap.md`](roadmap.md).
 | AGNOS kernel       | LZ4              | initrd, snapshots                    |
 | shravan / tarang   | DEFLATE, gzip    | Embedded compressed streams          |
 | sit                | zlib             | Git-object reads (post-v2.0.3)       |
+| takumi             | gzip, **xz**     | `.tar.gz` + (post-2.4.0) `.tar.xz` source extraction |
 | Any crate          | All              | Replaces zlib FFI / shelling to gzip |
 
 ## CI / release gates
 
-- **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (20 deps, 0 untrusted, 0 missing).
-- **Tests**: both tcyr suites green; all 12 fuzz harness functions green.
+- **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (21 deps, 0 untrusted, 0 missing).
+- **Tests**: both tcyr suites green; all 13 fuzz harness functions green.
 - **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.)
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
@@ -99,6 +101,7 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.4.0  | 2026-06-16 | xz / LZMA decode (`FORMAT_XZ` + `xz_decompress` + CRC-64/XZ; decode-only) |
 | 2.3.8  | 2026-06-16 | P(-1) closeout — 2.3.x line complete (zero audit findings) |
 | 2.3.7  | 2026-06-16 | Lazy-global alloc-fail propagation (INFO-A; `ERR_OOM`, OOM sweep, batch-encoder bw-OOM fix) |
 | 2.3.6  | 2026-06-16 | Streaming FDICT zlib (`zlib_dec_init_dict`; dict-scratch match-copy) |

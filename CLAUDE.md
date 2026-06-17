@@ -57,7 +57,7 @@ src/
   lib.cyr          — Include chain (stdlib + domain modules) + public API + _sankoch_mtx
   types.cyr        — Enums: formats (incl. FORMAT_LZ4F), errors, limits        [core]
   xxhash32.cyr     — xxHash32 batch (helpers + enum) — kernel-safe              [core]
-  checksum.cyr     — Adler-32 / CRC-32 + incremental state APIs (alloc-using)
+  checksum.cyr     — Adler-32 / CRC-32 / CRC-64-XZ + incremental state APIs (alloc-using)
   bitreader.cyr    — LSB-first bit-stream reader (DEFLATE)
   bitwriter.cyr    — LSB-first bit-stream writer (DEFLATE)
   huffman.cyr      — Huffman build/decode, fixed trees, optimal trees
@@ -67,6 +67,7 @@ src/
   deflate.cyr      — DEFLATE de/compress, adaptive blocks, dict, deflate_enc_* + deflate_dec_*
   zlib.cyr         — zlib wrapper + FDICT batch + zlib_enc_* + zlib_dec_*
   gzip.cyr         — gzip wrapper + concatenated batch + gzip_enc_* + gzip_dec_*
+  xz.cyr           — .xz container + LZMA2 framing + LZMA range/state decoder (xz_decompress) — decode only
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
 programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules

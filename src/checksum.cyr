@@ -287,6 +287,81 @@ fn crc32_final(st): i64 {
     return (load64(st) ^ 4294967295) & 4294967295;
 }
 
+# CRC-64/XZ: table-driven, polynomial 0x42F0E1EBA9EA3693, reflected
+# (init = xorout = 0xFFFFFFFFFFFFFFFF, refin = refout = true). The xz
+# container (2.4.0) uses this for the block "check" field and the index
+# field when the stream's check-type byte is 0x04. The reflected poly is
+# 0xC96C5795D7870F42. Cyrius `>>` is a logical shift on i64, so the full
+# 64-bit reflected values fold correctly with no sign-extension hazard.
+# Byte-at-a-time (256-entry table) — the check field covers uncompressed
+# data, but xz decode is not on any consumer's hot path, so the simpler
+# table is the right tradeoff over slice-by-8.
+# Source: spec "The .xz File Format" §2.1.1.2 / §3.1.2; the poly is
+# ECMA-182 (CRC-64/XZ a.k.a. CRC-64/GO-ECMA).
+var crc64_table = 0;   # heap-allocated: 256 entries × 8 bytes
+
+fn crc64_init_table(): i64 {
+    if (crc64_table == 0) {
+        crc64_table = _sankoch_alloc(2048);   # 256 × 8
+        if (crc64_table == 0) { return 0 - ERR_OOM; }
+    }
+    var i = 0;
+    while (i < 256) {
+        var c = i;
+        var j = 0;
+        while (j < 8) {
+            if (c & 1) {
+                c = (c >> 1) ^ 0xC96C5795D7870F42;
+            } else {
+                c = c >> 1;
+            }
+            j = j + 1;
+        }
+        store64(crc64_table + i * 8, c);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Fold `len` bytes into the running (pre-final-XOR) CRC-64. Assumes
+# crc64_init_table() has populated crc64_table. Shared by batch + stream.
+fn _crc64_fold(crc, data, len): i64 {
+    var t = crc64_table;
+    var i = 0;
+    while (i < len) {
+        var index = (crc ^ load8(data + i)) & 255;
+        crc = (crc >> 8) ^ load64(t + index * 8);
+        i = i + 1;
+    }
+    return crc;
+}
+
+# Compute CRC-64/XZ of data[0..len). Call crc64_init_table() first.
+fn crc64(data, len): i64 {
+    return _crc64_fold(0xFFFFFFFFFFFFFFFF, data, len) ^ 0xFFFFFFFFFFFFFFFF;
+}
+
+# Incremental CRC-64 API — symmetric with the CRC-32 state APIs. State is
+# a single u64 holding the running (pre-final-XOR) CRC.
+#   +0: running CRC (pre-final XOR)
+fn crc64_init(): i64 {
+    if (crc64_init_table() < 0) { return 0; }   # table OOM → null state
+    var st = _sankoch_alloc(8);
+    if (st == 0) { return 0; }
+    store64(st, 0xFFFFFFFFFFFFFFFF);
+    return st;
+}
+
+fn crc64_update(st, data, len): i64 {
+    if (len <= 0) { return 0; }
+    store64(st, _crc64_fold(load64(st), data, len));
+    return 0;
+}
+
+fn crc64_final(st): i64 {
+    return load64(st) ^ 0xFFFFFFFFFFFFFFFF;
+}
+
 # xxHash32 batch + helpers (`xxhash32`, `_xxh32_round`, `_xxh32_rotl`,
 # `XXH32` enum) live in src/xxhash32.cyr — that file is part of the
 # `[lib.core]` kernel-safe distlib profile. The incremental state APIs

@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-06-16
+
+**xz / LZMA decode (`FORMAT_XZ`) — decode only.** Opens the 2.4.x
+takumi-driven arc: adds a from-scratch `.xz` container parser + LZMA2
+chunk framing + LZMA range/arithmetic decoder, unblocking takumi
+`.tar.xz` source extraction. Zero new dependencies — pure Cyrius,
+consistent with the rest of the library.
+
+### Added
+
+- **`xz_decompress(src, src_len, dst, dst_cap)`** + `FORMAT_XZ` (= 6)
+  wired into `decompress()` and `detect_format()` (magic
+  `FD 37 7A 58 5A 00`). New module [`src/xz.cyr`](src/xz.cyr) (~700
+  lines): container parse → LZMA2 framing → LZMA core, all behind the
+  existing `_sankoch_mtx` with a single lazily-allocated probability
+  table (no per-call allocation on the decode path).
+  - **Container**: stream header / block header(s) / index / stream
+    footer, with the header CRC32, index CRC32, and footer CRC32 all
+    validated; per-block **check field** verified for CRC-32 and
+    CRC-64 (SHA-256 and "none" are parsed but not hashed — see
+    [`roadmap.md`](docs/development/roadmap.md) § 2.4.0 scope).
+  - **Concatenated streams** + 4-byte-aligned zero **Stream Padding**
+    supported (matches `xz -dc`); **multi-block** and `xz -T` threaded
+    streams decode.
+  - **LZMA2**: uncompressed chunks, LZMA chunks, dict / state / props
+    resets; **LZMA**: range decoder (normalize, bit / bit-tree /
+    reverse-bit-tree / direct-bit), the full literal/match state
+    machine with rep-distance history, and overlapping match copies.
+- **CRC-64/XZ** (ECMA-182, reflected poly `0xC96C5795D7870F42`) in
+  [`src/checksum.cyr`](src/checksum.cyr): `crc64` batch + `crc64_init`
+  / `_update` / `_final` incremental, mirroring the CRC-32 APIs.
+  Validated against the canonical `0x995DC9BBDF1939FA` check value for
+  `"123456789"`.
+
+### Tests
+
+- 9 new `.tcyr` tests: 3 CRC-64 (empty / known-vector / incremental),
+  6 xz decode (uncompressed-chunk, real-LZMA + CRC32, empty, check=none,
+  binary-sequence + CRC64, multi-block) + a corruption-rejection test
+  (flipped payload byte, bad magic, truncation, undersized dst).
+  Fixtures are real `xz` output; the decoder must reproduce the original
+  plaintext byte-for-byte.
+- New fuzz harness [`fuzz/fuzz_xz.fcyr`](fuzz/fuzz_xz.fcyr): 300
+  random-input + 200 corruption iterations — the parser must never
+  crash, read out of bounds, or loop forever on hostile input.
+- Out-of-band validation: 700+ `xz`-vs-sankoch round-trips across sizes
+  1 B – 200 KB, random/zero/text/sequential content, all four check
+  types, levels 0–9e; plus a real multi-file `.tar.xz`.
+
+### Notes
+
+- **Decode only** — no xz encoder (not required by takumi; stays in the
+  full-codec Future bucket). The wire-format SIZE gate is unaffected
+  (xz has no encode path, so no new SIZE lines).
+
 ## [2.3.8] — 2026-06-16
 
 **P(-1) closeout for the 2.3.x line.** Process release — no source

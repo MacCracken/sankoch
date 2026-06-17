@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.3.8 — 2.3.x line closed) | **Last Updated**: 2026-06-16
+> **Status**: Stable (v2.4.0 — xz/LZMA decode shipped) | **Last Updated**: 2026-06-16
 
 Shipped history lives in `CHANGELOG.md`; this file is the forward
 ladder. Items are ordered by release; scope per item is the working
@@ -75,8 +75,9 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 
 ## v2.4.x ladder — decode-only xz / bzip2 (takumi-driven)
 
-Opens after the 2.3.x line closes (P(-1) at 2.3.6). Driven by
-**takumi** source extraction: `extract_archive` in takumi handles
+2.4.0 (xz/LZMA decode) shipped 2026-06-16; 2.4.1 (bzip2 decode) is
+next. Driven by **takumi** source extraction: `extract_archive` in
+takumi handles
 `.tar` and `.tar.gz` today (via `gzip_decompress`), but `.tar.xz`
 and `.tar.bz2` are rejected because sankoch has no LZMA or bzip2
 path. Many upstream source releases ship `.tar.xz`, so this is the
@@ -94,33 +95,31 @@ Consumer/conformance reference: takumi `src/source.cyr`
 takumi adds the matching `FORMAT_*` sniff branch and lifts the
 corresponding `.tar.xz` / `.tar.bz2` rejection.
 
-### 🎯 2.4.0 — xz / LZMA decode
+### ✅ 2.4.0 — xz / LZMA decode — SHIPPED (2026-06-16)
 
-**Priority** (xz is the common modern source-tarball format; this is
-what unblocks takumi). Adds `xz_decompress` / `lzma_decompress` +
-`FORMAT_XZ`. Promotes the entropy/prediction stages noted under LZMA
-in Future to a concrete decode-only deliverable.
+Adds `xz_decompress` + `FORMAT_XZ` (= 6) and CRC-64/XZ. New module
+[`src/xz.cyr`](../../src/xz.cyr) (~730 lines): `.xz` container parse
+(stream header `FD 37 7A 58 5A 00` / block headers / index / stream
+footer, all CRCs validated) → LZMA2 chunk framing (uncompressed +
+LZMA chunks, dict/state/props resets) → LZMA core (range decoder +
+literal/match state machine with rep-distance history). Concatenated
+streams + stream padding + multi-block + `xz -T` threaded streams
+decode; per-block check verified for CRC-32 / CRC-64 (SHA-256 / none
+parsed, not hashed). Wired into `decompress()` + `detect_format()`.
 
-**Scope:**
-- `.xz` container parse (stream header magic `FD 37 7A 58 5A 00`,
-  block headers, index, stream footer) + the LZMA2 chunk framing
-  inside. CRC-32 / CRC-64 check fields validated against the inline
-  checksums (CRC-64 is new — ~30 LoC table primitive alongside the
-  existing CRC-32).
-- LZMA decode core: range decoder (entropy stage) + LZ77-style
-  match/literal model with the position/state context bits.
-  Primitive starting points per the table below — Opus range coder
-  for entropy, FLAC LPC for prediction scaffolding.
-- Decode-only: no encoder, no `.lzma` (legacy alone-format) unless a
-  consumer surfaces it.
-- Conformance: round-trip reference `.tar.xz` source tarballs against
-  `xz -dc`; takumi adds the `FORMAT_XZ` sniff branch.
+Validated out-of-band: 700+ `xz`-vs-sankoch round-trips (sizes 1 B –
+200 KB, random/zero/text/seq content, all four check types, levels
+0–9e) + a real multi-file `.tar.xz`; in-suite: 9 `.tcyr` tests +
+[`fuzz/fuzz_xz.fcyr`](../../fuzz/fuzz_xz.fcyr) (300 random + 200
+corruption). Per-cut detail in [`CHANGELOG.md`](../../CHANGELOG.md).
+**takumi** can now add the `FORMAT_XZ` sniff branch and lift its
+`.tar.xz` rejection.
 
-**Sizing:** large. The range decoder + LZMA state model is the bulk;
-take it in bites (container parse → range decoder → LZMA core →
-takumi wiring), per CLAUDE.md large-task discipline.
+Two scope calls retained from the plan: **decode-only** (no encoder,
+no legacy `.lzma` alone-format), and SHA-256 check fields are parsed
+but not hashed (CRC-32 / CRC-64 only — SHA-256 isn't in this crate).
 
-### 🎯 2.4.1 — bzip2 decode
+### 🎯 2.4.1 — bzip2 decode  ← **next**
 
 Lower priority (legacy; rare for new releases, but still in the wild).
 Adds `bzip2_decompress` + `FORMAT_BZIP2`.
@@ -167,13 +166,14 @@ self-contained but spec-dense.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.3.8** (P(-1) closeout — no source change vs 2.3.7).
+> Current as of **2.4.0** (xz/LZMA decode — new `src/xz.cyr`; checksum /
+> types / lib touched).
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
-| types.cyr        |   38 | Enums: formats (incl. FORMAT_LZ4F), errors (incl. ERR_OOM), limits | core |
+| types.cyr        |   39 | Enums: formats (incl. FORMAT_LZ4F, FORMAT_XZ), errors (incl. ERR_OOM), limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
-| checksum.cyr     |  427 | Adler-32 / CRC-32 (slice-by-8) + incremental state APIs (alloc-using) | full |
+| checksum.cyr     |  502 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ + incremental state APIs (alloc-using) | full |
 | bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  683 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes (OOM-propagating allocs) | full |
@@ -183,18 +183,19 @@ self-contained but spec-dense.
 | deflate.cyr      | 2425 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict`), dict, OOM-propagating table inits | full |
 | zlib.cyr         |  451 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict`) + `zlib_enc_*` + `zlib_dec_*` | full |
 | gzip.cyr         |  596 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming | full |
-| lib.cyr          |  223 | Public API, `_sankoch_mtx`, two-tier lock dispatch, `_sankoch_alloc` + fault-injection + `_sankoch_reset_tables` | full |
+| xz.cyr           |  729 | `.xz` container parse + LZMA2 framing + LZMA range/state decoder (`xz_decompress`) — decode only | full |
+| lib.cyr          |  237 | Public API, `_sankoch_mtx`, two-tier lock dispatch, `_sankoch_alloc` + fault-injection + `_sankoch_reset_tables` | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| **Total**        | **6729** | | |
+| **Total**        | **7548** | | |
 
-`core` modules (types + xxhash32 + lz4_decode = 313 source lines)
+`core` modules (types + xxhash32 + lz4_decode = 314 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **182 distinct test functions** (172 sankoch.tcyr + 10
-git_object.tcyr) producing **4,209,075 assertions** total
-(3,862,492 + 346,583). Most of the assertion count comes from
+Tests: **192 distinct test functions** (182 sankoch.tcyr + 10
+git_object.tcyr) producing **4,216,134 assertions** total
+(3,869,551 + 346,583). Most of the assertion count comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -202,14 +203,14 @@ coverage *density*, not coverage *breadth*. See
 [`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
-Fuzz: 1,649 iterations across 6 harnesses (`fuzz_lz4` 700,
-`fuzz_deflate` batch 340, `fuzz_zlib` 160, `fuzz_gzip` 160, plus
-the four streaming variants and the tree-shape / skewed-freq
-harnesses).
+Fuzz: 2,149 iterations across 3 files (`fuzz_lz4` 700, `fuzz_deflate`
+949 — batch 340 / zlib 160 / gzip 160 / four streaming variants /
+tree-shape / skewed-freq, `fuzz_xz` 500 — 300 random-input + 200
+corruption).
 
-Distlib: `dist/sankoch.cyr` at 6,709 lines (full) +
-`dist/sankoch-core.cyr` at 313 lines (kernel-safe) — at 2.3.8
-(version-line only vs 2.3.7).
+Distlib: `dist/sankoch.cyr` at 7,527 lines (full) +
+`dist/sankoch-core.cyr` at 314 lines (kernel-safe) — at 2.4.0
+(+xz.cyr in the full bundle; +1 line in core for the FORMAT_XZ enum).
 
 ## Dependencies
 
@@ -225,10 +226,12 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.15).
 - RFC 1952 — GZIP File Format Specification
 - LZ4 Block Format — github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md
 - LZ4 Frame Format — github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md
+- The .xz File Format v1.1.0 — tukaani.org/xz/xz-file-format.txt
+- LZMA SDK `LzmaDec.c` / xz-embedded `xz_dec_lzma2.c` — LZMA decoder reference shape
 - Feldspar, "An Explanation of the Deflate Algorithm" — clearest DEFLATE walkthrough
 - Intel, "Fast CRC Computation for Generic Polynomials Using PCLMULQDQ Instruction" (whitepaper, Dec 2009)
 - Duda, "Asymmetric Numeral Systems" (arXiv:1311.2540) — for future Zstandard work
 
 ---
 
-*Last Updated: 2026-06-16 (2.3.8 cut — P(-1) closeout; 2.3.x line complete, 2.4.0 next)*
+*Last Updated: 2026-06-16 (2.4.0 cut — xz/LZMA decode shipped; 2.4.1 bzip2 decode next)*

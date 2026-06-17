@@ -34,6 +34,7 @@ modules = [
     "src/deflate.cyr",
     "src/zlib.cyr",
     "src/gzip.cyr",
+    "src/xz.cyr",
     "src/stream.cyr",
     "src/lib.cyr",
 ]

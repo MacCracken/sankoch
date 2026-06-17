@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-06-16 (v2.3.8 cut — P(-1) closeout; 2.3.x line complete) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-06-16 (v2.4.0 cut — xz/LZMA decode shipped) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -52,13 +52,13 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-23 | ✅ Fresh | Architecture table refreshed to 6,299 source lines + 156 test functions + 1,708,518 assertions + 6,326-line distlib; stale "landing in next Cyrius lang release" line dropped (sankoch ships in 6.0.x stdlib); missing `xxhash32.cyr` + `lz4_decode.cyr` rows added. |
-| `CHANGELOG.md` | 2026-06-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.3.8] — 2026-06-16` (P(-1) closeout; 2.3.x line complete, zero audit findings). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
+| `CHANGELOG.md` | 2026-06-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.4.0] — 2026-06-16` (xz/LZMA decode — `FORMAT_XZ` + `xz_decompress` + CRC-64/XZ, decode-only). Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-05-23 | ✅ Fresh | Supported Versions table updated for 2.3.x; audit list extended through 2026-05-23-pre-2.3.0-redux. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-06-16 | ✅ Fresh | `2.3.8`. Single source of truth per the standards. |
+| `VERSION` | 2026-06-16 | ✅ Fresh | `2.4.0`. Single source of truth per the standards. |
 | `cyrius.cyml` | 2026-06-16 | ✅ Fresh | Toolchain pin `cyrius = "6.2.15"` (bumped from 6.2.14 in 2.3.4, folded into the CRC-32 work; clears the prior box/pin drift). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-06-16 | ✅ Fresh | **2.3.8 shipped — 2.3.x line COMPLETE.** Shipped ladder collapsed to a "✅ v2.3.x line — COMPLETE" summary; forward ladder now opens at 2.4.0 (xz/LZMA decode) → 2.4.1 (bzip2). No source change vs 2.3.7 (P(-1) process release). |
-| `state.md` | 2026-06-16 | ✅ Fresh | Refreshed for 2.3.8. Version 2.3.8, in-flight = 2.4.0/2.4.1 only, recent-releases updated. INFO ledger: 01 + A CLOSED, B/C carried, D added (OOM-retry arena orphan). Source/test/dist unchanged vs 2.3.7. |
+| `roadmap.md` | 2026-06-16 | ✅ Fresh | **2.4.0 shipped — xz/LZMA decode.** 2.4.0 marked ✅ SHIPPED; forward ladder now opens at 2.4.1 (bzip2 decode). File Summary refreshed (+`src/xz.cyr` 729; checksum/types/lib bumped; total 7,548). Test/fuzz/distlib figures updated. |
+| `state.md` | 2026-06-16 | ✅ Fresh | Refreshed for 2.4.0. Version 2.4.0, in-flight = 2.4.1 (2.4.0 ✅), recent-releases updated, takumi added as xz consumer. Source 7,548 / 15 modules; tests 192 fns / 4,216,134 asserts; fuzz 2,149 / 3 files; dist 7,527 + 314. |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
 

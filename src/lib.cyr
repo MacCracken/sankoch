@@ -41,6 +41,7 @@ include "src/lz4.cyr"
 include "src/deflate.cyr"
 include "src/zlib.cyr"
 include "src/gzip.cyr"
+include "src/xz.cyr"
 include "src/stream.cyr"
 
 # ============================================================================
@@ -192,6 +193,9 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
     if (format == FORMAT_LZ4F) {
         return lz4f_decompress(src, src_len, dst, dst_cap);
     }
+    if (format == FORMAT_XZ) {
+        return _xz_decompress_inner(src, src_len, dst, dst_cap);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
@@ -208,6 +212,16 @@ fn detect_format(src, src_len): i64 {
     if (b0 == GZIP_MAGIC_0) {
         if (b1 == GZIP_MAGIC_1) {
             return FORMAT_GZIP;
+        }
+    }
+
+    # xz: FD 37 7A 58 5A 00 (check first 6 magic bytes when present)
+    if (b0 == 0xFD) {
+        if (b1 == 0x37 && src_len >= 6) {
+            if (load8(src + 2) == 0x7A && load8(src + 3) == 0x58
+                && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
+                return FORMAT_XZ;
+            }
         }
     }
 

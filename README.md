@@ -16,6 +16,11 @@ release in [`VERSION`](VERSION)).
 | DEFLATE (raw)   | `FORMAT_DEFLATE` | ✓     | ✓         | (wrapped via zlib/gzip) |
 | zlib            | `FORMAT_ZLIB`    | ✓     | ✓         | Python `zlib.decompress` |
 | gzip            | `FORMAT_GZIP`    | ✓     | ✓         | `gunzip`               |
+| xz / LZMA2      | `FORMAT_XZ`      | decode | —        | `xz -dc`               |
+
+xz is **decode-only** (`xz_decompress` / `FORMAT_XZ`, v2.4.0+) — `.xz`
+container + LZMA2 + LZMA range decoder, with CRC-32 / CRC-64 check
+validation. No xz encoder.
 
 ## API
 
@@ -94,7 +99,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | types.cyr      | Enums: formats, errors, limits, magic bytes                                            | core    |
 | xxhash32.cyr   | xxHash32 batch (helpers + enum)                                                        | core    |
 | lz4_decode.cyr | LZ4 block + frame decompress + LZ4F enum                                               | core    |
-| checksum.cyr   | Adler-32, CRC-32, xxHash32 incremental state APIs (alloc-using)                        | full    |
+| checksum.cyr   | Adler-32, CRC-32 (slice-by-8), CRC-64/XZ, xxHash32 batch + incremental state APIs      | full    |
 | bitreader.cyr  | LSB-first bit-stream reader                                                            | full    |
 | bitwriter.cyr  | LSB-first bit-stream writer                                                            | full    |
 | huffman.cyr    | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes                | full    |
@@ -103,6 +108,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict          | full    |
 | zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming                 | full    |
 | gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming          | full    |
+| xz.cyr         | `.xz` container + LZMA2 framing + LZMA range/state decoder (`xz_decompress`) — decode  | full    |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
 | lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch                    | full    |
 

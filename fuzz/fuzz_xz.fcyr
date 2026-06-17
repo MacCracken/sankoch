@@ -1,0 +1,143 @@
+# sankoch — xz / LZMA decode fuzz harness (2.4.0)
+#
+# Decode-only: there is no xz encoder, so this harness focuses on the
+# adversarial surface — the .xz container + LZMA2 framing + LZMA range
+# decoder must never crash, read out of bounds, or loop forever on
+# hostile input. Two strategies:
+#   1. Random bytes (some carrying a valid xz magic) → the parser must
+#      bottom out in an error, never a fault.
+#   2. A known-good LZMA stream with random byte flips → exercises deep
+#      decode paths (range coder, match copies) under corruption.
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_fill(buf, len) {
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, _fuzz_next());
+        i = i + 1;
+    }
+    return 0;
+}
+
+# valid LZMA .xz fixture (140 bytes -> 256 plaintext), crc64
+fn _xz_fuzz_fixture(buf) {
+    store8(buf + 0, 253); store8(buf + 1, 55); store8(buf + 2, 122); store8(buf + 3, 88);
+    store8(buf + 4, 90); store8(buf + 5, 0); store8(buf + 6, 0); store8(buf + 7, 4);
+    store8(buf + 8, 230); store8(buf + 9, 214); store8(buf + 10, 180); store8(buf + 11, 70);
+    store8(buf + 12, 4); store8(buf + 13, 192); store8(buf + 14, 74); store8(buf + 15, 128);
+    store8(buf + 16, 2); store8(buf + 17, 33); store8(buf + 18, 1); store8(buf + 19, 28);
+    store8(buf + 20, 0); store8(buf + 21, 0); store8(buf + 22, 0); store8(buf + 23, 0);
+    store8(buf + 24, 0); store8(buf + 25, 0); store8(buf + 26, 0); store8(buf + 27, 0);
+    store8(buf + 28, 186); store8(buf + 29, 144); store8(buf + 30, 13); store8(buf + 31, 129);
+    store8(buf + 32, 224); store8(buf + 33, 0); store8(buf + 34, 255); store8(buf + 35, 0);
+    store8(buf + 36, 66); store8(buf + 37, 93); store8(buf + 38, 0); store8(buf + 39, 51);
+    store8(buf + 40, 29); store8(buf + 41, 75); store8(buf + 42, 200); store8(buf + 43, 16);
+    store8(buf + 44, 174); store8(buf + 45, 27); store8(buf + 46, 115); store8(buf + 47, 201);
+    store8(buf + 48, 209); store8(buf + 49, 134); store8(buf + 50, 173); store8(buf + 51, 20);
+    store8(buf + 52, 154); store8(buf + 53, 150); store8(buf + 54, 195); store8(buf + 55, 10);
+    store8(buf + 56, 188); store8(buf + 57, 30); store8(buf + 58, 139); store8(buf + 59, 91);
+    store8(buf + 60, 105); store8(buf + 61, 44); store8(buf + 62, 125); store8(buf + 63, 25);
+    store8(buf + 64, 196); store8(buf + 65, 234); store8(buf + 66, 221); store8(buf + 67, 253);
+    store8(buf + 68, 197); store8(buf + 69, 86); store8(buf + 70, 118); store8(buf + 71, 4);
+    store8(buf + 72, 97); store8(buf + 73, 65); store8(buf + 74, 215); store8(buf + 75, 243);
+    store8(buf + 76, 246); store8(buf + 77, 35); store8(buf + 78, 19); store8(buf + 79, 206);
+    store8(buf + 80, 132); store8(buf + 81, 177); store8(buf + 82, 162); store8(buf + 83, 22);
+    store8(buf + 84, 32); store8(buf + 85, 201); store8(buf + 86, 63); store8(buf + 87, 40);
+    store8(buf + 88, 246); store8(buf + 89, 85); store8(buf + 90, 222); store8(buf + 91, 93);
+    store8(buf + 92, 241); store8(buf + 93, 132); store8(buf + 94, 235); store8(buf + 95, 57);
+    store8(buf + 96, 31); store8(buf + 97, 219); store8(buf + 98, 49); store8(buf + 99, 89);
+    store8(buf + 100, 205); store8(buf + 101, 242); store8(buf + 102, 244); store8(buf + 103, 80);
+    store8(buf + 104, 0); store8(buf + 105, 0); store8(buf + 106, 0); store8(buf + 107, 0);
+    store8(buf + 108, 208); store8(buf + 109, 183); store8(buf + 110, 121); store8(buf + 111, 198);
+    store8(buf + 112, 35); store8(buf + 113, 252); store8(buf + 114, 92); store8(buf + 115, 121);
+    store8(buf + 116, 0); store8(buf + 117, 1); store8(buf + 118, 102); store8(buf + 119, 128);
+    store8(buf + 120, 2); store8(buf + 121, 0); store8(buf + 122, 0); store8(buf + 123, 0);
+    store8(buf + 124, 131); store8(buf + 125, 64); store8(buf + 126, 23); store8(buf + 127, 6);
+    store8(buf + 128, 177); store8(buf + 129, 196); store8(buf + 130, 103); store8(buf + 131, 251);
+    store8(buf + 132, 2); store8(buf + 133, 0); store8(buf + 134, 0); store8(buf + 135, 0);
+    store8(buf + 136, 0); store8(buf + 137, 4); store8(buf + 138, 89); store8(buf + 139, 90);
+    return 140;
+}
+
+# Strategy 1: random bytes (optionally magic-prefixed) → must not crash.
+fn fuzz_xz_random(seed, data_len, magic) {
+    _fuzz_seed(seed);
+    var src[512];
+    var capped = data_len;
+    if (capped > 512) { capped = 512; }
+    _fuzz_fill(&src, capped);
+    if (magic != 0 && capped >= 6) {
+        # plant the xz stream magic so the parser walks past the header
+        store8(&src + 0, 253); store8(&src + 1, 55); store8(&src + 2, 122);
+        store8(&src + 3, 88); store8(&src + 4, 90); store8(&src + 5, 0);
+    }
+    var dst[8192];
+    var dlen = xz_decompress(&src, capped, &dst, 8192);
+    # No assertion on the result — we only require survival.
+    return 0;
+}
+
+# Strategy 2: valid stream with random byte flips → must not crash, and
+# must error or return a length (never silently corrupt past the buffer).
+fn fuzz_xz_corrupt(seed) {
+    _fuzz_seed(seed);
+    var src[256];
+    var n = _xz_fuzz_fixture(&src);
+    # flip 1..4 random bytes
+    var flips = 1 + (_fuzz_next() & 3);
+    var k = 0;
+    while (k < flips) {
+        var off = _fuzz_next() | ((_fuzz_next() & 1) << 8);
+        off = off % n;
+        store8(&src + off, _fuzz_next());
+        k = k + 1;
+    }
+    var dst[8192];
+    var dlen = xz_decompress(&src, n, &dst, 8192);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    # Baseline: the unmodified fixture must decode to 256 bytes.
+    var fx[256];
+    var fn_ = _xz_fuzz_fixture(&fx);
+    var fdst[8192];
+    var flen = xz_decompress(&fx, fn_, &fdst, 8192);
+    assert(flen == 256, "fuzz_xz fixture baseline decodes");
+
+    var seed = 1;
+    while (seed <= 150) {
+        fuzz_xz_random(seed * 2654435761, (seed * 13) % 512, 0);
+        fuzz_xz_random(seed * 40503, (seed * 17) % 512, 1);
+        seed = seed + 1;
+    }
+    println("fuzz_xz: 300 random-input tests passed");
+
+    seed = 1;
+    while (seed <= 200) {
+        fuzz_xz_corrupt(seed * 7919);
+        seed = seed + 1;
+    }
+    println("fuzz_xz: 200 corruption tests passed");
+
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);
