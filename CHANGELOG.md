@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.4] — 2026-06-18
+
+**AGNOS-compatible lock primitives.** `_sankoch_lock` / `_sankoch_unlock`
+now no-op under `CYRIUS_TARGET_AGNOS`, and `lib/thread.cyr` is no longer
+included on that target. AGNOS userland is single-threaded and has no
+clone/futex, so the public-API mutex is unnecessary there; gating it out
+stops the agnos build from pulling `thread.cyr → mmap.cyr → CLONE_VM`
+(Linux-only), which previously left every locked entry point referencing
+an undefined `mutex_*` (warn-and-`ud2` → SIGILL at runtime). Host/Linux/
+macOS/Windows behaviour is byte-identical — the lock is unchanged off
+agnos. First surfaced by kii (PNG IDAT inflate), the first agnos consumer
+of sankoch. See the cyrius issue
+`2026-06-12-sankoch-locks-not-agnos-compatible.md`.
+
 ## [2.4.3] — 2026-06-17
 
 **bzip2 encode (`bzip2_compress` + `compress(FORMAT_BZIP2, …)`).** Closes
