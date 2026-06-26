@@ -462,12 +462,12 @@ fn fuzz_ratio_cap(seed, data_len) {
 
     # Invalid ratio rejected before any parsing.
     assert(zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 0) == 0 - ERR_INVALID_INPUT,
-        "ratio-cap fuzz: cap=0 rejected");
+    "ratio-cap fuzz: cap=0 rejected");
 
     # When the data genuinely expands >= 3x, a 2:1 cap must reject it.
     if (clen > 0 && capped / clen >= 3) {
         assert(zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 2) == 0 - ERR_RATIO_LIMIT,
-            "ratio-cap fuzz: 2:1 cap rejects bomb");
+        "ratio-cap fuzz: 2:1 cap rejects bomb");
     }
     return 0;
 }
