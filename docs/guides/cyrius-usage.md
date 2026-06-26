@@ -38,9 +38,12 @@ cyrius test tests/tcyr/xz_compress.tcyr  # a single split suite
 cyrius test tests/tcyr/git_object.tcyr   # git-object regressions (grew with 2.0.2 / 2.0.3 cl-tree fixtures)
 ```
 
-The suite is split by **codec × direction** (2.4.1 post-ship): 15 files
-under `tests/tcyr/` (e.g. `deflate_compress.tcyr`, `xz_decompress.tcyr`)
-plus `git_object.tcyr`. Each suite `include "tests/tcyr/_harness.tcyr"` —
+The suite is split by **codec × direction** (since 2.4.1): one `.tcyr`
+file per codec and direction under `tests/tcyr/` (e.g.
+`deflate_compress.tcyr`, `xz_decompress.tcyr`), plus the cross-cutting
+`detect_error` / `ratio_cap` suites and `git_object.tcyr` (current
+file / function / assertion counts live in state.md). Each suite
+`include "tests/tcyr/_harness.tcyr"` —
 the shared harness owns the `src/lib.cyr` (full chain) + `lib/assert.cyr`
 includes, the 4 MB heap setup (`_test_init`), and the cross-cutting
 helpers; it has no `main()`, so it is never run directly (the CI Test
@@ -54,7 +57,7 @@ release. The headline numbers below explain what the assertion count
 
 #### What "assertions" means here (and why the number is so large)
 
-**Assertions ≠ test cases.** The two suites contain a small number of
+**Assertions ≠ test cases.** The suites contain a small number of
 distinct test functions — the kind of unit you'd usually count as
 "tests." Those functions emit a much larger number of individual
 `assert(...)` calls when run, and the second number is what
@@ -78,9 +81,10 @@ divergence in a 200 KB DEFLATE round-trip is to assert each byte
 individually. A pass/fail at "buffers are equal" hides which byte
 differed; per-byte assertions point straight at the corruption site.
 
-Read the headline as **"~1.4 M byte-level proofs of correctness across
-~100 logically distinct scenarios"** — it's a coverage-density
-number, not a coverage-breadth number.
+Read the headline as **"millions of byte-level proofs of correctness
+across a few hundred logically distinct scenarios"** — it's a
+coverage-density number, not a coverage-breadth number (the live totals
+are in state.md).
 
 ### Benchmark
 

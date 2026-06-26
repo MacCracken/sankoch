@@ -68,7 +68,7 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-06-25 | ✅ Fresh | **2.4.6 shipped — streaming ratio cap `*_dec_init_capped`** atop the 2.4.5 batch cap; sit zip-bomb item closed (batch + streaming); xz/bzip2 follow-on noted. File Summary refreshed (deflate 2,540 / zlib 485 / gzip 638 / lib 282 / types 41; total 10,078). Test/fuzz/distlib figures updated. |
+| `roadmap.md` | 2026-06-25 | ✅ Fresh | **2.4.6 shipped — streaming ratio cap `*_dec_init_capped`** atop the 2.4.5 batch cap; sit zip-bomb item closed (batch + streaming). **Forward-ladder cleanup 2026-06-25**: removed the completed ✅ sections (xz/bzip2 codecs, ratio cap — now in CHANGELOG); consolidated open follow-ons into a Backlog section; added a Known-limitations/non-goals section. File Summary refreshed (deflate 2,540 / zlib 485 / gzip 638; total 10,078). |
 | `state.md` | 2026-06-25 | ✅ Fresh | Refreshed for 2.4.6. Version 2.4.6, pin 6.2.44, no committed in-flight slot. Source 10,078 / 16 modules; tests 234 fns / 4,483,834 asserts; fuzz 3,929 / 4 files; dist 10,056 + 316. |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
@@ -80,7 +80,7 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `getting-started.md` | 2026-05-23 | ✅ Fresh | **NEW 2026-05-23.** Five-minute clone-to-built path; companion to `cyrius-usage.md`. |
-| `cyrius-usage.md` | 2026-05-23 | ✅ Fresh | **Moved 2026-05-23** from `docs/development/cyrius-usage.md` (was wrong-shape — guides go in `docs/guides/`). Toolchain command reference. |
+| `cyrius-usage.md` | 2026-06-25 | ✅ Fresh | Toolchain command reference. Destaled 2026-06-25: split-suite description genericized (was "15 files" / "two suites" / "~1.4 M assertions" — all rotted; now defers live counts to state.md). Moved here from `docs/development/` at the 2026-05-23 sweep. |
 
 ---
 

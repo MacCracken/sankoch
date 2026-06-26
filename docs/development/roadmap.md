@@ -1,69 +1,28 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.4.6 — streaming ratio cap shipped, extending the 2.4.5 batch zip-bomb defense to the incremental decode path) | **Last Updated**: 2026-06-25
+> **Status**: Stable (v2.4.6) | **Last Updated**: 2026-06-25
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
-ladder — what's next, what's deferred, and the longer-horizon Future
-bucket. **No release is currently committed.** The v2.4.x arc (xz +
-bzip2, both directions) shipped through 2.4.3; **2.4.4** no-op'd the
-public-API lock under AGNOS (kii's PNG inflate); **2.4.5** added batch
-`*_with_ratio_cap` decompression for the DEFLATE family (closing the sit
-backlog item below); **2.4.6** extended the cap to the streaming decode
-path (`*_dec_init_capped`). See `CHANGELOG.md` for the per-cut narrative.
+ladder — backlog, deferred items, known limitations, and the
+longer-horizon Future bucket. **No release is currently committed.** The
+codec set is complete — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2,
+de + compress, batch + streaming — with ratio-capped decompression for
+the DEFLATE family (batch + streaming).
 
 ---
 
-## ✅ v2.4.x — full xz / bzip2 codecs — COMPLETE
+## ▢ Backlog — candidate follow-ons (none scheduled)
 
-Shipped 2.4.0–2.4.3 (per-cut detail in `CHANGELOG.md`): **2.4.0** xz /
-LZMA decode · **2.4.1** xz / LZMA optimal-parse encode · **2.4.2** bzip2
-decode · **2.4.3** bzip2 encode. sankoch now de/compresses `.xz` and
-`.bz2` (and extracts `.tar.xz` / `.tar.bz2`) with zero FFI: the decoders
-unblocked takumi's source extraction, and the encoders give zero-FFI
-parity with the DEFLATE / zlib / gzip / LZ4 encoders. Two scope notes
-that survive the work:
-
-- **xz encode** is within ~1–5 % of `xz -6` on text/code (optimal
-  parse, not bit-identical to `xz`); **bzip2 encode** is byte-identical
-  to `bzip2 -9`. Neither encoder is in the wire-format SIZE gate — both
-  ship informational ratio lines in `bench`. Encoder throughput
-  (optimal-parse DP; BWT block-sort) is a candidate follow-on.
-- SHA-256 xz check fields are parsed but not hashed (CRC-32 / CRC-64
-  only — SHA-256 isn't in this crate); legacy `.lzma` alone-format is
-  not handled.
-
----
-
-## ✅ ratio-capped decompression — sit — SHIPPED 2.4.5 (batch) + 2.4.6 (streaming)
-
-**Consumer:** sit (Cyrius-native git replacement; decompresses untrusted
-objects off the wire). **Status:** **Shipped** — batch `*_with_ratio_cap`
-(2.4.5) + streaming `*_dec_init_capped` (2.4.6). See `CHANGELOG.md`.
-
-`zlib_decompress_with_ratio_cap` / `deflate_decompress_with_ratio_cap` /
-`gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)`
-reject a stream whose output exceeds `max_ratio * src_len` with the new
-`ERR_RATIO_LIMIT`, checked **incrementally during inflate** inside
-`_deflate_decode_block` (the expanding path) and the stored-block arms,
-so the cumulative output bound is exact; every check short-circuits on a
-`0` sentinel, leaving the uncapped path byte-identical. gzip enforces
-the cap cumulatively across concatenated members. The absolute 16 MB
-`DECOMPRESS_MAX_OUTPUT` ceiling and the caller's `dst_cap` remain the
-hard backstops; this adds the tunable *relative* bound. CVE analog:
-CVE-2018-25032 / zip-bomb class (cited in the 2026-04-15 audit's CRIT-01).
-
-**Streaming (2.4.6):** `zlib_dec_init_capped` / `deflate_dec_init_capped`
-/ `gzip_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)` stamp
-the same ceiling into the decoder ctx, so the incremental
-`dec_init`/`write`/`finish` path is poisoned with `ERR_RATIO_LIMIT`
-mid-stream — covering consumers that stream-inflate large untrusted
-objects. The cap persists across `deflate_dec_reset`, so gzip enforces it
-cumulatively over concatenated members.
-
-**Follow-on (open, unscheduled):** extend the same incremental cap to xz
-and bzip2 decode — both funnel output through localized chokepoints
-(`_xz_put` / `_xz_copy_match`; the bzip2 RLE1 run-emit). Not needed by
-sit (zlib only); pick up if a consumer inflates untrusted `.xz` / `.bz2`.
+- **xz / bzip2 ratio cap** — extend the DEFLATE-family ratio cap (2.4.5
+  batch `*_with_ratio_cap` + 2.4.6 streaming `*_dec_init_capped`) to xz
+  and bzip2 decode. Both funnel output through localized chokepoints
+  (`_xz_put` / `_xz_copy_match`; the bzip2 RLE1 run-emit), so the same
+  incremental `ERR_RATIO_LIMIT` guard applies. Not needed by sit (zlib
+  only); pick up if a consumer inflates untrusted `.xz` / `.bz2`.
+- **xz / bzip2 encoder throughput** — the optimal-parse DP (xz) and the
+  BWT block-sort (bzip2) dominate encode time. Fine for the
+  archival / one-shot use they target; revisit if encode latency
+  surfaces as a consumer priority.
 
 ## ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
@@ -85,6 +44,19 @@ A genuine win here needs an optimization that finds the *same* matches
 faster — e.g. tighter chain-walk scheduling, a better hash, or a
 lazy-match restructure that provably preserves output. Open-ended;
 pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
+
+---
+
+## Known limitations / non-goals
+
+- **xz**: SHA-256 check fields are parsed but not verified (CRC-32 /
+  CRC-64 only — SHA-256 isn't in this crate); the legacy `.lzma`
+  alone-format is not handled. xz encode is within ~1–5 % of `xz -6`
+  (optimal parse, not bit-identical to `xz`); bzip2 encode is
+  byte-identical to `bzip2 -9`. Neither encoder is in the wire-format
+  SIZE gate — both ship informational ratio lines in `bench`.
+- **Zstandard** is intentionally out of scope for this crate — it
+  warrants its own crate / major version (see Future).
 
 ---
 
@@ -161,8 +133,8 @@ corruption + 300 encode→decode).
 
 Distlib: `dist/sankoch.cyr` at 10,056 lines (full) +
 `dist/sankoch-core.cyr` at 316 lines (kernel-safe) — at 2.4.6
-(+ratio-cap plumbing in the full bundle; core +1 line for the
-`ERR_RATIO_LIMIT` enum constant).
+(streaming-cap plumbing added to the full bundle; core unchanged at 316,
+the +1 `ERR_RATIO_LIMIT` enum line having landed at 2.4.5).
 
 ## Dependencies
 
@@ -186,4 +158,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.44).
 
 ---
 
-*Last Updated: 2026-06-25 (2.4.5 cut — ratio-capped decompression shipped, closing the sit zip-bomb backlog item; toolchain pin → 6.2.44. Next: xz/bzip2 ratio-cap follow-on or the Future bucket)*
+*Last Updated: 2026-06-25 (2.4.6 cut — streaming ratio cap shipped. Next: xz/bzip2 ratio-cap follow-on, or the Future bucket.)*
