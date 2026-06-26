@@ -43,7 +43,7 @@ decompress(format, src, src_len, dst, dst_cap)         -> bytes or -err
 detect_format(src, src_len)                             -> Format or -err
 ```
 
-### Ratio-capped decompress (v2.4.5+) — zip-bomb defense
+### Ratio-capped decompress (v2.4.5+ batch, v2.4.6+ streaming) — zip-bomb defense
 
 For untrusted input, these reject a stream whose output exceeds
 `max_ratio × src_len` (an integer expansion multiplier) with
@@ -53,9 +53,14 @@ and the caller's `dst_cap` remain the hard backstops; this adds a tunable
 *relative* bound.
 
 ```cyr
+# Batch (one-shot):
 zlib_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)    -> bytes or -err
 deflate_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio) -> bytes or -err
-gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)    -> bytes or -err  # cap is cumulative across members
+gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)    -> bytes or -err  # cap cumulative across members
+
+# Streaming (v2.4.6+): pass the expected total compressed size at init; the
+# cap is poisoned (ERR_RATIO_LIMIT, surfaced by write/finish) mid-stream.
+var ctx = zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)   # also deflate_/gzip_
 ```
 
 ### Streaming encode (v1.7.0+, preset-dict v2.2.0+)

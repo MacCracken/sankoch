@@ -332,6 +332,20 @@ fn _gdec_next_hdr_state(ctx, done_mask): i64 {
     return 0;
 }
 
+# Ratio-capped streaming gzip decoder (2.4.6). Like gzip_dec_init, but the
+# stream is rejected with ERR_RATIO_LIMIT once cumulative output (across
+# all concatenated members — dp and the cap both persist over
+# deflate_dec_reset) exceeds max_ratio * expected_src_len. max_ratio < 1
+# (or expected_src_len < 1) returns 0 — a 0 expected length would alias
+# the "uncapped" sentinel and silently disable the cap, so it is rejected.
+fn gzip_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio): i64 {
+    if (max_ratio < 1 || expected_src_len < 1) { return 0; }
+    var ctx = gzip_dec_init(dst, dst_cap);
+    if (ctx == 0) { return 0; }
+    _deflate_dec_set_ratio(load64(ctx + 0), expected_src_len, max_ratio);
+    return ctx;
+}
+
 fn gzip_dec_init(dst, dst_cap): i64 {
     var inner = deflate_dec_init(dst, dst_cap);
     if (inner == 0) { return 0; }

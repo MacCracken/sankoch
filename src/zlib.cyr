@@ -254,6 +254,23 @@ fn zlib_dec_init(dst, dst_cap): i64 {
     return zlib_dec_init_dict(dst, dst_cap, 0, 0);
 }
 
+# Ratio-capped streaming zlib decoder (2.4.6). Like zlib_dec_init, but the
+# stream is rejected with ERR_RATIO_LIMIT (poisoned, surfaced by
+# zlib_dec_write / zlib_dec_finish) once cumulative output exceeds
+# max_ratio * expected_src_len — where expected_src_len is the total zlib
+# stream size the caller intends to feed. Defense-in-depth for sit and
+# other consumers that stream-inflate untrusted objects. The 16 MB ceiling
+# and dst_cap stay the hard backstops. max_ratio < 1 (or
+# expected_src_len < 1) returns 0 — a 0 expected length would alias the
+# "uncapped" sentinel and silently disable the cap, so it is rejected.
+fn zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio): i64 {
+    if (max_ratio < 1 || expected_src_len < 1) { return 0; }
+    var ctx = zlib_dec_init(dst, dst_cap);
+    if (ctx == 0) { return 0; }
+    _deflate_dec_set_ratio(load64(ctx + 0), expected_src_len, max_ratio);
+    return ctx;
+}
+
 # Streaming zlib decoder with a preset dictionary (2.3.6). Required to
 # decode FDICT streams: dict/dict_len must be the dictionary whose
 # Adler-32 matches the stream's DICTID. dict_len == 0 is exactly

@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.6] — 2026-06-25
+
+**Streaming ratio cap (`*_dec_init_capped`).** Extends the 2.4.5 batch
+zip-bomb defense to the incremental decode path, so a consumer that
+stream-inflates untrusted objects (sit, on large wire objects) gets the
+same ratio guarantee on `*_dec_init`/`write`/`finish` as on the one-shot
+API.
+
+### Added
+
+- **`zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)`**
+  \+ `deflate_dec_init_capped` \+ `gzip_dec_init_capped`. The ceiling
+  (`_deflate_ratio_ceiling(expected_src_len, max_ratio)`, shared with the
+  batch path) is fixed at init and stored in the decoder ctx; the three
+  streaming emit sites (stored / literal / match) reject with
+  `ERR_RATIO_LIMIT` the moment cumulative output crosses it — checked
+  incrementally across `dec_write` calls, so a bomb is poisoned
+  mid-stream, not at the end. `expected_src_len` is the total compressed
+  size the caller intends to feed (git object sizes are known up front).
+  gzip enforces the cap **cumulatively across concatenated members** (dp
+  and the ceiling both persist over `deflate_dec_reset`). The cap is a
+  short-circuit compare gated on a `0` sentinel, so the uncapped
+  streaming path is **byte-identical**. `max_ratio < 1` (or negative
+  `expected_src_len`) → init returns `0`, no mutex taken. No preset-dict
+  variant (capped streams are dict-less).
+
+### Tests / fuzz
+
+- [`tests/tcyr/ratio_cap.tcyr`](tests/tcyr/ratio_cap.tcyr): +6 streaming
+  tests (30 assertions) — zlib bomb poisoned, generous round-trip,
+  byte-at-a-time mid-stream rejection, raw-deflate cap, gzip cumulative
+  across members, capped-init arg validation (incl. `expected_src_len == 0`
+  rejection — a 0 would alias the uncapped sentinel). Suite now 16 tests /
+  66 assertions.
+- [`fuzz/fuzz_deflate.fcyr`](fuzz/fuzz_deflate.fcyr): +340 iterations
+  (240 streaming generous-round-trip / tight-cap-trip + 100 streaming
+  malformed-survival; `finish` always called so the mutex is released).
+
+### Notes
+
+- Decoder ctx grew one slot (`DDEC_CTX_SIZE` 176 → 184) for the cap
+  ceiling; `deflate_dec_init` zeroes it so every existing init path stays
+  uncapped (byte-identical). xz / bzip2 streaming decode remain uncapped
+  (INFO-F).
+
 ## [2.4.5] — 2026-06-25
 
 **Ratio-capped decompression (`*_with_ratio_cap`) + toolchain → 6.2.44.**

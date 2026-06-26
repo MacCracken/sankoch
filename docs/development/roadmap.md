@@ -1,14 +1,15 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.4.5 — ratio-capped decompression shipped, closing the sit zip-bomb backlog item; toolchain pin 6.2.44) | **Last Updated**: 2026-06-25
+> **Status**: Stable (v2.4.6 — streaming ratio cap shipped, extending the 2.4.5 batch zip-bomb defense to the incremental decode path) | **Last Updated**: 2026-06-25
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — what's next, what's deferred, and the longer-horizon Future
 bucket. **No release is currently committed.** The v2.4.x arc (xz +
 bzip2, both directions) shipped through 2.4.3; **2.4.4** no-op'd the
-public-API lock under AGNOS (kii's PNG inflate); **2.4.5** added
-`*_with_ratio_cap` decompression for the DEFLATE family, closing the sit
-backlog item below. See `CHANGELOG.md` for the per-cut narrative.
+public-API lock under AGNOS (kii's PNG inflate); **2.4.5** added batch
+`*_with_ratio_cap` decompression for the DEFLATE family (closing the sit
+backlog item below); **2.4.6** extended the cap to the streaming decode
+path (`*_dec_init_capped`). See `CHANGELOG.md` for the per-cut narrative.
 
 ---
 
@@ -33,10 +34,11 @@ that survive the work:
 
 ---
 
-## ✅ ratio-capped decompression (`*_with_ratio_cap`) — sit — SHIPPED 2.4.5
+## ✅ ratio-capped decompression — sit — SHIPPED 2.4.5 (batch) + 2.4.6 (streaming)
 
 **Consumer:** sit (Cyrius-native git replacement; decompresses untrusted
-objects off the wire). **Status:** **Shipped 2.4.5** — see `CHANGELOG.md`.
+objects off the wire). **Status:** **Shipped** — batch `*_with_ratio_cap`
+(2.4.5) + streaming `*_dec_init_capped` (2.4.6). See `CHANGELOG.md`.
 
 `zlib_decompress_with_ratio_cap` / `deflate_decompress_with_ratio_cap` /
 `gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)`
@@ -49,6 +51,14 @@ the cap cumulatively across concatenated members. The absolute 16 MB
 `DECOMPRESS_MAX_OUTPUT` ceiling and the caller's `dst_cap` remain the
 hard backstops; this adds the tunable *relative* bound. CVE analog:
 CVE-2018-25032 / zip-bomb class (cited in the 2026-04-15 audit's CRIT-01).
+
+**Streaming (2.4.6):** `zlib_dec_init_capped` / `deflate_dec_init_capped`
+/ `gzip_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)` stamp
+the same ceiling into the decoder ctx, so the incremental
+`dec_init`/`write`/`finish` path is poisoned with `ERR_RATIO_LIMIT`
+mid-stream — covering consumers that stream-inflate large untrusted
+objects. The cap persists across `deflate_dec_reset`, so gzip enforces it
+cumulatively over concatenated members.
 
 **Follow-on (open, unscheduled):** extend the same incremental cap to xz
 and bzip2 decode — both funnel output through localized chokepoints
@@ -104,9 +114,9 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.4.5** (ratio cap — `deflate.cyr` / `zlib.cyr` /
-> `gzip.cyr` / `types.cyr` grew the `*_with_ratio_cap` plumbing; `lib.cyr`
-> reflects the 2.4.4 agnos lock no-op).
+> Current as of **2.4.6** (streaming ratio cap — `deflate.cyr` / `zlib.cyr`
+> / `gzip.cyr` grew the `*_dec_init_capped` plumbing atop the 2.4.5 batch
+> `*_with_ratio_cap`; `lib.cyr` reflects the 2.4.4 agnos lock no-op).
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -119,23 +129,23 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 | lz77.cyr         |  181 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  181 | LZ4 block + frame decompress (incl. per-block checksum) + LZ4F enum (kernel-safe) | core |
 | lz4.cyr          |  935 | LZ4 block + frame compress + `lz4f_enc_*` (configurable block-max + checksum) + `lz4f_dec_*` streaming | full |
-| deflate.cyr      | 2493 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
-| zlib.cyr         |  468 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
-| gzip.cyr         |  624 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
+| deflate.cyr      | 2540 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
+| zlib.cyr         |  485 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
+| gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 1738 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) | full |
 | bzip2.cyr        | 1239 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) | full |
 | lib.cyr          |  282 | Public API, `_sankoch_mtx`, two-tier lock dispatch (agnos no-op since 2.4.4), `_sankoch_alloc` + fault-injection + `_sankoch_reset_tables` | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| **Total**        | **10000** | | |
+| **Total**        | **10078** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 316 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **228 distinct test functions** (218 across the 18 split
+Tests: **234 distinct test functions** (224 across the 18 split
 codec×direction suites + 10 in git_object.tcyr) producing
-**4,483,804 assertions** total (4,137,221 + 346,583). Most comes from
+**4,483,834 assertions** total (4,137,251 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -143,13 +153,14 @@ coverage *density*, not coverage *breadth*. See
 [`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
-Fuzz: 3,589 iterations across 4 files (`fuzz_lz4` 700, `fuzz_deflate`
-1,289 — incl. ratio-cap 240 + ratio-cap malformed 100, `fuzz_xz` 800 —
-300 random + 200 corruption + 300 encode→decode, `fuzz_bzip2` 800 — 300
-random + 200 corruption + 300 encode→decode).
+Fuzz: 3,929 iterations across 4 files (`fuzz_lz4` 700, `fuzz_deflate`
+1,629 — incl. batch ratio-cap 240 + malformed 100 + streaming ratio-cap
+240 + streaming malformed 100, `fuzz_xz` 800 — 300 random + 200
+corruption + 300 encode→decode, `fuzz_bzip2` 800 — 300 random + 200
+corruption + 300 encode→decode).
 
-Distlib: `dist/sankoch.cyr` at 9,978 lines (full) +
-`dist/sankoch-core.cyr` at 316 lines (kernel-safe) — at 2.4.5
+Distlib: `dist/sankoch.cyr` at 10,056 lines (full) +
+`dist/sankoch-core.cyr` at 316 lines (kernel-safe) — at 2.4.6
 (+ratio-cap plumbing in the full bundle; core +1 line for the
 `ERR_RATIO_LIMIT` enum constant).
 

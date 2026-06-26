@@ -271,6 +271,160 @@ fn test_rc_invalid_args() {
 }
 
 # ================================================================
+# Streaming ratio cap (2.4.6 — *_dec_init_capped)
+# ================================================================
+
+# One-shot streaming zlib decode under a cap: feed the whole stream in a
+# single write, always finish (releases the mutex). Returns the sticky
+# negative error if the cap (or anything) tripped, else the total length.
+fn _rc_stream_zlib(c, clen, d, dcap, expected_src_len, max_ratio) {
+    var ctx = zlib_dec_init_capped(d, dcap, expected_src_len, max_ratio);
+    if (ctx == 0) { return 0 - 999; }   # init rejected (bad args)
+    var rc = zlib_dec_write(ctx, c, clen);
+    var fin = zlib_dec_finish(ctx);     # always called → mutex released
+    if (rc < 0) { return rc; }
+    return fin;
+}
+
+# Streaming zlib bomb: a 64 KB zeros stream fed through zlib_dec_init_capped
+# with a 2:1 cap must be poisoned with ERR_RATIO_LIMIT mid-inflate.
+fn test_rc_stream_zlib_bomb() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = zlib_compress(src, n, c, 4096);
+    assert(clen > 0, "rc stream zlib bomb: compress");
+    var d = alloc(n);
+    var r = _rc_stream_zlib(c, clen, d, n, clen, 2);
+    assert(r == 0 - ERR_RATIO_LIMIT, "rc stream zlib bomb: cap=2 -> ERR_RATIO_LIMIT");
+    return 0;
+}
+
+# Same bomb, generous cap: streams fully and round-trips byte-exact.
+fn test_rc_stream_zlib_generous() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = zlib_compress(src, n, c, 4096);
+    assert(clen > 0, "rc stream zlib generous: compress");
+    var d = alloc(n);
+    var r = _rc_stream_zlib(c, clen, d, n, clen, 100000);
+    assert(r == n, "rc stream zlib generous: full length");
+    _rc_assert_zeros(d, n, "rc stream zlib generous: content all zeros");
+    return 0;
+}
+
+# Incremental: feeding the bomb byte-at-a-time must trip ERR_RATIO_LIMIT on
+# a write BEFORE the whole stream is consumed (the defining property of the
+# streaming cap — rejection mid-inflate, not at the end).
+fn test_rc_stream_zlib_chunked_trips() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = zlib_compress(src, n, c, 4096);
+    assert(clen > 0, "rc stream chunked: compress");
+    var d = alloc(n);
+    var ctx = zlib_dec_init_capped(d, n, clen, 2);
+    assert(ctx != 0, "rc stream chunked: init");
+    var tripped = 0;
+    var consumed = 0;
+    var i = 0;
+    while (i < clen) {
+        var rc = zlib_dec_write(ctx, c + i, 1);
+        if (rc < 0) {
+            assert(rc == 0 - ERR_RATIO_LIMIT, "rc stream chunked: trip is ERR_RATIO_LIMIT");
+            tripped = 1;
+            consumed = i;
+            break;
+        }
+        i = i + 1;
+    }
+    zlib_dec_finish(ctx);   # release the mutex regardless
+    assert(tripped == 1, "rc stream chunked: rejected mid-stream");
+    assert(consumed < clen, "rc stream chunked: tripped before consuming all input");
+    return 0;
+}
+
+# Raw DEFLATE streaming cap: bomb rejected, generous passes.
+fn test_rc_stream_deflate() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = deflate_compress(src, n, c, 4096);
+    assert(clen > 0, "rc stream deflate: compress");
+    var d = alloc(n);
+    var ctx = deflate_dec_init_capped(d, n, clen, 2);
+    assert(ctx != 0, "rc stream deflate: init");
+    var rc = deflate_dec_write(ctx, c, clen);
+    var fin = deflate_dec_finish(ctx);
+    var eff = rc;
+    if (rc >= 0) { eff = fin; }
+    assert(eff == 0 - ERR_RATIO_LIMIT, "rc stream deflate: cap=2 rejected");
+    var ctx2 = deflate_dec_init_capped(d, n, clen, 100000);
+    assert(ctx2 != 0, "rc stream deflate: init generous");
+    assert(deflate_dec_write(ctx2, c, clen) >= 0, "rc stream deflate: generous write");
+    assert(deflate_dec_finish(ctx2) == n, "rc stream deflate: generous full length");
+    return 0;
+}
+
+# gzip streaming cap is CUMULATIVE across concatenated members (dp and the
+# ceiling both persist over deflate_dec_reset). Two 32 KB zero-block members:
+# a generous cap decodes both; a ceiling in (n, 2n) lets member 1 through
+# but trips on member 2.
+fn test_rc_stream_gzip_cumulative() {
+    var n = 32768;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c1 = alloc(4096);
+    var l1 = gzip_compress(src, n, c1, 4096);
+    assert(l1 > 0, "rc stream gzip cat: compress");
+    var catlen = l1 * 2;
+    var cat = alloc(catlen);
+    var i = 0;
+    while (i < l1) { store8(cat + i, load8(c1 + i)); i = i + 1; }
+    i = 0;
+    while (i < l1) { store8(cat + l1 + i, load8(c1 + i)); i = i + 1; }
+    var d = alloc(n * 2);
+    # Generous: both members decode.
+    var ctx1 = gzip_dec_init_capped(d, n * 2, catlen, 100000);
+    assert(ctx1 != 0, "rc stream gzip cat: init generous");
+    assert(gzip_dec_write(ctx1, cat, catlen) >= 0, "rc stream gzip cat: generous write");
+    assert(gzip_dec_finish(ctx1) == n * 2, "rc stream gzip cat: generous both members");
+    # Cumulative: ceiling in (n, 2n) -> member 2 trips.
+    var mr = (3 * n) / (4 * l1);
+    assert(mr >= 2, "rc stream gzip cat: derived cap valid");
+    var ctx2 = gzip_dec_init_capped(d, n * 2, catlen, mr);
+    assert(ctx2 != 0, "rc stream gzip cat: init cumulative");
+    var rc = gzip_dec_write(ctx2, cat, catlen);
+    var fin = gzip_dec_finish(ctx2);
+    var eff = rc;
+    if (rc >= 0) { eff = fin; }
+    assert(eff == 0 - ERR_RATIO_LIMIT, "rc stream gzip cat: cumulative cap trips member 2");
+    return 0;
+}
+
+# Streaming capped-init argument validation: max_ratio < 1 (or negative
+# expected_src_len) returns 0 with NO mutex taken (no finish needed).
+fn test_rc_stream_invalid_args() {
+    var d = alloc(64);
+    assert(zlib_dec_init_capped(d, 64, 100, 0) == 0, "rc stream args: zlib max_ratio=0 -> 0");
+    assert(deflate_dec_init_capped(d, 64, 100, 0) == 0, "rc stream args: deflate max_ratio=0 -> 0");
+    assert(gzip_dec_init_capped(d, 64, 100, 0) == 0, "rc stream args: gzip max_ratio=0 -> 0");
+    assert(zlib_dec_init_capped(d, 64, 0 - 1, 5) == 0, "rc stream args: negative src_len -> 0");
+    # expected_src_len == 0 must be REJECTED (return 0), not silently run
+    # uncapped: a 0 ceiling aliases the +176 "uncapped" sentinel. All three
+    # capped inits guard expected_src_len >= 1.
+    assert(zlib_dec_init_capped(d, 64, 0, 1000) == 0, "rc stream args: zlib expected_src_len=0 -> 0");
+    assert(deflate_dec_init_capped(d, 64, 0, 1000) == 0, "rc stream args: deflate expected_src_len=0 -> 0");
+    assert(gzip_dec_init_capped(d, 64, 0, 1000) == 0, "rc stream args: gzip expected_src_len=0 -> 0");
+    return 0;
+}
+
+# ================================================================
 # main
 # ================================================================
 
@@ -286,6 +440,12 @@ fn main() {
     test_rc_equivalence_uncapped();
     test_rc_gzip_concatenated_cumulative();
     test_rc_invalid_args();
+    test_rc_stream_zlib_bomb();
+    test_rc_stream_zlib_generous();
+    test_rc_stream_zlib_chunked_trips();
+    test_rc_stream_deflate();
+    test_rc_stream_gzip_cumulative();
+    test_rc_stream_invalid_args();
     return assert_summary();
 }
 

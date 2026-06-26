@@ -487,6 +487,67 @@ fn fuzz_ratio_cap_malformed(seed, data_len) {
     return 0;
 }
 
+# Streaming ratio cap (2.4.6). Same single-byte-run shape, driven through
+# zlib_dec_init_capped / write / finish: a generous cap round-trips, and a
+# 2:1 cap on >=3x data trips ERR_RATIO_LIMIT. finish is always called so the
+# mutex is released.
+fn fuzz_stream_ratio_cap(seed, data_len) {
+    _fuzz_seed(seed);
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+    var src[2048];
+    var fillb = _fuzz_next() & 255;
+    var i = 0;
+    while (i < capped) { store8(&src + i, fillb); i = i + 1; }
+
+    var compressed[4096];
+    var decompressed[2048];
+    var clen = zlib_compress(&src, capped, &compressed, 4096);
+    if (clen < 0) { assert(0 == 1, "stream ratio-cap fuzz: compress failed"); }
+
+    # Generous cap: stream-decode must round-trip byte-exact.
+    var ctx = zlib_dec_init_capped(&decompressed, 2048, clen, 1000000);
+    if (ctx == 0) { assert(0 == 1, "stream ratio-cap fuzz: init generous failed"); }
+    var rc = zlib_dec_write(ctx, &compressed, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc >= 0, "stream ratio-cap fuzz: generous write");
+    assert(fin == capped, "stream ratio-cap fuzz: generous len");
+    i = 0;
+    while (i < capped) {
+        assert(load8(&decompressed + i) == load8(&src + i), "stream ratio-cap fuzz: generous content");
+        i = i + 1;
+    }
+
+    # Tight 2:1 cap on >=3x-expanding data: must trip ERR_RATIO_LIMIT.
+    if (clen > 0 && capped / clen >= 3) {
+        var ctx2 = zlib_dec_init_capped(&decompressed, 2048, clen, 2);
+        if (ctx2 == 0) { assert(0 == 1, "stream ratio-cap fuzz: init tight failed"); }
+        var rc2 = zlib_dec_write(ctx2, &compressed, clen);
+        var fin2 = zlib_dec_finish(ctx2);
+        var eff = rc2;
+        if (rc2 >= 0) { eff = fin2; }
+        assert(eff == 0 - ERR_RATIO_LIMIT, "stream ratio-cap fuzz: tight cap trips");
+    }
+    return 0;
+}
+
+# Streaming-cap malformed survival: random bytes through the capped streaming
+# decoder must never crash; finish always releases the mutex.
+fn fuzz_stream_ratio_cap_malformed(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[256];
+    var capped = data_len;
+    if (capped > 256) { capped = 256; }
+    _fuzz_fill(&src, capped);
+    var dst[2048];
+    var ctx = zlib_dec_init_capped(&dst, 2048, capped, 16);
+    if (ctx != 0) {
+        zlib_dec_write(ctx, &src, capped);
+        zlib_dec_finish(ctx);
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -682,6 +743,26 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_ratio_cap: 100 malformed input tests passed");
+
+    # Streaming ratio cap (2.4.6): generous round-trip + tight-cap trip.
+    seed = 1;
+    while (seed <= 30) {
+        var sci = 0;
+        while (sci < 8) {
+            fuzz_stream_ratio_cap(seed * 9803 + sci, load64(&sizes + sci * 8));
+            sci = sci + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_ratio_cap: 240 streaming round-trip/cap tests passed");
+
+    # Streaming-cap malformed survival.
+    seed = 1;
+    while (seed <= 100) {
+        fuzz_stream_ratio_cap_malformed(seed * 6379, (seed * 19) % 256);
+        seed = seed + 1;
+    }
+    println("fuzz_ratio_cap: 100 streaming malformed input tests passed");
 
     return 0;
 }
