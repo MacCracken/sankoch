@@ -19,7 +19,10 @@
 # Sets _gzip_member_end to the byte offset past this member's trailer.
 var _gzip_member_end = 0;
 
-fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
+# ratio_max: absolute output ceiling for THIS member's deflate payload
+# (0 = disabled). The caller (_gzip_decompress_inner) shrinks it per
+# member so the cumulative output stays under the whole-stream cap.
+fn _gzip_decompress_member(src, src_len, dst, dst_cap, ratio_max): i64 {
     if (src_len < 18) { return 0 - ERR_INVALID_INPUT; }
 
     # Verify magic bytes
@@ -84,7 +87,7 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
 
     # DEFLATE payload starts at offset
     var deflate_len = src_len - offset;
-    var dlen = _deflate_decompress_inner(src + offset, deflate_len, dst, dst_cap);
+    var dlen = _deflate_decompress_inner(src + offset, deflate_len, dst, dst_cap, ratio_max);
     if (dlen < 0) { return dlen; }
 
     # Trailer starts right after the DEFLATE stream consumed bytes
@@ -110,13 +113,29 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap): i64 {
 # Decompress a gzip stream (supports concatenated members per RFC 1952).
 fn gzip_decompress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
-    var r = _gzip_decompress_inner(src, src_len, dst, dst_cap);
+    var r = _gzip_decompress_inner(src, src_len, dst, dst_cap, 0);
+    _sankoch_unlock();
+    return r;
+}
+
+# Ratio-capped gzip decompress (2.4.5). The cap bounds cumulative output
+# across all concatenated members against max_ratio * src_len; trips
+# return ERR_RATIO_LIMIT, checked incrementally during inflate. max_ratio
+# < 1 (or negative src_len) is rejected with ERR_INVALID_INPUT.
+fn gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio): i64 {
+    if (max_ratio < 1 || src_len < 0) { return 0 - ERR_INVALID_INPUT; }
+    var ceiling = _deflate_ratio_ceiling(src_len, max_ratio);
+    _sankoch_lock();
+    var r = _gzip_decompress_inner(src, src_len, dst, dst_cap, ceiling);
     _sankoch_unlock();
     return r;
 }
 
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
-fn _gzip_decompress_inner(src, src_len, dst, dst_cap): i64 {
+# ratio_max: absolute whole-stream output ceiling (0 = disabled). Each
+# member's deflate gets the remaining headroom (ceiling - output-so-far)
+# so the cap is cumulative across concatenated members.
+fn _gzip_decompress_inner(src, src_len, dst, dst_cap, ratio_max): i64 {
     var total = 0;
     var pos = 0;
 
@@ -125,8 +144,17 @@ fn _gzip_decompress_inner(src, src_len, dst, dst_cap): i64 {
         if (pos + 2 > src_len) { break; }
         if (load8(src + pos) != 31 || load8(src + pos + 1) != 139) { break; }
 
+        # Remaining ratio headroom for this member. Clamp to >= 1 when the
+        # cap is active so a member at the ceiling still trips (and never
+        # collapses to the 0 "disabled" sentinel).
+        var member_ratio = ratio_max;
+        if (ratio_max != 0) {
+            member_ratio = ratio_max - total;
+            if (member_ratio < 1) { member_ratio = 1; }
+        }
+
         var dlen = _gzip_decompress_member(src + pos, src_len - pos,
-        dst + total, dst_cap - total);
+        dst + total, dst_cap - total, member_ratio);
         if (dlen < 0) { return dlen; }
         total = total + dlen;
         pos = pos + _gzip_member_end;

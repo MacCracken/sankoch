@@ -1,0 +1,293 @@
+# sankoch — ratio-capped decompression (2.4.5 — sit zip-bomb defense)
+#
+# Exercises *_with_ratio_cap for zlib / deflate / gzip:
+#   - bomb rejection by expansion ratio (ERR_RATIO_LIMIT)
+#   - generous-cap pass-through with byte-exact round-trip
+#   - the exact crossover boundary derived from the measured size
+#   - stored-block exemption (1:1 blocks can never bomb)
+#   - equivalence of the capped and uncapped paths on legitimate input
+#   - the cumulative cap across concatenated gzip members
+#   - argument validation (max_ratio >= 1)
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/ratio_cap.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+# Fill `buf` with `n` zero bytes — maximally compressible, so a small
+# compressed stream expands at a huge ratio (a textbook bomb).
+fn _rc_fill_zeros(buf, n) {
+    var i = 0;
+    while (i < n) { store8(buf + i, 0); i = i + 1; }
+    return 0;
+}
+
+# Assert dst[0..n) is all zeros (round-trip integrity on the pass path).
+fn _rc_assert_zeros(dst, n, label) {
+    var i = 0;
+    var ok = 1;
+    while (i < n) {
+        if (load8(dst + i) != 0) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, label);
+    return 0;
+}
+
+# 64 KB of zeros → a tiny zlib stream (expansion in the hundreds). A
+# 2:1 cap must reject it with ERR_RATIO_LIMIT even though dst_cap (64 KB)
+# and the absolute 16 MB ceiling would both have let it through.
+fn test_rc_zlib_bomb_rejected() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = zlib_compress(src, n, c, 4096);
+    assert(clen > 0, "rc zlib bomb: compress");
+    var d = alloc(n);
+    var r = zlib_decompress_with_ratio_cap(c, clen, d, n, 2);
+    assert(r == 0 - ERR_RATIO_LIMIT, "rc zlib bomb: cap=2 -> ERR_RATIO_LIMIT");
+    return 0;
+}
+
+# Same bomb, generous cap (100000:1, far above the real ratio): must
+# decompress fully and round-trip byte-exact.
+fn test_rc_zlib_generous_passes() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = zlib_compress(src, n, c, 4096);
+    assert(clen > 0, "rc zlib generous: compress");
+    var d = alloc(n);
+    var r = zlib_decompress_with_ratio_cap(c, clen, d, n, 100000);
+    assert(r == n, "rc zlib generous: cap=100000 returns full length");
+    _rc_assert_zeros(d, n, "rc zlib generous: content all zeros");
+    return 0;
+}
+
+# Boundary: derive the exact crossover from the measured compressed size.
+# A cap just below the real ratio must reject; just above must pass.
+fn test_rc_zlib_boundary() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = zlib_compress(src, n, c, 4096);
+    assert(clen > 0, "rc zlib boundary: compress");
+    var actual = n / clen;            # floor expansion ratio
+    assert(actual >= 3, "rc zlib boundary: ratio high enough to test");
+    var d = alloc(n);
+    # Just below the real ratio -> ceiling < n -> rejected mid-inflate.
+    var lo = zlib_decompress_with_ratio_cap(c, clen, d, n, actual - 1);
+    assert(lo == 0 - ERR_RATIO_LIMIT, "rc zlib boundary: cap just below rejected");
+    # Comfortably above -> full round-trip.
+    var hi = zlib_decompress_with_ratio_cap(c, clen, d, n, actual + 2);
+    assert(hi == n, "rc zlib boundary: cap just above passes");
+    return 0;
+}
+
+# Raw DEFLATE (no zlib wrapper): bomb rejected, generous cap passes.
+fn test_rc_deflate_bomb_and_pass() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = deflate_compress(src, n, c, 4096);
+    assert(clen > 0, "rc deflate: compress");
+    var d = alloc(n);
+    assert(deflate_decompress_with_ratio_cap(c, clen, d, n, 2) == 0 - ERR_RATIO_LIMIT,
+        "rc deflate: cap=2 rejected");
+    var r = deflate_decompress_with_ratio_cap(c, clen, d, n, 100000);
+    assert(r == n, "rc deflate: generous cap full length");
+    _rc_assert_zeros(d, n, "rc deflate: content all zeros");
+    return 0;
+}
+
+# gzip single member: bomb rejected, generous cap passes.
+fn test_rc_gzip_bomb_and_pass() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = gzip_compress(src, n, c, 4096);
+    assert(clen > 0, "rc gzip: compress");
+    var d = alloc(n);
+    assert(gzip_decompress_with_ratio_cap(c, clen, d, n, 2) == 0 - ERR_RATIO_LIMIT,
+        "rc gzip: cap=2 rejected");
+    var r = gzip_decompress_with_ratio_cap(c, clen, d, n, 100000);
+    assert(r == n, "rc gzip: generous cap full length");
+    _rc_assert_zeros(d, n, "rc gzip: content all zeros");
+    return 0;
+}
+
+# Near-incompressible input (output <= input, ~1:1) must pass even a tight
+# 1:1 cap — legitimate non-expanding data is never tripped. The ratio cap
+# is applied uniformly (compressed AND stored arms), but a 1:1 stream
+# can't exceed ratio_max = clen * max_ratio for max_ratio >= 1.
+fn test_rc_low_ratio_under_cap() {
+    var n = 8192;
+    var src = alloc(n);
+    var st = 88172645463325252;
+    var i = 0;
+    while (i < n) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        store8(src + i, (st >> 33) & 255);
+        i = i + 1;
+    }
+    var c = alloc(16384);
+    var clen = zlib_compress(src, n, c, 16384);
+    assert(clen > 0, "rc low-ratio: compress");
+    var d = alloc(n + 16);
+    var r = zlib_decompress_with_ratio_cap(c, clen, d, n + 16, 1);
+    assert(r == n, "rc low-ratio: tight cap=1 still passes");
+    var j = 0;
+    var ok = 1;
+    while (j < n) {
+        if (load8(d + j) != load8(src + j)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "rc low-ratio: round-trip byte-exact");
+    return 0;
+}
+
+# Directly exercise the stored-block arm of the ratio cap. The encoder
+# rarely emits stored (BTYPE=00) blocks, so this hand-builds a raw DEFLATE
+# stream that is a single stored block and decodes it with a cap. The new
+# stored-arm ceiling check is evaluated on this path; a stored block is
+# 1:1 (output == its own input bytes), so output <= src_len <= ratio_max
+# for any max_ratio >= 1 — it passes cleanly and round-trips byte-exact.
+# (Tripping the stored arm requires a mixed compressed+stored stream where
+# a prior compressed block already reached the ceiling; that path shares
+# the identical `dp + len > ceiling` check proven on the compressed arm.)
+fn test_rc_stored_arm_decodes_under_cap() {
+    var bl = 200;
+    # Stored block: header byte (BFINAL=1, BTYPE=00) + LEN(LE16) +
+    # NLEN(~LEN, LE16) + LEN raw bytes. (len ^ nlen) must == 65535.
+    var stream = alloc(5 + bl);
+    store8(stream + 0, 1);                          # BFINAL=1, BTYPE=00
+    store8(stream + 1, bl & 255);                   # LEN low
+    store8(stream + 2, (bl >> 8) & 255);            # LEN high
+    store8(stream + 3, (bl & 255) ^ 255);           # NLEN low
+    store8(stream + 4, ((bl >> 8) & 255) ^ 255);    # NLEN high
+    var i = 0;
+    while (i < bl) { store8(stream + 5 + i, (i * 7 + 3) & 255); i = i + 1; }
+    var slen = 5 + bl;
+    var d = alloc(bl + 16);
+    # cap=1 -> ratio_max = slen * 1 = 205 >= output 200; passes.
+    var r = deflate_decompress_with_ratio_cap(stream, slen, d, bl + 16, 1);
+    assert(r == bl, "rc stored-arm: pure stored block decodes under cap=1");
+    var j = 0;
+    var ok = 1;
+    while (j < bl) {
+        if (load8(d + j) != ((j * 7 + 3) & 255)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "rc stored-arm: stored content byte-exact under cap");
+    return 0;
+}
+
+# A within-cap legitimate stream must decode identically through the
+# capped and uncapped paths — proving the cap is transparent when not
+# tripped. Uses moderately compressible periodic data (compressed/match
+# path, not stored).
+fn test_rc_equivalence_uncapped() {
+    var n = 20000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, (i % 200) & 255); i = i + 1; }
+    var c = alloc(8192);
+    var clen = zlib_compress(src, n, c, 8192);
+    assert(clen > 0, "rc equiv: compress");
+    var d1 = alloc(n);
+    var d2 = alloc(n);
+    var u = zlib_decompress(c, clen, d1, n);
+    var k = zlib_decompress_with_ratio_cap(c, clen, d2, n, 100000);
+    assert(u == n, "rc equiv: uncapped full length");
+    assert(k == u, "rc equiv: capped length == uncapped length");
+    var j = 0;
+    var ok = 1;
+    while (j < n) {
+        if (load8(d1 + j) != load8(d2 + j)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "rc equiv: capped output == uncapped output byte-for-byte");
+    return 0;
+}
+
+# Concatenated gzip members: the cap is CUMULATIVE across members. Two
+# 32 KB zero-block members (each a bomb). With a cap whose ceiling lands
+# between n and 2n, member 1 decodes within budget but member 2 trips
+# because the remaining headroom shrank — exercising the per-member
+# headroom logic in _gzip_decompress_inner.
+fn test_rc_gzip_concatenated_cumulative() {
+    var n = 32768;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c1 = alloc(4096);
+    var l1 = gzip_compress(src, n, c1, 4096);
+    assert(l1 > 0, "rc gzip cat: member compress");
+    var catlen = l1 * 2;
+    var cat = alloc(catlen);
+    var i = 0;
+    while (i < l1) { store8(cat + i, load8(c1 + i)); i = i + 1; }
+    i = 0;
+    while (i < l1) { store8(cat + l1 + i, load8(c1 + i)); i = i + 1; }
+    var d = alloc(n * 2);
+    # Generous cap -> both members decode, total = 2n.
+    var rg = gzip_decompress_with_ratio_cap(cat, catlen, d, n * 2, 100000);
+    assert(rg == n * 2, "rc gzip cat: generous cap decodes both members");
+    # Pick max_ratio so the whole-stream ceiling lands in (n, 2n): member
+    # 1 (n bytes) fits, member 1+2 (2n) does not.
+    var mr = (3 * n) / (4 * l1);
+    assert(mr >= 2, "rc gzip cat: derived cap valid");
+    var rc = gzip_decompress_with_ratio_cap(cat, catlen, d, n * 2, mr);
+    assert(rc == 0 - ERR_RATIO_LIMIT, "rc gzip cat: cumulative cap trips on member 2");
+    # And a hard bomb cap rejects within member 1.
+    assert(gzip_decompress_with_ratio_cap(cat, catlen, d, n * 2, 2) == 0 - ERR_RATIO_LIMIT,
+        "rc gzip cat: cap=2 rejects in member 1");
+    return 0;
+}
+
+# Argument validation: max_ratio must be >= 1; the guard fires before any
+# stream parsing (so the stream contents are irrelevant here).
+fn test_rc_invalid_args() {
+    var n = 64;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(256);
+    var clen = zlib_compress(src, n, c, 256);
+    assert(clen > 0, "rc args: compress");
+    var d = alloc(n);
+    assert(zlib_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
+        "rc args: zlib max_ratio=0 rejected");
+    assert(zlib_decompress_with_ratio_cap(c, clen, d, n, 0 - 5) == 0 - ERR_INVALID_INPUT,
+        "rc args: zlib negative max_ratio rejected");
+    assert(deflate_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
+        "rc args: deflate max_ratio=0 rejected");
+    assert(gzip_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
+        "rc args: gzip max_ratio=0 rejected");
+    return 0;
+}
+
+# ================================================================
+# main
+# ================================================================
+
+fn main() {
+    _test_init();
+    test_rc_zlib_bomb_rejected();
+    test_rc_zlib_generous_passes();
+    test_rc_zlib_boundary();
+    test_rc_deflate_bomb_and_pass();
+    test_rc_gzip_bomb_and_pass();
+    test_rc_low_ratio_under_cap();
+    test_rc_stored_arm_decodes_under_cap();
+    test_rc_equivalence_uncapped();
+    test_rc_gzip_concatenated_cumulative();
+    test_rc_invalid_args();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

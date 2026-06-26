@@ -16,7 +16,22 @@
 # Decompress a zlib stream (no preset dictionary).
 fn zlib_decompress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
-    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0);
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, 0);
+    _sankoch_unlock();
+    return r;
+}
+
+# Ratio-capped zlib decompress (2.4.5). Rejects a stream whose output
+# exceeds max_ratio * src_len with ERR_RATIO_LIMIT, checked incrementally
+# during inflate — defense-in-depth for sit and other consumers that
+# inflate untrusted git/wire objects. The absolute 16 MB ceiling and
+# dst_cap stay the hard backstops; this is the tunable relative bound.
+# max_ratio < 1 (or negative src_len) is rejected with ERR_INVALID_INPUT.
+fn zlib_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio): i64 {
+    if (max_ratio < 1 || src_len < 0) { return 0 - ERR_INVALID_INPUT; }
+    var ceiling = _deflate_ratio_ceiling(src_len, max_ratio);
+    _sankoch_lock();
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, ceiling);
     _sankoch_unlock();
     return r;
 }
@@ -27,13 +42,15 @@ fn zlib_decompress(src, src_len, dst, dst_cap): i64 {
 # for streams without FDICT.
 fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len): i64 {
     _sankoch_lock();
-    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len);
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, 0);
     _sankoch_unlock();
     return r;
 }
 
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
-fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len): i64 {
+# ratio_max: absolute output ceiling for the ratio cap (0 = disabled),
+# computed from the full zlib src_len and passed to the DEFLATE inner.
+fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ratio_max): i64 {
     if (src_len < 6) { return 0 - ERR_INVALID_INPUT; }
 
     # Parse header
@@ -71,9 +88,9 @@ fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len): i64 
     var deflate_len = src_len - hdr_len;
     var dlen = 0;
     if (dict_len > 0) {
-        dlen = _deflate_decompress_dict_inner(deflate_src, deflate_len, dst, dst_cap, dict, dict_len);
+        dlen = _deflate_decompress_dict_inner(deflate_src, deflate_len, dst, dst_cap, dict, dict_len, ratio_max);
     } else {
-        dlen = _deflate_decompress_inner(deflate_src, deflate_len, dst, dst_cap);
+        dlen = _deflate_decompress_inner(deflate_src, deflate_len, dst, dst_cap, ratio_max);
     }
     if (dlen < 0) { return dlen; }
 

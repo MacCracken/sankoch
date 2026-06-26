@@ -429,6 +429,64 @@ fn fuzz_gzip_roundtrip(seed, data_len) {
     return 0;
 }
 
+# Ratio-capped decompression (2.4.5). Compresses a single-byte run (high,
+# bounded expansion) and checks the cap invariants: a generous cap is
+# transparent (byte-exact round-trip), an invalid ratio is rejected, and
+# a 2:1 cap rejects genuinely expanding streams with ERR_RATIO_LIMIT.
+fn fuzz_ratio_cap(seed, data_len) {
+    _fuzz_seed(seed);
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+
+    # A run of one seed-derived byte — compresses via the match path at a
+    # high ratio (a controlled bomb).
+    var src[2048];
+    var fillb = _fuzz_next() & 255;
+    var i = 0;
+    while (i < capped) { store8(&src + i, fillb); i = i + 1; }
+
+    var compressed[4096];
+    var decompressed[2048];
+
+    var clen = zlib_compress(&src, capped, &compressed, 4096);
+    if (clen < 0) { assert(0 == 1, "ratio-cap fuzz: compress failed"); }
+
+    # Generous cap must round-trip byte-exact (transparent when not hit).
+    var g = zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 1000000);
+    assert(g == capped, "ratio-cap fuzz: generous cap size");
+    i = 0;
+    while (i < capped) {
+        assert(load8(&decompressed + i) == load8(&src + i), "ratio-cap fuzz: generous content");
+        i = i + 1;
+    }
+
+    # Invalid ratio rejected before any parsing.
+    assert(zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 0) == 0 - ERR_INVALID_INPUT,
+        "ratio-cap fuzz: cap=0 rejected");
+
+    # When the data genuinely expands >= 3x, a 2:1 cap must reject it.
+    if (clen > 0 && capped / clen >= 3) {
+        assert(zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 2) == 0 - ERR_RATIO_LIMIT,
+            "ratio-cap fuzz: 2:1 cap rejects bomb");
+    }
+    return 0;
+}
+
+# Malformed survival: random bytes through every capped decoder must never
+# crash, whatever the cap. Error returns are fine.
+fn fuzz_ratio_cap_malformed(seed, data_len) {
+    _fuzz_seed(seed);
+    var src[256];
+    var capped = data_len;
+    if (capped > 256) { capped = 256; }
+    _fuzz_fill(&src, capped);
+    var dst[2048];
+    zlib_decompress_with_ratio_cap(&src, capped, &dst, 2048, 16);
+    gzip_decompress_with_ratio_cap(&src, capped, &dst, 2048, 16);
+    deflate_decompress_with_ratio_cap(&src, capped, &dst, 2048, 16);
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -603,6 +661,27 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_deflate: 30 skewed-freq round-trip tests passed");
+
+    # Ratio-capped decompression (2.4.5): generous-cap round-trip
+    # equivalence, invalid-arg rejection, and bomb rejection on runs.
+    seed = 1;
+    while (seed <= 30) {
+        var rci = 0;
+        while (rci < 8) {
+            fuzz_ratio_cap(seed * 9601 + rci, load64(&sizes + rci * 8));
+            rci = rci + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_ratio_cap: 240 round-trip/cap tests passed");
+
+    # Ratio-cap malformed survival across all three capped decoders.
+    seed = 1;
+    while (seed <= 100) {
+        fuzz_ratio_cap_malformed(seed * 6121, (seed * 13) % 256);
+        seed = seed + 1;
+    }
+    println("fuzz_ratio_cap: 100 malformed input tests passed");
 
     return 0;
 }

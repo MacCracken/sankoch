@@ -25,6 +25,7 @@ enum Error {
     ERR_INVALID_HUFFMAN = 8;
     ERR_MATCH_OUT_OF_RANGE = 9;
     ERR_OOM = 10;             # allocation failure (2.3.7: lazy-global / arena allocs)
+    ERR_RATIO_LIMIT = 11;     # decompression expansion ratio exceeded (2.4.5 ratio cap)
 }
 
 # Limits and magic bytes

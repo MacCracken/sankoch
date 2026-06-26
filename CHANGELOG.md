@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.5] — 2026-06-25
+
+**Ratio-capped decompression (`*_with_ratio_cap`) + toolchain → 6.2.44.**
+Defense-in-depth against decompression bombs for untrusted-input
+consumers — sit inflates wire objects on fetch / clone / fsck. The
+existing guards bound only *absolute* output (`DECOMPRESS_MAX_OUTPUT` =
+16 MB plus the caller's `dst_cap`), so a crafted stream that stays under
+16 MB but expands at a huge ratio (e.g. 4 KB → 15 MB, ~3800:1) slipped
+through both. The new variants reject by *expansion ratio*, checked
+incrementally during inflate. Closes the roadmap `sit` backlog item.
+
+### Added
+
+- **`zlib_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)`**
+  \+ `deflate_decompress_with_ratio_cap` \+ `gzip_decompress_with_ratio_cap`.
+  `max_ratio` is an integer output:input multiplier; the stream is
+  rejected with the new **`ERR_RATIO_LIMIT` (11)** as soon as running
+  output exceeds `max_ratio * src_len`, caught mid-inflate inside
+  `_deflate_decode_block` (the expanding path) — and the stored-block
+  arms test the same ceiling, so the cumulative output bound is **exact**
+  (output never exceeds `max_ratio * src_len`, even for a mixed
+  compressed+stored stream). Every check is gated on a `0` sentinel, so
+  the uncapped path stays **byte-identical**. The 16 MB ceiling and
+  `dst_cap` remain the hard backstops; this adds the tunable *relative*
+  bound. gzip enforces the cap cumulatively across concatenated members.
+  `max_ratio < 1` (or negative `src_len`) → `ERR_INVALID_INPUT`.
+
+### Changed
+
+- **Toolchain pin → `6.2.44`** (`cyrius.cyml [package].cyrius`, was
+  6.2.15). `cyrius deps` re-resolved; build / full test suite / lint /
+  fmt / vet all clean on the new toolchain; the wire-format SIZE gate is
+  unchanged at 43 lines.
+
+### Tests / fuzz / bench
+
+- New suite [`tests/tcyr/ratio_cap.tcyr`](tests/tcyr/ratio_cap.tcyr)
+  (10 tests, 36 assertions): bomb rejection (`ERR_RATIO_LIMIT`),
+  generous-cap byte-exact round-trip, the exact crossover boundary
+  derived from the measured compressed size, a hand-built stored-block
+  stream through the stored arm, low-ratio data not false-tripped,
+  capped/uncapped equivalence, the cumulative gzip-member cap, and
+  argument validation.
+- [`fuzz/fuzz_deflate.fcyr`](fuzz/fuzz_deflate.fcyr): +340 iterations
+  (240 generous-cap round-trip / invalid-arg / run-bomb-rejection + 100
+  malformed-survival across all three capped decoders).
+- `bench`: an informational ratio-cap section (a 4 KB zeros bomb rejected
+  at 2:1, accepted at 100000:1) — outside the SIZE gate.
+
+### Notes
+
+- Scope is the DEFLATE family (zlib / deflate / gzip) — the formats sit
+  decompresses. xz / bzip2 decode funnel through analogous chokepoints
+  (`_xz_put` / `_xz_copy_match`, the bzip2 RLE1 run-emit) and could take
+  the same cap in a later cut; not wired this release.
+
 ## [2.4.4] — 2026-06-18
 
 **AGNOS-compatible lock primitives.** `_sankoch_lock` / `_sankoch_unlock`

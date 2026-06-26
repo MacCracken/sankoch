@@ -470,6 +470,26 @@ fn main() {
     bench_d("xz  d text  4K", FORMAT_XZ, c, clen, d, 16384, iters);
     println("");
 
+    # ---- ratio-capped decompress (2.4.5) — informational, not SIZE-gated.
+    # Zip-bomb defense: a 4K zero block compresses to a tiny stream
+    # (hundreds:1), rejected by a tight cap (ERR_RATIO_LIMIT, mid-inflate)
+    # and accepted by a generous one. The cap is a single short-circuited
+    # compare on the decode hot path, so the uncapped path is unaffected.
+    println("--- ratio-capped decompress (zeros bomb) ---");
+    fill_zeros(src4k, 4096);
+    clen = zlib_compress(src4k, 4096, c, 16384);
+    _print("  in 4096 -> zlib "); _print_int(clen);
+    _print(" (ratio "); _print_int(4096 / clen); _print(":1)"); _nl();
+    var rc_lo = zlib_decompress_with_ratio_cap(c, clen, d, 16384, 2);
+    _print("  cap 2:1       -> ");
+    if (rc_lo < 0) { _print("rejected"); } else { _print_int(rc_lo); }
+    _nl();
+    var rc_hi = zlib_decompress_with_ratio_cap(c, clen, d, 16384, 100000);
+    _print("  cap 100000:1  -> ");
+    if (rc_hi < 0) { _print("rejected"); } else { _print_int(rc_hi); }
+    _nl();
+    println("");
+
     # ================================================================
     # Machine-readable size comparison (parsed by scripts/compare-sizes.sh)
     # Covers 1K, 4K, 16K, 64K, 256K across text/zeros/random.

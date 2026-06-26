@@ -212,13 +212,13 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
         return lz4_decompress(src, src_len, dst, dst_cap);
     }
     if (format == FORMAT_DEFLATE) {
-        return _deflate_decompress_inner(src, src_len, dst, dst_cap);
+        return _deflate_decompress_inner(src, src_len, dst, dst_cap, 0);
     }
     if (format == FORMAT_ZLIB) {
-        return _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0);
+        return _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, 0);
     }
     if (format == FORMAT_GZIP) {
-        return _gzip_decompress_inner(src, src_len, dst, dst_cap);
+        return _gzip_decompress_inner(src, src_len, dst, dst_cap, 0);
     }
     if (format == FORMAT_LZ4F) {
         return lz4f_decompress(src, src_len, dst, dst_cap);
