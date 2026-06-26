@@ -136,13 +136,13 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | huffman.cyr    | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes                | full    |
 | lz77.cyr       | Sliding window match-finder, 8-byte word-compare match extend, rebase                  | full    |
 | lz4.cyr        | LZ4 block + frame compress + `lz4f_enc_*` + `lz4f_dec_*` streaming                     | full    |
-| deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict          | full    |
-| zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming                 | full    |
-| gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming          | full    |
+| deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict, ratio-capped decompress (batch + streaming) | full    |
+| zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming + ratio-capped decompress | full    |
+| gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming + ratio-capped decompress | full    |
 | xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder        | full    |
 | bzip2.cyr      | `.bz2` de/compress — bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 | full  |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
-| lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch                    | full    |
+| lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch (agnos no-op)       | full    |
 
 `core` modules form the `[lib.core]` profile → `dist/sankoch-core.cyr` (kernel-safe LZ4 batch decompress; no `alloc`, no syscalls, no mutex). Verified by `programs/core_smoke.cyr` (a CI tripwire that links only the core subset and asserts decompress still works).
 

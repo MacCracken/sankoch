@@ -51,7 +51,7 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-06-25 | ✅ Fresh | Ratio-cap API subsection covers batch `*_with_ratio_cap` (v2.4.5) + streaming `*_dec_init_capped` (v2.4.6). Architecture/figures note remains from the 2026-05-23 sweep (line/test counts in prose are illustrative, not release-gated). |
+| `README.md` | 2026-06-25 | ✅ Fresh | Current through 2.4.6: ratio-cap API subsection (batch `*_with_ratio_cap` + streaming `*_dec_init_capped`); Architecture table rows note ratio-cap on deflate/zlib/gzip + the agnos lock no-op on lib. Defers all volatile line / test / assertion / distlib counts to state.md (no inlined figures). |
 | `CHANGELOG.md` | 2026-06-25 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.4.6] — 2026-06-25` (streaming ratio cap `*_dec_init_capped`); `[2.4.5]` batch ratio cap + pin → 6.2.44; `[2.4.4]` agnos-lock. Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
