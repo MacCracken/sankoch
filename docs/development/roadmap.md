@@ -32,6 +32,35 @@ that survive the work:
 
 ---
 
+## ▢ Backlog — ratio-capped decompression (`*_with_ratio_cap`) — sit
+
+**Consumer:** sit (Cyrius-native git replacement; decompresses untrusted
+objects off the wire). **Status:** Open — not landed as of sit's pin (2.4.4).
+
+**The limit.** sankoch's decompressors enforce only an *absolute* output
+ceiling — `DECOMPRESS_MAX_OUTPUT = 16 MB` (CRIT-01 fix, `docs/audit/2026-04-15.md`)
+plus the caller-supplied `dst_cap`. Neither bounds the **expansion ratio**
+(output ÷ input). A crafted stream that stays under 16 MB but expands at a huge
+ratio (e.g. 4 KB → 15 MB, ~3800:1) passes both guards untouched.
+
+**Wanted.** A one-call ratio-capped variant so a single API rejects a
+decompression bomb by ratio without each consumer hand-rolling the check around
+`dst_cap` sizing:
+
+- `zlib_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)` —
+  return `ERR_OUTPUT_LIMIT` (or a new `ERR_RATIO_LIMIT`) when
+  `output ÷ src_len` exceeds `max_ratio`, checked incrementally during inflate
+  (not just at the end). Deflate / gzip peers ideally follow the same shape.
+
+The absolute-ceiling path stays as the backstop; this adds a per-call *relative*
+bound the caller tunes to its trust model.
+
+**Why / priority.** Defense-in-depth for untrusted-input decompression — sit
+inflates wire objects on fetch / clone / fsck, where the absolute 16 MB cap is a
+backstop, not a ratio defense. **Medium** — DoS-hardening, not a hot path.
+CVE analog: CVE-2018-25032 / zip-bomb class (already cited in the 2026-04-15
+audit's CRIT-01).
+
 ## ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
 2.3.4 covered the CRC-32 throughput goal with a portable **slice-by-8**

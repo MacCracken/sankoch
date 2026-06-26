@@ -19,12 +19,11 @@ include "lib/alloc.cyr"
 include "lib/fmt.cyr"
 include "lib/vec.cyr"
 include "lib/fnptr.cyr"
-# thread.cyr supplies mutex_* for the public-API lock. AGNOS userland is
-# single-threaded and has no clone/futex (thread.cyr → mmap.cyr → CLONE_VM is
-# Linux-only), so it's not included there — the lock pair below no-ops on agnos.
-#ifndef CYRIUS_TARGET_AGNOS
+# thread.cyr supplies mutex_* for the public-API lock (Linux/macOS/Windows).
+# On AGNOS the lock pair below no-ops (single-threaded userland), so sankoch
+# needs no mutex there; the include stays unconditional because thread.cyr
+# itself self-guards agnos (routes to thread_agnos.cyr, no clone/CLONE_VM).
 include "lib/thread.cyr"
-#endif
 
 # --- Sankoch domain modules (dependency order) ---
 # `xxhash32.cyr` and `lz4_decode.cyr` are extracted siblings of
@@ -61,11 +60,12 @@ var _sankoch_mtx = 0;
 
 fn _sankoch_lock(): i64 {
     #ifdef CYRIUS_TARGET_AGNOS
-    # AGNOS userland is single-threaded — no lock needed. Gating the mutex out
-    # here keeps the agnos build from referencing mutex_* (lib/thread.cyr →
-    # lib/mmap.cyr → CLONE_VM, Linux-only), which would otherwise warn-and-ud2
-    # at every locked API entry. See the cyrius issue
-    # 2026-06-12-sankoch-locks-not-agnos-compatible.md.
+    # AGNOS userland is single-threaded — no lock needed. No-op here so sankoch
+    # never references mutex_* on agnos, making it self-sufficient even for a
+    # consumer that doesn't pull thread.cyr. (thread.cyr already self-guards
+    # agnos as of cyrius v6.2.3 — routing to thread_agnos.cyr's no-op mutexes —
+    # so this is the sankoch-layer counterpart, not a ud2 preventer.) See the
+    # cyrius issue 2026-06-12-sankoch-locks-not-agnos-compatible.md.
     return 0;
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
