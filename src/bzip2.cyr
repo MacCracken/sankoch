@@ -229,7 +229,7 @@ fn _bz_decode_block(level): i64 {
         i = i + 1;
     }
     # undo the MTF on the selector list
-    var pos[48];   # 6 i64 SLOTS (48 B) not 6 bytes: store64(&pos+i*8) i<n_groups<=6; undersized decl smashes the frame under cyrius 6.3.13+ stack-allocated locals
+    var pos[48];   # 6 i64 slots (48B) not bytes; store64(&pos+i*8) i<=5 smashed frame on 6.3.13+ stack locals
     i = 0;
     while (i < n_groups) { store64(&pos + i * 8, i); i = i + 1; }
     i = 0;
@@ -1129,7 +1129,7 @@ fn _bze_emit_block(n, block_crc): i64 {
     _bze_put(24, orig);
 
     # symbol map: 16-bit "which group of 16" then per-present-group 16-bit
-    var present[128];   # 16 i64 SLOTS (128 B) not 16 bytes: store64(&present+i*8) i<16; undersized decl smashes the frame under cyrius 6.3.13+ stack locals
+    var present[128];   # 16 i64 slots (128B); store64(&present+i*8) i<16 smashed frame on 6.3.13+ locals
     i = 0;
     while (i < 16) { store64(&present + i * 8, 0); i = i + 1; }
     i = 0;
