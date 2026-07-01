@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.7] — 2026-06-30
+
+### Fixed
+- **bzip2 — two undersized array locals stack-smashed under cyrius 6.3.13+ stack-allocated locals.**
+  `_bz_decode_block`'s MTF-undo `var pos[6]` (6 BYTES → one 8-byte slot) was written up to **48 bytes**
+  (`store64(&pos + i*8)`, `i < n_groups ≤ 6`); `_bze_emit_block`'s symbol map `var present[16]` (16 bytes →
+  two slots) was written **128 bytes** (`store64(&present + i*8)`, `i < 16`). Both were the daimon footgun
+  (author meant i64 **slots**, declared **bytes**) — benign while array locals lived in shared `.bss`,
+  **frame-corrupting since cyrius 6.3.13** moved function-local arrays to the stack. Sized to `[48]` / `[128]`.
+  Surfaced by the AGNOS base-stack migration; caught by cyrius's v6.3.18 undersized-array audit. bzip2
+  compress↔decompress roundtrips unchanged (all tests pass).
+
 ## [2.4.6] — 2026-06-25
 
 **Streaming ratio cap (`*_dec_init_capped`).** Extends the 2.4.5 batch
