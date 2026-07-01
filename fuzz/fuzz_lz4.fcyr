@@ -81,7 +81,7 @@ fn main() {
     alloc_init();
 
     # Round-trip fuzzing at various sizes
-    var sizes[10];
+    var sizes: i64[10];
     store64(&sizes + 0 * 8, 0);
     store64(&sizes + 1 * 8, 1);
     store64(&sizes + 2 * 8, 3);

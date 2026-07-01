@@ -201,7 +201,7 @@ fn test_tree_shape_sweep_roundtrip() {
     var compressed = alloc(8192);
     var decompressed = alloc(4096);
 
-    var seeds[5];
+    var seeds: i64[5];
     store64(&seeds + 0 * 8, 1);
     store64(&seeds + 1 * 8, 7);
     store64(&seeds + 2 * 8, 23);

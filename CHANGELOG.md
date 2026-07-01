@@ -10,15 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.8] — 2026-07-01
 
 ### Fixed
-- **zlib streaming-compress test crashed (SIGSEGV) under cyrius 6.3.13+ stack-allocated locals.**
-  `tests/tcyr/zlib_compress.tcyr:test_zlib_enc_roundtrip` declared `var chunks[4]` (four BYTES → one
-  8-byte slot) then wrote **32 bytes** into it (`store64(&chunks + i*8)`, `i = 0..3`) — the daimon
-  footgun (author meant four i64 **slots**, declared four **bytes**). Benign while array locals lived
-  in shared `.bss`; **frame-corrupting since cyrius 6.3.13** moved function-local arrays to the stack,
-  clobbering the frame on the 80 K streamed round-trip. Fixed to the element-typed slot spelling
-  `var chunks: i64[4]` (32 bytes). The **library is unaffected** — a full compress-path array audit
-  (zlib / deflate / huffman / bitwriter / lz77 / stream / checksum) found every `var X[N]` correctly
-  sized; the overrun was in the test harness only. The whole suite now passes 0-failed on cycc 6.3.18.
+- **Harness-wide undersized-array stack-smash sweep (SIGSEGV) under cyrius 6.3.13+ stack-allocated
+  locals.** Eleven `var X[N]` array locals across the test **and fuzz** harnesses were the daimon
+  footgun — declared as a **byte** count `[N]` but written as `N` i64 **slots** (`store64(&X + i*8)`),
+  so each wrote `8×N` bytes into an `N`-byte (8-byte-rounded) slot. Benign while array locals lived in
+  shared `.bss`; **frame-corrupting since cyrius 6.3.13** moved function-local arrays to the stack.
+  `fuzz/fuzz_deflate.fcyr` was the one that actually SIGSEGV'd CI (`timeout … dumped core`); the others
+  survived on frame-layout luck. All fixed to the element-typed slot spelling `var X: i64[N]`:
+  - `fuzz/fuzz_deflate.fcyr` (7): `sizes[8]`, `stream_sizes[6]`, `levels[4]`, `sm_sizes[4]`,
+    `sm_levels[3]`, `tree_entries[11]`, `skewed_sizes[5]`.
+  - `fuzz/fuzz_lz4.fcyr` (1): `sizes[10]`.
+  - `tests/tcyr/zlib_compress.tcyr` (1): `chunks[4]` (the 80 K streamed round-trip — first found).
+  - `tests/tcyr/deflate_compress.tcyr` (2): `chunks[6]`, `levels[4]` (latent — passed by luck).
+  - `tests/tcyr/git_object.tcyr` (1): `seeds[5]` (latent — passed by luck).
+  The **library is unaffected** — a full compress-path array audit (zlib / deflate / huffman /
+  bitwriter / lz77 / stream / checksum, adversarially verified) found every `var X[N]` correctly
+  sized; every overrun was in a harness. **`cyrius test` (20/0) AND `cyrius fuzz` (4/0)** now pass on
+  cycc 6.3.x (both were verified this time — the fuzz suite is the one that surfaced the CI crash).
 
 ### Changed
 - **Pinned `cyrius = "6.3.18"`** (was 6.2.44) so CI validates against the current toolchain and the

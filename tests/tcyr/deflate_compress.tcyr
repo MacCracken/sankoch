@@ -150,7 +150,7 @@ fn test_deflate_enc_varied_chunks() {
     var c = alloc(N + 4096);
     var d = alloc(N);
     # Chunk sizes: 1, 258 (= LOOKAHEAD), 259, 1000, 4096, rest
-    var chunks[6];
+    var chunks: i64[6];
     store64(&chunks + 0 * 8, 1);
     store64(&chunks + 1 * 8, 258);
     store64(&chunks + 2 * 8, 259);
@@ -313,7 +313,7 @@ fn test_deflate_enc_dict_levels() {
     var dict_len = strlen(dict);
     var input_len = strlen(input);
 
-    var levels[4];
+    var levels: i64[4];
     store64(&levels + 0, 1);   # fixed
     store64(&levels + 8, 3);   # fixed
     store64(&levels + 16, 6);  # dynamic

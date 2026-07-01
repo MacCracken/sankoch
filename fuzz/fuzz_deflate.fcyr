@@ -551,7 +551,7 @@ fn fuzz_stream_ratio_cap_malformed(seed, data_len) {
 fn main() {
     alloc_init();
 
-    var sizes[8];
+    var sizes: i64[8];
     store64(&sizes + 0 * 8, 0);
     store64(&sizes + 1 * 8, 1);
     store64(&sizes + 2 * 8, 10);
@@ -606,7 +606,7 @@ fn main() {
     println("fuzz_gzip: 160 round-trip tests passed");
 
     # Streaming DEFLATE round-trip — cross-level, cross-size
-    var stream_sizes[6];
+    var stream_sizes: i64[6];
     store64(&stream_sizes + 0 * 8, 0);
     store64(&stream_sizes + 1 * 8, 1024);
     store64(&stream_sizes + 2 * 8, 64000);    # just below window
@@ -614,7 +614,7 @@ fn main() {
     store64(&stream_sizes + 4 * 8, 100000);   # one slide
     store64(&stream_sizes + 5 * 8, 200000);   # several slides
 
-    var levels[4];
+    var levels: i64[4];
     store64(&levels + 0 * 8, 1);
     store64(&levels + 1 * 8, 3);
     store64(&levels + 2 * 8, 6);
@@ -638,13 +638,13 @@ fn main() {
     println("fuzz_deflate: 120 streaming round-trip tests passed");
 
     # Streaming zlib / gzip / lz4f — 4 sizes × 3 levels × 3 seeds = 36 each
-    var sm_sizes[4];
+    var sm_sizes: i64[4];
     store64(&sm_sizes + 0 * 8, 512);
     store64(&sm_sizes + 1 * 8, 20000);
     store64(&sm_sizes + 2 * 8, 80000);
     store64(&sm_sizes + 3 * 8, 150000);
 
-    var sm_levels[3];
+    var sm_levels: i64[3];
     store64(&sm_levels + 0 * 8, 1);
     store64(&sm_levels + 1 * 8, 6);
     store64(&sm_levels + 2 * 8, 9);
@@ -676,7 +676,7 @@ fn main() {
     # documented failing band (484/507/520/740/751 from the parent issue
     # and ~1500/~2021 from the 2.0.2 partial-fix issue), each cycled
     # through all 9 levels = 495 sub-runs.
-    var tree_entries[11];
+    var tree_entries: i64[11];
     store64(&tree_entries + 0 * 8, 1);
     store64(&tree_entries + 1 * 8, 6);
     store64(&tree_entries + 2 * 8, 11);     # ~510B  — bisect floor of parent
@@ -704,7 +704,7 @@ fn main() {
     # Skewed-frequency regression: 6 seeds × 5 sizes, each cycled through
     # 6 levels = 180 sub-runs probing _huff_redistribute on Fibonacci-ish
     # literal frequency distributions.
-    var skewed_sizes[5];
+    var skewed_sizes: i64[5];
     store64(&skewed_sizes + 0 * 8, 64);
     store64(&skewed_sizes + 1 * 8, 512);
     store64(&skewed_sizes + 2 * 8, 4096);
