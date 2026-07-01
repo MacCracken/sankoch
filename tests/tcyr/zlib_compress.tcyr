@@ -17,7 +17,7 @@ fn test_zlib_enc_roundtrip() {
     assert(ctx != 0, "zlib_enc init");
     # CMF=0x78, FLG=0x01 header bytes written up front
     assert(load8(c) == 120 && load8(c + 1) == 1, "zlib_enc header");
-    var chunks[4];
+    var chunks: i64[4];
     store64(&chunks + 0 * 8, 1);
     store64(&chunks + 1 * 8, 1024);
     store64(&chunks + 2 * 8, 4096);

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.8] — 2026-07-01
+
+### Fixed
+- **zlib streaming-compress test crashed (SIGSEGV) under cyrius 6.3.13+ stack-allocated locals.**
+  `tests/tcyr/zlib_compress.tcyr:test_zlib_enc_roundtrip` declared `var chunks[4]` (four BYTES → one
+  8-byte slot) then wrote **32 bytes** into it (`store64(&chunks + i*8)`, `i = 0..3`) — the daimon
+  footgun (author meant four i64 **slots**, declared four **bytes**). Benign while array locals lived
+  in shared `.bss`; **frame-corrupting since cyrius 6.3.13** moved function-local arrays to the stack,
+  clobbering the frame on the 80 K streamed round-trip. Fixed to the element-typed slot spelling
+  `var chunks: i64[4]` (32 bytes). The **library is unaffected** — a full compress-path array audit
+  (zlib / deflate / huffman / bitwriter / lz77 / stream / checksum) found every `var X[N]` correctly
+  sized; the overrun was in the test harness only. The whole suite now passes 0-failed on cycc 6.3.18.
+
+### Changed
+- **Pinned `cyrius = "6.3.18"`** (was 6.2.44) so CI validates against the current toolchain and the
+  stack-locals drift cannot recur silently.
+
 ## [2.4.7] — 2026-06-30
 
 ### Fixed

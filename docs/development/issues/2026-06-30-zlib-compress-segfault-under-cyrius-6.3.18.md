@@ -1,9 +1,15 @@
 # zlib_compress.tcyr segfaults (exit 139) under cyrius 6.3.18
 
-**Status**: ⏳ **OPEN.** Surfaced 2026-06-30 while fixing the bzip2 undersized-array
-stack-smashes (2.4.7) — `zlib_compress.tcyr` exits **139 (SIGSEGV)** under **cycc 6.3.18**.
-**Pre-existing, independent of the bzip2 fix** — verified identical (exit 139) with AND
-without the 2.4.7 `src/bzip2.cyr` change.
+**Status**: ✅ **RESOLVED (2026-06-30).** Root cause was **in the test harness, not the
+library**: `test_zlib_enc_roundtrip` declared `var chunks[4]` — a **bare 4-BYTE** array local
+(one 8-byte slot) — then wrote **32 bytes** into it via `store64(&chunks + i*8)` for `i = 0..3`.
+The daimon footgun (author meant four i64 **slots**, declared four **bytes**). Benign while array
+locals lived in shared `.bss`; frame-corrupting since cyrius 6.3.13 moved function-local arrays to
+the stack — the 24-byte overrun clobbered the frame and crashed the 80 K streamed round-trip.
+**Fix**: `var chunks[4]` → `var chunks: i64[4]` (the element-typed slot spelling, 32 bytes).
+A full compress-path array audit (zlib / deflate / huffman / bitwriter / lz77 / stream / checksum,
+adversarially verified) found **every `var X[N]` correctly sized** — the library needs no change.
+The whole suite now passes 0-failed on cycc 6.3.18; the `cyrius.cyml` pin moved 6.2.44 → 6.3.18.
 
 **Priority**: **High** — a hard crash in the zlib compress path on the current toolchain.
 
