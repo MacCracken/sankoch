@@ -49,76 +49,19 @@ include "src/xz.cyr"
 include "src/bzip2.cyr"
 include "src/stream.cyr"
 
+# The shared runtime seam — the API lock (`_sankoch_lock`/`_unlock`) + the alloc
+# seam (`_sankoch_alloc`) — lives in runtime.cyr (extracted 2.4.9) so a lean
+# distlib profile (`[lib.zlib]`) can pull it without this file's format-dispatch
+# API + `_sankoch_reset_tables` (which references every codec's globals).
+include "src/runtime.cyr"
+
 # ============================================================================
 # Public API — thread-safe wrappers over the format-specific routines.
 # All mutable compression/decompression state (bitreader, bitwriter, hash
-# tables, Huffman tables, symbol buffers) lives behind a single mutex so
-# concurrent callers serialize on API entry. Lazy init on first use.
+# tables, Huffman tables, symbol buffers) lives behind a single mutex (in
+# runtime.cyr) so concurrent callers serialize on API entry. Lazy init on
+# first use.
 # ============================================================================
-
-var _sankoch_mtx = 0;
-
-fn _sankoch_lock(): i64 {
-    #ifdef CYRIUS_TARGET_AGNOS
-    # AGNOS userland is single-threaded — no lock needed. No-op here so sankoch
-    # never references mutex_* on agnos, making it self-sufficient even for a
-    # consumer that doesn't pull thread.cyr. (thread.cyr already self-guards
-    # agnos as of cyrius v6.2.3 — routing to thread_agnos.cyr's no-op mutexes —
-    # so this is the sankoch-layer counterpart, not a ud2 preventer.) See the
-    # cyrius issue 2026-06-12-sankoch-locks-not-agnos-compatible.md.
-    return 0;
-    #endif
-    #ifndef CYRIUS_TARGET_AGNOS
-    if (_sankoch_mtx == 0) {
-        _sankoch_mtx = mutex_new();
-    }
-    mutex_lock(_sankoch_mtx);
-    return 0;
-    #endif
-}
-
-fn _sankoch_unlock(): i64 {
-    #ifdef CYRIUS_TARGET_AGNOS
-    return 0;     # single-threaded agnos — paired no-op with _sankoch_lock
-    #endif
-    #ifndef CYRIUS_TARGET_AGNOS
-    mutex_unlock(_sankoch_mtx);
-    return 0;
-    #endif
-}
-
-# `_sankoch_alloc` is the seam every alloc-bearing constructor in
-# this library funnels through. In production it forwards straight
-# to the stdlib `alloc(size)` call. The fault-injection counter
-# below lets the tcyr suite simulate an OOM at a chosen alloc step,
-# so the defensive return-0 + unlock-on-failure paths added in
-# 2.2.1 actually get coverage.
-#
-# Counter semantics: -1 = production (never fail). Otherwise, the
-# Nth subsequent `_sankoch_alloc` call (0-indexed) returns 0 once,
-# and the counter resets to -1 — one-shot. Tests set the counter
-# right before invoking an entry point, so unrelated allocs don't
-# clear the fault before the targeted call fires.
-var _sankoch_alloc_fail_at = 0 - 1;
-
-fn _sankoch_alloc(size): i64 {
-    if (_sankoch_alloc_fail_at >= 0) {
-        if (_sankoch_alloc_fail_at == 0) {
-            _sankoch_alloc_fail_at = 0 - 1;
-            return 0;
-        }
-        _sankoch_alloc_fail_at = _sankoch_alloc_fail_at - 1;
-    }
-    return alloc(size);
-}
-
-# Test-only setter for the fault-injection counter. Public-facing
-# (`_` prefix is convention for "internal but exported") because
-# tests live outside src/ and need to reach in.
-fn _sankoch_alloc_set_fail_at(n): i64 {
-    _sankoch_alloc_fail_at = n;
-    return 0;
-}
 
 # Test-only: zero every lazy-global table pointer + its "built" flag so
 # the next public-API call re-allocates them from scratch. Lets the

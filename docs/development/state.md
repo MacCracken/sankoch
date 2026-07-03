@@ -14,10 +14,10 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.4.6` — single source of truth
-- **`cyrius.cyml [package].cyrius`**: `6.2.44` — toolchain pin
-- **Tag**: `2.4.6` (bare semver, no `v` prefix)
-- **Released**: 2026-06-25
+- **`VERSION`**: `2.4.9` — single source of truth (2.4.7/2.4.8 detail in CHANGELOG; 2.4.9 = `[lib.zlib]` profile + `runtime.cyr` extraction)
+- **`cyrius.cyml [package].cyrius`**: `6.3.18` — toolchain pin
+- **Tag**: `2.4.9` (bare semver, no `v` prefix)
+- **Released**: 2026-07-03
 
 ## Distribution
 
@@ -68,8 +68,9 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 |------------------------------|------:|------|
 | `dist/sankoch.cyr`           | 10,056 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F + xz de/compress + bzip2 de/compress, batch + streaming, + ratio-capped decompress (batch + streaming) |
 | `dist/sankoch-core.cyr`      |   316 | Kernel-safe LZ4 batch decompress only (AGNOS initrd); +1 line at 2.4.5 (the `ERR_RATIO_LIMIT` enum constant in the core `types.cyr`) |
+| `dist/sankoch-zlib.cyr`      | ~4,900 | **2.4.9** — DEFLATE/zlib-only (`zlib_compress`/`zlib_decompress` + closure), drops LZ4/gzip/xz/bzip2/streaming. **53 initialised globals vs the full 175** so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). `cyrius distlib zlib`; runtime helpers via the extracted `src/runtime.cyr` |
 
-Both zero deps. Regenerated via `cyrius distlib` and `cyrius distlib core` at every release. CI gates on drift.
+All zero deps. Regenerated via `cyrius distlib`, `cyrius distlib zlib`, and `cyrius distlib core` at every release. CI gates on drift. (Note: this table + the version line were bumped to **2.4.9** for the zlib profile; other rows carry stale pre-2.4.7 figures pending a full state refresh.)
 
 ## In-flight slots
 

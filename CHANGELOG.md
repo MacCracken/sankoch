@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.9] — 2026-07-03
+
+### Added
+- **`[lib.zlib]` distlib profile → `dist/sankoch-zlib.cyr`** (`cyrius distlib zlib`). A DEFLATE/zlib-only
+  bundle — just `zlib_compress` / `zlib_decompress` and their closure (types, checksum, bit I/O, huffman,
+  lz77, deflate) — dropping the LZ4 / gzip / xz / bzip2 / streaming codecs. **53 initialised globals vs the
+  full bundle's 175**, so a consumer that only inflates/deflates zlib streams (git objects: sit's read path,
+  thoth's git producer) stays well under a downstream's `max 1024 initialised globals` compile budget while
+  tracking the current sankoch, instead of pinning an old lean release. No new API — same `zlib_*` surface.
+
+### Changed
+- **Extracted the shared runtime seam into `src/runtime.cyr`** (`_sankoch_lock` / `_sankoch_unlock` /
+  `_sankoch_alloc` + the fault-injection counter), out of `src/lib.cyr`. `lib.cyr` keeps the format-dispatch
+  public API (`compress` / `decompress` / `detect_format`) and `_sankoch_reset_tables` (which references every
+  codec's lazy globals, incl. `_lz4_htab` — hence not includable by a single-codec profile). This lets a lean
+  profile pull the alloc/lock helpers its codec needs without dragging in the whole codec registry. Internal
+  only — the full `[lib]` still includes both, so `dist/sankoch.cyr` is byte-equivalent in behavior. **No API
+  change.**
+
+### Notes
+- 19/19 tcyr suites green (the runtime extraction is transparent to every codec). All three profiles
+  (`[lib]` full / `[lib.zlib]` / `[lib.core]`) regenerated at 2.4.9; full bundle globals unchanged (175),
+  new zlib profile 53. `[lib.core]` (pure LZ4 decode, kernel-safe) unaffected.
+
 ## [2.4.8] — 2026-07-01
 
 ### Fixed

@@ -37,6 +37,7 @@ modules = [
     "src/xz.cyr",
     "src/bzip2.cyr",
     "src/stream.cyr",
+    "src/runtime.cyr",
     "src/lib.cyr",
 ]
 
@@ -50,6 +51,31 @@ modules = [
     "src/types.cyr",
     "src/xxhash32.cyr",
     "src/lz4_decode.cyr",
+]
+
+# `[lib.zlib]` is the DEFLATE/zlib-only profile (`cyrius distlib zlib` →
+# dist/sankoch-zlib.cyr). Just `zlib_compress` / `zlib_decompress` and their
+# closure — types, checksum (adler32), the bit I/O, huffman, lz77, deflate.
+# It drops the LZ4 / gzip / xz / bzip2 / streaming codecs, which added most of
+# the full bundle's initialised globals across the 2.2.x → 2.4.x line. For a
+# consumer that only inflates/deflates zlib streams (git objects: sit's read
+# path, thoth's git producer), this keeps the global footprint low enough to
+# stay well under a downstream's `max 1024 initialised globals` budget while
+# tracking the CURRENT sankoch (security fixes: the ratio-cap decompressor, the
+# bzip2 MTF-undo overflow fix — the latter not on this profile's path anyway).
+# Order matches the [lib] include chain (single-pass: reference only earlier).
+[lib.zlib]
+modules = [
+    "src/types.cyr",
+    "src/xxhash32.cyr",
+    "src/checksum.cyr",
+    "src/bitreader.cyr",
+    "src/bitwriter.cyr",
+    "src/huffman.cyr",
+    "src/lz77.cyr",
+    "src/deflate.cyr",
+    "src/zlib.cyr",
+    "src/runtime.cyr",
 ]
 
 [deps]
