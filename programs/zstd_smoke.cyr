@@ -1,0 +1,60 @@
+# zstd_smoke.cyr — decode /tmp/sankoch-zstd-in.zst via sankoch's zstd_decompress and write the
+# result to /tmp/sankoch-zstd-out. Driven by scripts/zstd-smoke.sh (cmp vs the original).
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(8, fd, 0, 2);
+    syscall(8, fd, 0, 0);
+    var buf = alloc(sz);
+    var off = 0;
+    while (off < sz) {
+        var n = sys_read(fd, buf + off, sz - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+fn run() {
+    # sanity: verify the \x table init produced the right bytes (LL dist[0]=4, [13]=1, OF dist[6]=2)
+    _z_init_tables();
+    if (load64(&_z_ll_dist + 0) != 4) { return 90; }
+    if (load64(&_z_ll_dist + 13 * 8) != 1) { return 91; }
+    if (load64(&_z_of_dist + 6 * 8) != 2) { return 92; }
+    if (load64(&_z_ml_base + 52 * 8) != 65539) { return 93; }
+
+    var buf = read_all("/tmp/sankoch-zstd-in.zst");
+    if (buf == 0) { return 1; }
+    var cap = 1 << 26;               # 64 MiB
+    var dst = alloc(cap);
+    var n = zstd_decompress(buf, g_len, dst, cap);
+    if (n < 0) { return 20 + (0 - n); }
+
+    var fd = sys_open("/tmp/sankoch-zstd-out", 577, 0x1FF);
+    if (fd < 0) { return 3; }
+    var w = 0;
+    while (w < n) {
+        var k = sys_write(fd, dst + w, n - w);
+        if (k <= 0) { break; }
+        w = w + k;
+    }
+    sys_close(fd);
+    if (w != n) { return 4; }
+    return 0;
+}
+
+fn _entry() {
+    var rc = run();
+    syscall(60, rc);
+    return 0;
+}
+_entry();
