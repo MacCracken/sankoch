@@ -1,0 +1,125 @@
+# tar_smoke.cyr — validate sankoch's tar cursor end to end: read /tmp/sankoch-tar-test.tar
+# (plain OR gzip/xz/bzip2 — tar_open_auto sniffs + inflates), iterate every entry, and extract
+# it to /tmp/sankoch-tar-out via raw syscalls. The harness (scripts/tar-smoke.sh) then diffs the
+# extracted tree against the original, byte for byte, for each compression envelope.
+#
+# Build: cyrius build programs/tar_smoke.cyr build/tar_smoke
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(8, fd, 0, 2);       # lseek(fd, 0, SEEK_END) — no wrapper in the Linux lib
+    syscall(8, fd, 0, 0);                 # lseek(fd, 0, SEEK_SET)
+    var buf = alloc(sz);
+    var off = 0;
+    while (off < sz) {
+        var n = sys_read(fd, buf + off, sz - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+# OUT_DIR + "/" + rel  ->  fresh cstr
+fn join_out(rel) {
+    var pre = "/tmp/sankoch-tar-out/";
+    var lp = strlen(pre);
+    var lr = strlen(rel);
+    var buf = alloc(lp + lr + 1);
+    memcpy(buf, pre, lp);
+    memcpy(buf + lp, rel, lr);
+    store8(buf + lp + lr, 0);
+    return buf;
+}
+
+# everything before the last '/' (fresh cstr), or "" if none
+fn dirname_of(path) {
+    var n = strlen(path);
+    var last = 0 - 1;
+    var i = 0;
+    while (i < n) {
+        if (load8(path + i) == 47) { last = i; }
+        i = i + 1;
+    }
+    if (last < 0) {
+        var e = alloc(1); store8(e, 0); return e;
+    }
+    var buf = alloc(last + 1);
+    memcpy(buf, path, last);
+    store8(buf + last, 0);
+    return buf;
+}
+
+# mkdir -p an absolute cstr dir (ignore already-exists).
+fn mkdir_p(dir) {
+    var n = strlen(dir);
+    if (n == 0) { return 0; }
+    var buf = alloc(n + 1);
+    memcpy(buf, dir, n);
+    store8(buf + n, 0);
+    var i = 1;
+    while (i <= n) {
+        var at_end = 0;
+        if (i == n) { at_end = 1; }
+        var is_sep = 0;
+        if (i < n) { if (load8(buf + i) == 47) { is_sep = 1; } }
+        if (is_sep == 1 || at_end == 1) {
+            var save = 0;
+            if (is_sep == 1) { save = load8(buf + i) & 0xFF; store8(buf + i, 0); }
+            sys_mkdir(buf, 0x1FF);
+            if (is_sep == 1) { store8(buf + i, save); }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn extract() {
+    var buf = read_all("/tmp/sankoch-tar-test.tar");
+    if (buf == 0) { return 1; }
+    var cur = tar_open_auto(buf, g_len);
+    if (cur == 0) { return 2; }
+    var r = tar_next(cur);
+    while (r == 1) {
+        var kind = tar_kind(cur);
+        var full = join_out(tar_path(cur));
+        if (kind == TAR_DIR) {
+            mkdir_p(full);
+        } elif (kind == TAR_SYMLINK) {
+            mkdir_p(dirname_of(full));
+            sys_symlink(tar_link(cur), full);
+        } else {
+            mkdir_p(dirname_of(full));
+            var fd = sys_open(full, 577, 0x1FF);       # O_WRONLY|O_CREAT|O_TRUNC, 0777
+            if (fd < 0) { return 3; }
+            var sz = tar_size(cur);
+            var data = tar_data(cur);
+            var w = 0;
+            while (w < sz) {
+                var k = sys_write(fd, data + w, sz - w);
+                if (k <= 0) { break; }
+                w = w + k;
+            }
+            sys_close(fd);
+            if (w != sz) { return 4; }
+        }
+        r = tar_next(cur);
+    }
+    if (r < 0) { return 20 + (0 - r); }
+    return 0;
+}
+
+fn _entry() {
+    var rc = extract();
+    syscall(60, rc);
+    return 0;
+}
+_entry();

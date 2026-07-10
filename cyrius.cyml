@@ -36,6 +36,7 @@ modules = [
     "src/gzip.cyr",
     "src/xz.cyr",
     "src/bzip2.cyr",
+    "src/tar.cyr",
     "src/stream.cyr",
     "src/runtime.cyr",
     "src/lib.cyr",

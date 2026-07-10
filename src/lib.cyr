@@ -47,6 +47,7 @@ include "src/zlib.cyr"
 include "src/gzip.cyr"
 include "src/xz.cyr"
 include "src/bzip2.cyr"
+include "src/tar.cyr"
 include "src/stream.cyr"
 
 # The shared runtime seam — the API lock (`_sankoch_lock`/`_unlock`) + the alloc

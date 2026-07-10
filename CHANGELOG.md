@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`tar.cyr` — sovereign tar (POSIX ustar + pre-POSIX v7) reader** with a sink-agnostic pull
+  cursor (`tar_open` / `tar_open_auto` / `tar_next` + `tar_kind`/`tar_path`/`tar_mode`/`tar_mtime`/
+  `tar_size`/`tar_data`/`tar_link`). Lifted from takumi's proven `extract_archive` and made
+  reusable so every consumer supplies its own write sink (takumi → filesystem, agnova → ext2).
+  Handles header-checksum validation, PAX (`x`/`g`) + GNU (`L`/`K`) long names, the ustar prefix
+  field, and path/symlink **traversal-safety** guards (enforced in-library — no `..`, no absolute
+  paths, no control bytes; relative-symlink escape rejected). `tar_open_auto` sniffs the envelope
+  and inflates in RAM via the existing gzip / xz / bzip2 decoders. Absolute-symlink policy is left
+  to the consumer (source-tree extractors reject; rootfs writers keep). Validated across all four
+  envelopes by `programs/tar_smoke.cyr` + `scripts/tar-smoke.sh` (byte-identical, symlinks preserved).
+
 ## [2.4.9] — 2026-07-03
 
 ### Added

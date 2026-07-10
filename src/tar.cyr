@@ -1,0 +1,499 @@
+# tar.cyr — sovereign tar (POSIX ustar + pre-POSIX v7) reader with a pull-cursor API.
+#
+# Sankoch is the ecosystem's compression lib; tar is the archive layer that pairs with it, so the
+# canonical tar parser lives here — lifted from takumi's proven extract_archive (2.4.x) and made
+# sink-agnostic. Each consumer drives the cursor and does its OWN writes: takumi -> filesystem,
+# agnova -> ext2. The header-checksum validation, PAX ('x'/'g') and GNU ('L'/'K') long-name
+# handling, ustar prefix, and path/symlink traversal safety are all enforced HERE, so every
+# consumer inherits the security guards for free.
+#
+# Usage:
+#   var cur = tar_open_auto(archive, len);       # sniffs gzip/xz/bzip2, decompresses in RAM
+#   if (cur == 0) { /* decompress / open error */ }
+#   var r;
+#   while ((r = tar_next(cur)) == 1) {
+#       var kind = tar_kind(cur);                # TAR_FILE / TAR_DIR / TAR_SYMLINK
+#       var path = tar_path(cur);                # NUL-terminated, validated, relative
+#       if (kind == TAR_FILE)    { ...write tar_data(cur), tar_size(cur), mode tar_mode(cur)... }
+#       if (kind == TAR_SYMLINK) { ...symlink tar_link(cur) -> path... }
+#       if (kind == TAR_DIR)     { ...mkdir path... }
+#   }
+#   if (r < 0) { /* 0 - TAR_ERR_* */ }
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+var TAR_FILE = 0;
+var TAR_DIR = 1;
+var TAR_SYMLINK = 2;
+
+var TAR_ERR_BAD_HEADER = 1;
+var TAR_ERR_TRUNCATED = 2;
+var TAR_ERR_UNSAFE = 3;
+var TAR_ERR_UNSUPPORTED = 4;
+var TAR_ERR_DECOMPRESS = 5;
+var TAR_ERR_TOO_LARGE = 6;
+
+var TAR_MAX_OUT = 536870912;   # 512 MiB decompression ceiling (matches takumi SRC_MAX_BYTES)
+
+# Cursor layout (alloc 128): 0 buf, 8 len, 16 pos, 32 px, 40 pg, 48 gnu_name, 56 gnu_link,
+# 64 kind, 72 path, 80 mode, 88 mtime, 96 size, 104 data, 112 link.
+
+# --- header field parsers (lifted from takumi source.cyr) ---------------------------------
+# Octal field: skip leading spaces/NULs, read octal digits, stop at NUL/space. -1 on a bad digit.
+fn _star_octal(ptr, len) {
+    var i = 0;
+    while (i < len) {
+        var c = load8(ptr + i) & 0xFF;
+        if (c != 32 && c != 0) { break; }
+        i = i + 1;
+    }
+    var saw = 0;
+    var val = 0;
+    while (i < len) {
+        var c2 = load8(ptr + i) & 0xFF;
+        if (c2 == 0 || c2 == 32) { break; }
+        if (c2 < 48 || c2 > 55) { return 0 - 1; }
+        val = val * 8 + (c2 - 48);
+        saw = 1;
+        i = i + 1;
+    }
+    if (saw == 0) { return 0; }
+    return val;
+}
+
+# Copy up to maxlen bytes from block+off (stop at first NUL) into a fresh NUL-terminated cstr.
+fn _star_field_cstr(block, off, maxlen) {
+    var n = 0;
+    while (n < maxlen) {
+        if (load8(block + off + n) == 0) { break; }
+        n = n + 1;
+    }
+    var buf = alloc(n + 1);
+    memcpy(buf, block + off, n);
+    store8(buf + n, 0);
+    return buf;
+}
+
+# ustar full path = prefix (345,155) + "/" + name (0,100) when prefix is set.
+fn _star_full_path(block) {
+    var name = _star_field_cstr(block, 0, 100);
+    var prefix = _star_field_cstr(block, 345, 155);
+    var lp = strlen(prefix);
+    if (lp == 0) { return name; }
+    var ln = strlen(name);
+    var buf = alloc(lp + 1 + ln + 1);
+    memcpy(buf, prefix, lp);
+    store8(buf + lp, 47);
+    memcpy(buf + lp + 1, name, ln);
+    store8(buf + lp + 1 + ln, 0);
+    return buf;
+}
+
+# Count non-empty, non-"." components of a cstr path.
+fn _star_component_count(path) {
+    var n = strlen(path);
+    var count = 0;
+    var i = 0;
+    var start = 0;
+    while (i <= n) {
+        var c = 47;
+        if (i < n) { c = load8(path + i) & 0xFF; }
+        if (c == 47) {
+            var clen = i - start;
+            if (clen > 0) {
+                var dot = 0;
+                if (clen == 1) { if (load8(path + start) == 46) { dot = 1; } }
+                if (dot == 0) { count = count + 1; }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+# --- path-traversal guards (security core, lifted verbatim) -------------------------------
+# Reject empty, absolute, any ".." component, empty interior component (a//b), NUL/control/backslash.
+fn _star_path_safe(path) {
+    var n = strlen(path);
+    if (n == 0) { return 0; }
+    if (load8(path) == 47) { return 0; }
+    var i = 0;
+    var start = 0;
+    while (i <= n) {
+        var c = 47;
+        if (i < n) {
+            c = load8(path + i) & 0xFF;
+            if (c == 0) { return 0; }
+            if (c < 32) { return 0; }
+            if (c == 92) { return 0; }
+        }
+        if (c == 47) {
+            var clen = i - start;
+            if (clen == 0) {
+                if (i != n) { return 0; }
+            } else {
+                if (clen == 2) {
+                    if (load8(path + start) == 46) {
+                        if (load8(path + start + 1) == 46) { return 0; }
+                    }
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Symlink target gate (universal part): reject bad bytes; for a RELATIVE target, track depth from
+# the link's own directory and reject if a ".." escapes the root. ABSOLUTE targets are byte-checked
+# and accepted here — whether to allow them is CONSUMER POLICY (a source-tree extractor like takumi
+# rejects them; an OS-rootfs writer like agnova keeps them, since they resolve inside the installed
+# root). Consumers that want the strict policy test `load8(tar_link(cur)) == 47` themselves.
+fn _star_symlink_safe(link_rel, target) {
+    var tn = strlen(target);
+    if (tn == 0) { return 0; }
+    var i = 0;
+    while (i < tn) {
+        var c = load8(target + i) & 0xFF;
+        if (c == 0) { return 0; }
+        if (c < 32) { return 0; }
+        if (c == 92) { return 0; }
+        i = i + 1;
+    }
+    if (load8(target) == 47) { return 1; }   # absolute: byte-safe; abs-policy left to the consumer
+    var depth = _star_component_count(link_rel) - 1;
+    if (depth < 0) { depth = 0; }
+    var start = 0;
+    i = 0;
+    while (i <= tn) {
+        var ch = 47;
+        if (i < tn) { ch = load8(target + i) & 0xFF; }
+        if (ch == 47) {
+            var clen = i - start;
+            if (clen > 0) {
+                var single_dot = 0;
+                if (clen == 1) { if (load8(target + start) == 46) { single_dot = 1; } }
+                var dotdot = 0;
+                if (clen == 2) {
+                    if (load8(target + start) == 46) {
+                        if (load8(target + start + 1) == 46) { dotdot = 1; }
+                    }
+                }
+                if (single_dot == 1) {
+                    depth = depth + 0;
+                } else {
+                    if (dotdot == 1) {
+                        depth = depth - 1;
+                        if (depth < 0) { return 0; }
+                    } else {
+                        depth = depth + 1;
+                    }
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# 512-byte all-zero block test (the archive terminator is two of these).
+fn _star_zero_block(block) {
+    var i = 0;
+    while (i < 512) {
+        if (load8(block + i) != 0) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# ustar header checksum: sum all 512 bytes with the 8 checksum bytes (148..156) as spaces;
+# compare to the stored octal at 148. Works for ustar AND magic-less v7.
+fn _star_checksum_ok(block) {
+    var stored = _star_octal(block + 148, 8);
+    if (stored < 0) { return 0; }
+    var sum = 0;
+    var i = 0;
+    while (i < 512) {
+        var c = load8(block + i) & 0xFF;
+        if (i >= 148) { if (i < 156) { c = 32; } }
+        sum = sum + c;
+        i = i + 1;
+    }
+    if (sum == stored) { return 1; }
+    return 0;
+}
+
+# gzip trailer ISIZE = uncompressed size mod 2^32 (little-endian).
+fn _star_gzip_isize(buf, len) {
+    if (len < 4) { return 0 - 1; }
+    var p = buf + len - 4;
+    return (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16) | ((load8(p + 3) & 0xFF) << 24);
+}
+
+# --- PAX extended headers ('x' per-file / 'g' global) -------------------------------------
+# Override record: +0 path cstr (0=unset), +8 linkpath cstr, +16 size i64 (-1=unset).
+fn _star_pax_new() {
+    var r = alloc(24);
+    store64(r + 0, 0);
+    store64(r + 8, 0);
+    store64(r + 16, 0 - 1);
+    return r;
+}
+
+fn _star_pax_reset(r) {
+    store64(r + 0, 0);
+    store64(r + 8, 0);
+    store64(r + 16, 0 - 1);
+    return 0;
+}
+
+fn _star_pax_cstr(data, start, end) {
+    var n = end - start;
+    if (n < 0) { n = 0; }
+    var buf = alloc(n + 1);
+    if (n > 0) { memcpy(buf, data + start, n); }
+    store8(buf + n, 0);
+    return buf;
+}
+
+fn _star_pax_decimal(data, start, end) {
+    var i = start;
+    var v = 0;
+    var saw = 0;
+    while (i < end) {
+        var c = load8(data + i) & 0xFF;
+        if (c < 48 || c > 57) { return 0 - 1; }
+        if (v > 922337203685477579) { return 0 - 1; }
+        v = v * 10 + (c - 48);
+        saw = 1;
+        i = i + 1;
+    }
+    if (saw == 0) { return 0 - 1; }
+    return v;
+}
+
+fn _star_pax_key_is(data, kstart, klen, lit) {
+    if (strlen(lit) != klen) { return 0; }
+    return memeq(data + kstart, lit, klen);
+}
+
+# Parse PAX "len key=value\n" records into `rec`; lenient (stops at first malformed record).
+fn _star_pax_parse(data, len, rec) {
+    var i = 0;
+    while (i < len) {
+        var ds = i;
+        var rlen = 0;
+        var sawd = 0;
+        while (i < len) {
+            var c = load8(data + i) & 0xFF;
+            if (c < 48 || c > 57) { break; }
+            if (rlen > 922337203685477579) { break; }
+            rlen = rlen * 10 + (c - 48);
+            sawd = 1;
+            i = i + 1;
+        }
+        if (sawd == 0) { break; }
+        if (rlen <= 0) { break; }
+        if (i >= len) { break; }
+        if ((load8(data + i) & 0xFF) != 32) { break; }
+        var rec_end = ds + rlen;
+        if (rec_end < ds) { break; }
+        if (rec_end > len) { break; }
+        var kstart = i + 1;
+        var eq = 0 - 1;
+        var j = kstart;
+        while (j < rec_end) {
+            if ((load8(data + j) & 0xFF) == 61) { eq = j; break; }
+            j = j + 1;
+        }
+        if (eq >= 0) {
+            var klen = eq - kstart;
+            var vstart = eq + 1;
+            var vend = rec_end - 1;
+            if (vend < vstart) { vend = vstart; }
+            if (_star_pax_key_is(data, kstart, klen, "path") == 1) {
+                store64(rec + 0, _star_pax_cstr(data, vstart, vend));
+            } elif (_star_pax_key_is(data, kstart, klen, "linkpath") == 1) {
+                store64(rec + 8, _star_pax_cstr(data, vstart, vend));
+            } elif (_star_pax_key_is(data, kstart, klen, "size") == 1) {
+                var sv = _star_pax_decimal(data, vstart, vend);
+                if (sv >= 0) { store64(rec + 16, sv); }
+            }
+        }
+        i = rec_end;
+    }
+    return 0;
+}
+
+# --- public: pull cursor -------------------------------------------------------------------
+# Open a cursor over a DECOMPRESSED tar already in memory (buf, len).
+fn tar_open(buf, len) {
+    var cur = alloc(128);
+    store64(cur + 0, buf);
+    store64(cur + 8, len);
+    store64(cur + 16, 0);
+    store64(cur + 32, _star_pax_new());
+    store64(cur + 40, _star_pax_new());
+    store64(cur + 48, 0);
+    store64(cur + 56, 0);
+    return cur;
+}
+
+fn tar_kind(cur) { return load64(cur + 64); }
+fn tar_path(cur) { return load64(cur + 72); }
+fn tar_mode(cur) { return load64(cur + 80); }
+fn tar_mtime(cur) { return load64(cur + 88); }
+fn tar_size(cur) { return load64(cur + 96); }
+fn tar_data(cur) { return load64(cur + 104); }
+fn tar_link(cur) { return load64(cur + 112); }
+
+# Advance to the next real entry (consuming PAX/GNU/zero blocks). 1 = entry ready, 0 = end,
+# <0 = 0 - TAR_ERR_*. On success the accessors describe the current entry.
+fn tar_next(cur) {
+    var buf = load64(cur + 0);
+    var len = load64(cur + 8);
+    var pos = load64(cur + 16);
+    var px = load64(cur + 32);
+    var pg = load64(cur + 40);
+    var zero_run = 0;
+    while (pos + 512 <= len) {
+        var block = buf + pos;
+        if (_star_zero_block(block) == 1) {
+            zero_run = zero_run + 1;
+            pos = pos + 512;
+            if (zero_run >= 2) { store64(cur + 16, pos); return 0; }
+            continue;
+        }
+        zero_run = 0;
+        if (_star_checksum_ok(block) != 1) { return 0 - TAR_ERR_BAD_HEADER; }
+        var typ = load8(block + 156) & 0xFF;
+        var size = _star_octal(block + 124, 12);
+        if (size < 0) { return 0 - TAR_ERR_BAD_HEADER; }
+
+        if (typ == 120 || typ == 103) {                # PAX 'x' / 'g'
+            pos = pos + 512;
+            if (pos + size > len) { return 0 - TAR_ERR_TRUNCATED; }
+            if (typ == 120) { _star_pax_parse(buf + pos, size, px); }
+            else { _star_pax_parse(buf + pos, size, pg); }
+            pos = pos + ((size + 511) / 512) * 512;
+            continue;
+        }
+        if (typ == 76 || typ == 75) {                  # GNU 'L' / 'K' long name
+            pos = pos + 512;
+            if (pos + size > len) { return 0 - TAR_ERR_TRUNCATED; }
+            if (typ == 76) { store64(cur + 48, _star_field_cstr(buf + pos, 0, size)); }
+            else { store64(cur + 56, _star_field_cstr(buf + pos, 0, size)); }
+            pos = pos + ((size + 511) / 512) * 512;
+            continue;
+        }
+
+        var full = _star_full_path(block);
+        var opath = load64(px + 0);
+        if (opath == 0) { opath = load64(pg + 0); }
+        if (opath == 0) { opath = load64(cur + 48); }
+        if (opath != 0) { full = opath; }
+        var esize = size;
+        var osz = load64(px + 16);
+        if (osz < 0) { osz = load64(pg + 16); }
+        if (osz >= 0) { esize = osz; }
+
+        var kind = 0;
+        if (typ == 48 || typ == 0) { kind = 0; }
+        else { if (typ == 53) { kind = 1; }
+        else { if (typ == 50) { kind = 2; }
+        else { return 0 - TAR_ERR_UNSUPPORTED; } } }
+        if (kind == 0) {                               # v7 dir = trailing '/'
+            var fl = strlen(full);
+            if (fl > 0) { if (load8(full + fl - 1) == 47) { kind = 1; } }
+        }
+        if (_star_path_safe(full) != 1) { return 0 - TAR_ERR_UNSAFE; }
+        pos = pos + 512;
+
+        store64(cur + 64, kind);
+        store64(cur + 72, full);
+        store64(cur + 80, _star_octal(block + 100, 8));
+        store64(cur + 88, _star_octal(block + 136, 12));
+        if (kind == 2) {
+            var link = _star_field_cstr(block, 157, 100);
+            var olink = load64(px + 8);
+            if (olink == 0) { olink = load64(pg + 8); }
+            if (olink == 0) { olink = load64(cur + 56); }
+            if (olink != 0) { link = olink; }
+            if (_star_symlink_safe(full, link) != 1) { return 0 - TAR_ERR_UNSAFE; }
+            store64(cur + 96, 0);
+            store64(cur + 104, 0);
+            store64(cur + 112, link);
+        } else {
+            if (kind == 0) {
+                if (esize < 0) { return 0 - TAR_ERR_BAD_HEADER; }
+                if (esize > len - pos) { return 0 - TAR_ERR_TRUNCATED; }
+                store64(cur + 96, esize);
+                store64(cur + 104, buf + pos);
+                pos = pos + ((esize + 511) / 512) * 512;
+            } else {
+                store64(cur + 96, 0);
+                store64(cur + 104, 0);
+            }
+            store64(cur + 112, 0);
+        }
+        store64(cur + 16, pos);
+        _star_pax_reset(px);
+        store64(cur + 48, 0);
+        store64(cur + 56, 0);
+        return 1;
+    }
+    store64(cur + 16, pos);
+    return 0;
+}
+
+# Open a cursor over a possibly-compressed archive: sniff gzip/xz/bzip2 by magic, decompress into
+# a fresh RAM buffer, and return a cursor over the plain tar. Returns 0 on decompress/open error.
+# (zstd magic is added when sankoch grows a zstd decoder.)
+fn tar_open_auto(archive, len) {
+    if (len < 4) { return tar_open(archive, len); }
+    var b0 = load8(archive) & 0xFF;
+    var b1 = load8(archive + 1) & 0xFF;
+    var b2 = load8(archive + 2) & 0xFF;
+    var fmt = 0;
+    if (b0 == 0x1F && b1 == 0x8B) { fmt = FORMAT_GZIP; }
+    elif (b0 == 0x42 && b1 == 0x5A && b2 == 0x68) { fmt = FORMAT_BZIP2; }
+    elif (b0 == 0xFD && b1 == 0x37 && b2 == 0x7A) { fmt = FORMAT_XZ; }
+    if (fmt == 0) { return tar_open(archive, len); }
+
+    if (fmt == FORMAT_GZIP) {
+        var isize = _star_gzip_isize(archive, len);
+        if (isize <= 0) { return 0; }
+        if (isize > TAR_MAX_OUT) { return 0; }
+        var gcap = isize + 512;
+        var gout = alloc(gcap);
+        if (gout == 0) { return 0; }
+        var gn = gzip_decompress(archive, len, gout, gcap);
+        if (gn < 0) { return 0; }
+        return tar_open(gout, gn);
+    }
+    # xz / bzip2 carry no reliable output size: 8x estimate, double on buffer-too-small.
+    var cap = len * 8;
+    if (cap < 1048576) { cap = 1048576; }
+    if (cap > TAR_MAX_OUT) { cap = TAR_MAX_OUT; }
+    var done = 0;
+    while (done == 0) {
+        var out = alloc(cap);
+        if (out == 0) { return 0; }
+        var dn = 0 - 1;
+        if (fmt == FORMAT_XZ) { dn = xz_decompress(archive, len, out, cap); }
+        else { dn = bzip2_decompress(archive, len, out, cap); }
+        if (dn >= 0) { return tar_open(out, dn); }
+        var e = 0 - dn;
+        if (e == ERR_BUFFER_TOO_SMALL || e == ERR_OUTPUT_LIMIT) {
+            if (cap >= TAR_MAX_OUT) { return 0; }
+            cap = cap * 2;
+            if (cap > TAR_MAX_OUT) { cap = TAR_MAX_OUT; }
+        } else {
+            return 0;
+        }
+    }
+    return 0;
+}
