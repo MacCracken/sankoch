@@ -95,10 +95,12 @@ jobs:
             echo "  $name: ok"
           done
 
-      - name: Regenerate bundles (full + core)
+      - name: Regenerate bundles (full + all profiles)
         run: |
           cyrius distlib
-          cyrius distlib core
+          for prof in core zlib zstd bzip2 xz gzip tar; do
+            cyrius distlib "$prof"
+          done
 
       - name: Kernel-safe tripwire
         # Mirror the CI gate so a release tag can never ship a
@@ -116,6 +118,10 @@ jobs:
           git archive --format=tar.gz --prefix="sankoch-${TAG}/" -o "sankoch-${TAG}-src.tar.gz" HEAD
           cp dist/sankoch.cyr      "sankoch-${TAG}.cyr"
           cp dist/sankoch-core.cyr "sankoch-${TAG}-core.cyr"
+          # per-codec decode profiles (2.5.1): consumers pull only what they need
+          for prof in zlib zstd bzip2 xz gzip tar; do
+            cp "dist/sankoch-${prof}.cyr" "sankoch-${TAG}-${prof}.cyr"
+          done
           # Ship prebuilt binaries alongside source + bundles so
           # consumers can grab a statically-linked ELF per arch.
           if [ -f build/sankoch ]; then

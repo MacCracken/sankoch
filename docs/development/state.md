@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.5.0` — single source of truth (2.5.0 = sovereign `zstd.cyr` decoder [40/40 vs reference zstd v1.5.7] + shared `tar.cyr` pull cursor for ustar/v7, envelopes gzip/xz/bzip2/zstd)
+- **`VERSION`**: `2.5.1` — single source of truth (2.5.1 = per-codec distlib profiles: `[lib.zstd]` 782L / `[lib.bzip2]` / `[lib.xz]` / `[lib.gzip]` / `[lib.tar]`, so a consumer pulls one codec's closure not the whole lib; 2.5.0 = sovereign `zstd.cyr` decoder [40/40 vs reference zstd v1.5.7] + shared `tar.cyr` cursor)
 - **`cyrius.cyml [package].cyrius`**: `6.4.43` — toolchain pin (bumped from 6.3.18 at 2.5.0 to fold into the current stdlib)
-- **Tag**: `2.5.0` (bare semver, no `v` prefix)
+- **Tag**: `2.5.1` (bare semver, no `v` prefix)
 - **Released**: 2026-07-10
 
 ## Distribution

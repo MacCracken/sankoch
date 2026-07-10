@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.1] — 2026-07-10 — per-codec distlib profiles
+
+Organizes the distribution bundles by codec, so a consumer that needs only one archive envelope
+pulls just that codec's closure instead of the whole compression library. No source/API changes.
+
+### Added
+- **Per-codec decode distlib profiles** in `cyrius.cyml` — `cyrius distlib <name>` →
+  `dist/sankoch-<name>.cyr`:
+  - **`[lib.zstd]`** — the RFC-8878 zstd decoder, fully self-contained (own bit reader / FSE /
+    Huffman; no checksum/deflate/runtime). **782 lines vs the full bundle's ~11.4k** — the profile
+    the installer path (agnova `base-system.tar.zst`) and takumi's zstd source tarballs want.
+  - **`[lib.bzip2]`** (~2.0k), **`[lib.xz]`** (~2.7k), **`[lib.gzip]`** (~5.1k) — each codec's
+    validated dependency closure.
+  - **`[lib.tar]`** (~9.3k) — the sovereign tar cursor + every envelope its `tar_open_auto`
+    dispatches to (gzip/xz/bzip2/zstd); the "extract any tarball" profile.
+  Each closure was verified by compiling `<modules>` + the codec entry with no undefined sankoch
+  symbols, and each generated bundle consumer-compiles against its `.deps` stdlib manifest.
+- CI now regenerates + drift-checks **every** profile (previously only full + core); the release
+  workflow ships each `dist/sankoch-<name>.cyr` as a tagged artifact.
+
 ## [2.5.0] — 2026-07-10 — sovereign zstd decode + a shared tar cursor
 
 The compression library grows an **archive layer** (tar) and its last missing **codec** (zstd

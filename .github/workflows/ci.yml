@@ -81,18 +81,21 @@ jobs:
         run: cyrius vet src/lib.cyr
 
       - name: Verify dist bundles are in sync with src/
-        # `cyrius distlib` reads [lib.modules] from cyrius.cyml and
-        # concatenates the listed files into dist/sankoch.cyr.
-        # `cyrius distlib core` builds the kernel-safe profile
-        # (types + xxhash32 + lz4_decode → dist/sankoch-core.cyr).
-        # CI regenerates both and fails if either drifts from committed.
+        # `cyrius distlib [<profile>]` reads [lib[.<profile>].modules] from
+        # cyrius.cyml and concatenates the listed files into
+        # dist/sankoch[-<profile>].cyr. CI regenerates the full bundle + every
+        # profile and fails if any drifts from the committed copy.
         run: |
           cyrius distlib
-          cyrius distlib core
+          for prof in core zlib zstd bzip2 xz gzip tar; do
+            cyrius distlib "$prof"
+          done
           fail=0
-          for bundle in dist/sankoch.cyr dist/sankoch-core.cyr; do
+          for bundle in dist/sankoch.cyr dist/sankoch-core.cyr dist/sankoch-zlib.cyr \
+                        dist/sankoch-zstd.cyr dist/sankoch-bzip2.cyr dist/sankoch-xz.cyr \
+                        dist/sankoch-gzip.cyr dist/sankoch-tar.cyr; do
             if ! git diff --quiet "$bundle"; then
-              echo "ERROR: $bundle is stale. Run 'cyrius distlib [core]' and commit the result."
+              echo "ERROR: $bundle is stale. Run 'cyrius distlib [<profile>]' and commit the result."
               git --no-pager diff "$bundle" | head -40
               fail=1
             fi
