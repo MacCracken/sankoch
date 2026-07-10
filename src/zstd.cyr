@@ -53,15 +53,21 @@ fn _z_seti(arr, i, v) { store64(arr + i * 8, v); return 0; }
 
 fn _z_init_tables() {
     if (_z_inited == 1) { return 0; }
-    # LL / ML / OF predefined distributions (-1 stored as 0-1)
-    var lld = "\x04\x03\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x01\x01\x01\x02\x02\x02\x02\x02\x02\x02\x02\x02\x03\x02\x01\x01\x01\x01\x01";
+    # LL / ML / OF predefined distributions (-1 stored as 0-1). Long strings split to stay <120 cols.
+    var lld = "\x04\x03\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x02\x01\x01\x01";
+    var lld2 = "\x02\x02\x02\x02\x02\x02\x02\x02\x02\x03\x02\x01\x01\x01\x01\x01";
     var i = 0;
-    while (i < 32) { _z_seti(&_z_ll_dist, i, load8(lld + i) & 0xFF); i = i + 1; }
+    while (i < 16) { _z_seti(&_z_ll_dist, i, load8(lld + i) & 0xFF); i = i + 1; }
+    i = 0;
+    while (i < 16) { _z_seti(&_z_ll_dist, 16 + i, load8(lld2 + i) & 0xFF); i = i + 1; }
     _z_seti(&_z_ll_dist, 32, 0 - 1); _z_seti(&_z_ll_dist, 33, 0 - 1);
     _z_seti(&_z_ll_dist, 34, 0 - 1); _z_seti(&_z_ll_dist, 35, 0 - 1);
-    var mld = "\x01\x04\x03\x02\x02\x02\x02\x02\x02\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01";
+    var mld = "\x01\x04\x03\x02\x02\x02\x02\x02\x02\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01";
+    var mld2 = "\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01";
     i = 0;
-    while (i < 46) { _z_seti(&_z_ml_dist, i, load8(mld + i) & 0xFF); i = i + 1; }
+    while (i < 23) { _z_seti(&_z_ml_dist, i, load8(mld + i) & 0xFF); i = i + 1; }
+    i = 0;
+    while (i < 23) { _z_seti(&_z_ml_dist, 23 + i, load8(mld2 + i) & 0xFF); i = i + 1; }
     i = 46;
     while (i < 53) { _z_seti(&_z_ml_dist, i, 0 - 1); i = i + 1; }
     var ofd = "\x01\x01\x01\x01\x01\x01\x02\x02\x02\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01\x01";
@@ -76,7 +82,11 @@ fn _z_init_tables() {
     var llb = "\x10\x12\x14\x16\x18\x1C\x20\x28";   # 16,18,20,22,24,28,32,40
     var lln = "\x01\x01\x01\x01\x02\x02\x03\x03";
     i = 0;
-    while (i < 8) { _z_seti(&_z_ll_base, 16 + i, load8(llb + i) & 0xFF); _z_seti(&_z_ll_bits, 16 + i, load8(lln + i) & 0xFF); i = i + 1; }
+    while (i < 8) {
+        _z_seti(&_z_ll_base, 16 + i, load8(llb + i) & 0xFF);
+        _z_seti(&_z_ll_bits, 16 + i, load8(lln + i) & 0xFF);
+        i = i + 1;
+    }
     # codes 24..35: base 48,64,128,256,512,1024,2048,4096,8192,16384,32768,65536 ; bits 4,6,7,8,9,10,11,12,13,14,15,16
     _z_seti(&_z_ll_base, 24, 48); _z_seti(&_z_ll_bits, 24, 4);
     i = 25;
@@ -92,7 +102,11 @@ fn _z_init_tables() {
     var mlb = "\x23\x25\x27\x29\x2B\x2F\x33\x3B\x43\x53\x63";   # 35,37,39,41,43,47,51,59,67,83,99
     var mln = "\x01\x01\x01\x01\x02\x02\x03\x03\x04\x04\x05";
     i = 0;
-    while (i < 11) { _z_seti(&_z_ml_base, 32 + i, load8(mlb + i) & 0xFF); _z_seti(&_z_ml_bits, 32 + i, load8(mln + i) & 0xFF); i = i + 1; }
+    while (i < 11) {
+        _z_seti(&_z_ml_base, 32 + i, load8(mlb + i) & 0xFF);
+        _z_seti(&_z_ml_bits, 32 + i, load8(mln + i) & 0xFF);
+        i = i + 1;
+    }
     # codes 43..52: base 131,259,515,1027,2051,4099,8195,16387,32771,65539 ; bits 7..16
     i = 43;
     while (i < 53) {
@@ -423,16 +437,16 @@ fn _z_decode_literals(p, end) {
     # Compressed (2) / Treeless (3)
     var regen2 = 0; var comp = 0; var hdr2 = 0; var streams = 4;
     if (sizefmt == 0) {
-        var v = (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16);
+        var v = _z_rd_le(p, 3);
         regen2 = (v >> 4) & 0x3FF; comp = (v >> 14) & 0x3FF; hdr2 = 3; streams = 1;
     } elif (sizefmt == 1) {
-        var v1 = (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16);
+        var v1 = _z_rd_le(p, 3);
         regen2 = (v1 >> 4) & 0x3FF; comp = (v1 >> 14) & 0x3FF; hdr2 = 3;
     } elif (sizefmt == 2) {
-        var v2 = (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16) | ((load8(p + 3) & 0xFF) << 24);
+        var v2 = _z_rd_le(p, 4);
         regen2 = (v2 >> 4) & 0x3FFF; comp = (v2 >> 18) & 0x3FFF; hdr2 = 4;
     } else {
-        var v3 = (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16) | ((load8(p + 3) & 0xFF) << 24) | ((load8(p + 4) & 0xFF) << 32);
+        var v3 = _z_rd_le(p, 5);
         regen2 = (v3 >> 4) & 0x3FFFF; comp = (v3 >> 22) & 0x3FFFF; hdr2 = 5;
     }
     if (_z_lit == 0) { _z_lit = alloc(1 << 18); }
@@ -530,9 +544,12 @@ fn _z_decode_sequences(p, end) {
     var br = _z_br_init(p + off, blen);
     if (br == 0) { return 0 - 50; }
 
-    var ll_sym = load64(llt + 0); var ll_bits = load64(llt + 8); var ll_base = load64(llt + 16); var ll_log = load64(llt + 24);
-    var of_sym = load64(oft + 0); var of_bits = load64(oft + 8); var of_base = load64(oft + 16); var of_log = load64(oft + 24);
-    var ml_sym = load64(mlt + 0); var ml_bits = load64(mlt + 8); var ml_base = load64(mlt + 16); var ml_log = load64(mlt + 24);
+    var ll_sym = load64(llt + 0); var ll_bits = load64(llt + 8);
+    var ll_base = load64(llt + 16); var ll_log = load64(llt + 24);
+    var of_sym = load64(oft + 0); var of_bits = load64(oft + 8);
+    var of_base = load64(oft + 16); var of_log = load64(oft + 24);
+    var ml_sym = load64(mlt + 0); var ml_bits = load64(mlt + 8);
+    var ml_base = load64(mlt + 16); var ml_log = load64(mlt + 24);
 
     var lls = _z_br_bits(br, ll_log);
     var ofs = _z_br_bits(br, of_log);
@@ -554,10 +571,16 @@ fn _z_decode_sequences(p, end) {
 
         # execute: copy llen literals, then mlen match bytes from `offset` back
         var j = 0;
-        while (j < llen) { store8(_z_out + _z_outpos, load8(_z_lit + litptr)); _z_outpos = _z_outpos + 1; litptr = litptr + 1; j = j + 1; }
+        while (j < llen) {
+            store8(_z_out + _z_outpos, load8(_z_lit + litptr));
+            _z_outpos = _z_outpos + 1; litptr = litptr + 1; j = j + 1;
+        }
         var mbase = _z_outpos - offset;
         var m = 0;
-        while (m < mlen) { store8(_z_out + _z_outpos, load8(_z_out + mbase + m)); _z_outpos = _z_outpos + 1; m = m + 1; }
+        while (m < mlen) {
+            store8(_z_out + _z_outpos, load8(_z_out + mbase + m));
+            _z_outpos = _z_outpos + 1; m = m + 1;
+        }
 
         if (seq != nseq - 1) {
             lls = load64(ll_base + lls * 8) + _z_br_bits(br, load64(ll_bits + lls * 8));
@@ -643,7 +666,10 @@ fn zstd_decompress(src, src_len, dst, dst_cap) {
     if (did_flag == 1) { did_size = 1; } elif (did_flag == 2) { did_size = 2; } elif (did_flag == 3) { did_size = 4; }
     p = p + did_size;
     var fcs_size = 0;
-    if (fcs_flag == 0) { if (single == 1) { fcs_size = 1; } } elif (fcs_flag == 1) { fcs_size = 2; } elif (fcs_flag == 2) { fcs_size = 4; } else { fcs_size = 8; }
+    if (fcs_flag == 0) { if (single == 1) { fcs_size = 1; } }
+    elif (fcs_flag == 1) { fcs_size = 2; }
+    elif (fcs_flag == 2) { fcs_size = 4; }
+    else { fcs_size = 8; }
     p = p + fcs_size;
 
     var end = src + src_len;

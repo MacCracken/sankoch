@@ -230,7 +230,8 @@ fn _star_checksum_ok(block) {
 fn _star_gzip_isize(buf, len) {
     if (len < 4) { return 0 - 1; }
     var p = buf + len - 4;
-    return (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16) | ((load8(p + 3) & 0xFF) << 24);
+    var v = (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8);
+    return v | ((load8(p + 2) & 0xFF) << 16) | ((load8(p + 3) & 0xFF) << 24);
 }
 
 # --- PAX extended headers ('x' per-file / 'g' global) -------------------------------------
