@@ -8,7 +8,7 @@
 # consumer inherits the security guards for free.
 #
 # Usage:
-#   var cur = tar_open_auto(archive, len);       # sniffs gzip/xz/bzip2, decompresses in RAM
+#   var cur = tar_open_auto(archive, len);       # sniffs gzip/xz/bzip2/zstd, decompresses in RAM
 #   if (cur == 0) { /* decompress / open error */ }
 #   var r;
 #   while ((r = tar_next(cur)) == 1) {
@@ -403,8 +403,8 @@ fn tar_next(cur) {
         var kind = 0;
         if (typ == 48 || typ == 0) { kind = 0; }
         else { if (typ == 53) { kind = 1; }
-        else { if (typ == 50) { kind = 2; }
-        else { return 0 - TAR_ERR_UNSUPPORTED; } } }
+            else { if (typ == 50) { kind = 2; }
+                else { return 0 - TAR_ERR_UNSUPPORTED; } } }
         if (kind == 0) {                               # v7 dir = trailing '/'
             var fl = strlen(full);
             if (fl > 0) { if (load8(full + fl - 1) == 47) { kind = 1; } }
@@ -449,19 +449,32 @@ fn tar_next(cur) {
     return 0;
 }
 
-# Open a cursor over a possibly-compressed archive: sniff gzip/xz/bzip2 by magic, decompress into
-# a fresh RAM buffer, and return a cursor over the plain tar. Returns 0 on decompress/open error.
-# (zstd magic is added when sankoch grows a zstd decoder.)
+# Open a cursor over a possibly-compressed archive: sniff gzip/xz/bzip2/zstd by magic, decompress
+# into a fresh RAM buffer, and return a cursor over the plain tar. Returns 0 on decompress/open error.
 fn tar_open_auto(archive, len) {
     if (len < 4) { return tar_open(archive, len); }
     var b0 = load8(archive) & 0xFF;
     var b1 = load8(archive + 1) & 0xFF;
     var b2 = load8(archive + 2) & 0xFF;
+    var b3 = load8(archive + 3) & 0xFF;
     var fmt = 0;
     if (b0 == 0x1F && b1 == 0x8B) { fmt = FORMAT_GZIP; }
     elif (b0 == 0x42 && b1 == 0x5A && b2 == 0x68) { fmt = FORMAT_BZIP2; }
     elif (b0 == 0xFD && b1 == 0x37 && b2 == 0x7A) { fmt = FORMAT_XZ; }
+    elif (b0 == 0x28 && b1 == 0xB5 && b2 == 0x2F && b3 == 0xFD) { fmt = FORMAT_ZSTD; }
     if (fmt == 0) { return tar_open(archive, len); }
+
+    if (fmt == FORMAT_ZSTD) {
+        var osize = zstd_frame_content_size(archive, len);
+        var zcap = osize + 512;
+        if (osize <= 0) { zcap = len * 20; if (zcap < 1048576) { zcap = 1048576; } }
+        if (zcap > TAR_MAX_OUT) { zcap = TAR_MAX_OUT; }
+        var zout = alloc(zcap);
+        if (zout == 0) { return 0; }
+        var zn = zstd_decompress(archive, len, zout, zcap);
+        if (zn < 0) { return 0; }
+        return tar_open(zout, zn);
+    }
 
     if (fmt == FORMAT_GZIP) {
         var isize = _star_gzip_isize(archive, len);

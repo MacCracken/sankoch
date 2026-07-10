@@ -174,6 +174,9 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
     if (format == FORMAT_BZIP2) {
         return _bz2_decompress_inner(src, src_len, dst, dst_cap);
     }
+    if (format == FORMAT_ZSTD) {
+        return zstd_decompress(src, src_len, dst, dst_cap);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
@@ -211,6 +214,15 @@ fn detect_format(src, src_len): i64 {
                 if (lvl >= 0x31 && lvl <= 0x39) {
                     return FORMAT_BZIP2;
                 }
+            }
+        }
+    }
+
+    # zstd: 28 B5 2F FD (little-endian 0xFD2FB528)
+    if (b0 == 0x28) {
+        if (b1 == 0xB5 && src_len >= 4) {
+            if (load8(src + 2) == 0x2F && load8(src + 3) == 0xFD) {
+                return FORMAT_ZSTD;
             }
         }
     }

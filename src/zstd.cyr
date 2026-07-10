@@ -9,8 +9,10 @@
 # Key subtleties (from the spec, verified against the reference during the spec pass):
 #  - FSE/Huffman/sequence bitstreams are read BACKWARD and accumulate MSB-first (the doc says
 #    "little-endian" but the worked example proves MSB-first — see _z_br_bits).
-#  - The FSE distribution header (readNCount) is read FORWARD, LSB-first — a separate reader.
-#  - readNCount uses max = remaining + 1 (an off-by-one in some transcriptions).
+#  - The FSE distribution header (readNCount) is read FORWARD, LSB-first — a separate reader,
+#    using the canonical threshold-halving algorithm (NOT the max=remaining+1 reconstruction).
+#  - The FSE symbol count is bounded by exact stream exhaustion: _z_br_done is strictly `>`
+#    (the final symbol's state-update over-reads into the padding — that over-read is the stop).
 #
 # SPDX-License-Identifier: GPL-3.0-only
 
@@ -39,7 +41,6 @@ var _z_litlen = 0;
 
 # ---- small integer helpers ----
 fn _z_flog2(x) { var r = 0; var v = x; while (v > 1) { v = v >> 1; r = r + 1; } return r; }
-fn _z_flog2sup(n) { var t = 0; while ((1 << t) <= n) { t = t + 1; } return t; }
 
 fn _z_rd_le(base, n) {   # read n-byte little-endian integer
     var v = 0; var i = 0;
@@ -141,8 +142,10 @@ fn _z_br_bits(br, n) {
     store64(br + 24, load64(br + 24) + n);
     return v;
 }
-# completed once every useful bit has been consumed (precise, for the FSE-weight symbol count).
-fn _z_br_done(br) { if (load64(br + 24) >= load64(br + 32)) { return 1; } return 0; }
+# "completed" once a read has gone PAST the last useful bit (the final symbol's state update
+# legitimately over-reads into the zero-padding — that over-read is the stop signal, per the
+# reference's BIT_DStream_completed). Strictly `>`; `>=` stops one symbol too early.
+fn _z_br_done(br) { if (load64(br + 24) > load64(br + 32)) { return 1; } return 0; }
 
 # ============================ forward LE bit reader (readNCount) ============================
 # reader = alloc(24): [0] base, [8] byte pos, [16] bit pos (0..7, LSB first)
@@ -622,7 +625,7 @@ fn zstd_decompress(src, src_len, dst, dst_cap) {
     _z_init_tables();
     if (src_len < 4) { return 0 - 1; }
     if ((load8(src) & 0xFF) != 0x28 || (load8(src + 1) & 0xFF) != 0xB5
-        || (load8(src + 2) & 0xFF) != 0x2F || (load8(src + 3) & 0xFF) != 0xFD) { return 0 - 1; }
+    || (load8(src + 2) & 0xFF) != 0x2F || (load8(src + 3) & 0xFF) != 0xFD) { return 0 - 1; }
     _z_out = dst; _z_outpos = 0; _z_outcap = dst_cap;
     _z_ro1 = 1; _z_ro2 = 4; _z_ro3 = 8;
     _z_huff_ready = 0; _z_lit = 0; _z_litlen = 0;
@@ -675,4 +678,26 @@ fn zstd_decompress(src, src_len, dst, dst_cap) {
         if (_z_outpos > _z_outcap) { return 0 - 1; }
     }
     return _z_outpos;
+}
+
+# Read the frame's declared Frame_Content_Size (decompressed size) if present, else -1 (unknown).
+# Lets a caller size the output buffer without a grow-retry.
+fn zstd_frame_content_size(src, src_len) {
+    if (src_len < 5) { return 0 - 1; }
+    if ((load8(src) & 0xFF) != 0x28 || (load8(src + 1) & 0xFF) != 0xB5
+    || (load8(src + 2) & 0xFF) != 0x2F || (load8(src + 3) & 0xFF) != 0xFD) { return 0 - 1; }
+    var fhd = load8(src + 4) & 0xFF;
+    var fcs_flag = (fhd >> 6) & 3;
+    var single = (fhd >> 5) & 1;
+    var did_flag = fhd & 3;
+    var p = src + 5;
+    if (single == 0) { p = p + 1; }
+    if (did_flag == 1) { p = p + 1; } elif (did_flag == 2) { p = p + 2; } elif (did_flag == 3) { p = p + 4; }
+    if (fcs_flag == 0) {
+        if (single == 1) { return load8(p) & 0xFF; }
+        return 0 - 1;
+    }
+    if (fcs_flag == 1) { return ((load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8)) + 256; }
+    if (fcs_flag == 2) { return _z_rd_le(p, 4); }
+    return _z_rd_le(p, 8);
 }

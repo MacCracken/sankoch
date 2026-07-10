@@ -14,10 +14,10 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.4.9` — single source of truth (2.4.7/2.4.8 detail in CHANGELOG; 2.4.9 = `[lib.zlib]` profile + `runtime.cyr` extraction)
-- **`cyrius.cyml [package].cyrius`**: `6.3.18` — toolchain pin
-- **Tag**: `2.4.9` (bare semver, no `v` prefix)
-- **Released**: 2026-07-03
+- **`VERSION`**: `2.5.0` — single source of truth (2.5.0 = sovereign `zstd.cyr` decoder [40/40 vs reference zstd v1.5.7] + shared `tar.cyr` pull cursor for ustar/v7, envelopes gzip/xz/bzip2/zstd)
+- **`cyrius.cyml [package].cyrius`**: `6.4.43` — toolchain pin (bumped from 6.3.18 at 2.5.0 to fold into the current stdlib)
+- **Tag**: `2.5.0` (bare semver, no `v` prefix)
+- **Released**: 2026-07-10
 
 ## Distribution
 
@@ -70,7 +70,7 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 | `dist/sankoch-core.cyr`      |   316 | Kernel-safe LZ4 batch decompress only (AGNOS initrd); +1 line at 2.4.5 (the `ERR_RATIO_LIMIT` enum constant in the core `types.cyr`) |
 | `dist/sankoch-zlib.cyr`      | ~4,900 | **2.4.9** — DEFLATE/zlib-only (`zlib_compress`/`zlib_decompress` + closure), drops LZ4/gzip/xz/bzip2/streaming. **53 initialised globals vs the full 175** so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). `cyrius distlib zlib`; runtime helpers via the extracted `src/runtime.cyr` |
 
-All zero deps. Regenerated via `cyrius distlib`, `cyrius distlib zlib`, and `cyrius distlib core` at every release. CI gates on drift. (Note: this table + the version line were bumped to **2.4.9** for the zlib profile; other rows carry stale pre-2.4.7 figures pending a full state refresh.)
+All zero deps. Regenerated via `cyrius distlib`, `cyrius distlib zlib`, and `cyrius distlib core` at every release. CI gates on drift. (Note: bumped to **2.5.0** [+ `zstd.cyr` decoder + `tar.cyr` cursor]; other rows carry stale pre-2.4.7 figures pending a full state refresh — planned for the 2.5.1 distlib reorg.)
 
 ## In-flight slots
 

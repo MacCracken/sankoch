@@ -5,7 +5,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/build/tar_smoke"
-for t in tar gzip xz bzip2 diff; do command -v "$t" >/dev/null 2>&1 || { echo "ERROR: missing '$t'"; exit 1; }; done
+for t in tar gzip xz bzip2 zstd diff; do command -v "$t" >/dev/null 2>&1 || { echo "ERROR: missing '$t'"; exit 1; }; done
 
 CYRIUS_NO_WARN_PIN_DRIFT=1 CYRIUS_NO_WARN_SHADOW_LIB=1 sh -c "cd '$ROOT' && cyrius build programs/tar_smoke.cyr build/tar_smoke" >/dev/null 2>&1 || { echo "ERROR: build failed"; exit 1; }
 [ -x "$BIN" ] || { echo "ERROR: tar_smoke not built"; exit 1; }
@@ -24,12 +24,13 @@ head -c 1300000 /dev/urandom   > "$SRC/usr/lib/libbig.so"    # multi-block file
 ln -s /bin/agnsh "$SRC/bin/sh"                               # symlink
 
 rc=0
-for mode in tar gz xz bz2; do
+for mode in tar gz xz bz2 zst; do
     case "$mode" in
         tar) ( cd "$SRC" && tar --format=ustar -cf  "$TAR" . ) ;;
         gz)  ( cd "$SRC" && tar --format=ustar -czf "$TAR" . ) ;;
         xz)  ( cd "$SRC" && tar --format=ustar -cJf "$TAR" . ) ;;
         bz2) ( cd "$SRC" && tar --format=ustar -cjf "$TAR" . ) ;;
+        zst) rm -f "$TAR"; ( cd "$SRC" && tar --format=ustar -cf - . | zstd -q -19 -o "$TAR" ) ;;
     esac
     rm -rf "$OUT"; mkdir -p "$OUT"
     "$BIN"; e=$?
@@ -48,5 +49,5 @@ for mode in tar gz xz bz2; do
 done
 
 echo ""
-[ "$rc" -eq 0 ] && echo "tar-smoke: PASS — sankoch tar cursor extracts ustar from plain/gz/xz/bz2, byte-identical incl. symlinks" || echo "tar-smoke: FAIL"
+[ "$rc" -eq 0 ] && echo "tar-smoke: PASS — sankoch tar cursor extracts ustar from plain/gz/xz/bz2/zst, byte-identical incl. symlinks" || echo "tar-smoke: FAIL"
 exit $rc

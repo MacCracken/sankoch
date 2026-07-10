@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-07-10 — sovereign zstd decode + a shared tar cursor
+
+The compression library grows an **archive layer** (tar) and its last missing **codec** (zstd
+decode), so the AGNOS ecosystem has one canonical, sovereign path for `.tar` / `.tar.gz` /
+`.tar.xz` / `.tar.bz2` / `.tar.zst` — no `tar`/`gunzip`/`zstd` shell-outs anywhere.
+
 ### Added
+- **`zstd.cyr` — sovereign Zstandard decoder** (RFC 8878, decode-only): `zstd_decompress(src,
+  src_len, dst, dst_cap)` + `zstd_frame_content_size`. Frame/header parse, Raw/RLE/Compressed
+  blocks, Raw/RLE/Compressed/Treeless literals (Huffman, 1- and 4-stream, FSE-compressed + direct
+  weights), sequences (Predefined/RLE/FSE/Repeat for LL/OF/ML), the 3 recent (repeat) offsets, and
+  overlap-safe match copy. No dictionary; content checksum parsed but not verified. Wired into
+  `decompress` / `detect_format` as `FORMAT_ZSTD`. **Validated byte-identical against reference
+  `zstd` v1.5.7** across text / random / repetitive / multi-block inputs × levels 1/3/9/19 ×
+  checksum on/off — 40/40 (`programs/zstd_smoke.cyr`, `scripts/zstd-smoke.sh`). The predefined FSE
+  tables + LL/ML/OF baseline tables were transcribed from the canonical format doc; the FSE
+  distribution reader uses the canonical threshold-halving algorithm, and the FSE symbol count is
+  bounded by exact stream exhaustion (the backward reader tracks consumed vs. useful bits).
 - **`tar.cyr` — sovereign tar (POSIX ustar + pre-POSIX v7) reader** with a sink-agnostic pull
   cursor (`tar_open` / `tar_open_auto` / `tar_next` + `tar_kind`/`tar_path`/`tar_mode`/`tar_mtime`/
   `tar_size`/`tar_data`/`tar_link`). Lifted from takumi's proven `extract_archive` and made
@@ -15,9 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Handles header-checksum validation, PAX (`x`/`g`) + GNU (`L`/`K`) long names, the ustar prefix
   field, and path/symlink **traversal-safety** guards (enforced in-library — no `..`, no absolute
   paths, no control bytes; relative-symlink escape rejected). `tar_open_auto` sniffs the envelope
-  and inflates in RAM via the existing gzip / xz / bzip2 decoders. Absolute-symlink policy is left
-  to the consumer (source-tree extractors reject; rootfs writers keep). Validated across all four
+  and inflates in RAM via the gzip / xz / bzip2 / **zstd** decoders. Absolute-symlink policy is left
+  to the consumer (source-tree extractors reject; rootfs writers keep). Validated across all five
   envelopes by `programs/tar_smoke.cyr` + `scripts/tar-smoke.sh` (byte-identical, symlinks preserved).
+
+### Changed
+- **Toolchain pin 6.3.18 → 6.4.43** (latest), so the bundle folds cleanly into the current Cyrius
+  stdlib. All existing module tests remain green (millions of assertions).
 
 ## [2.4.9] — 2026-07-03
 
