@@ -66,11 +66,16 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 10,056 | Full library — DEFLATE / zlib / gzip / LZ4 + LZ4F + xz de/compress + bzip2 de/compress, batch + streaming, + ratio-capped decompress (batch + streaming) |
-| `dist/sankoch-core.cyr`      |   316 | Kernel-safe LZ4 batch decompress only (AGNOS initrd); +1 line at 2.4.5 (the `ERR_RATIO_LIMIT` enum constant in the core `types.cyr`) |
-| `dist/sankoch-zlib.cyr`      | ~4,900 | **2.4.9** — DEFLATE/zlib-only (`zlib_compress`/`zlib_decompress` + closure), drops LZ4/gzip/xz/bzip2/streaming. **53 initialised globals vs the full 175** so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). `cyrius distlib zlib`; runtime helpers via the extracted `src/runtime.cyr` |
+| `dist/sankoch.cyr`           | 11,394 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd decode + tar cursor, batch + streaming, + ratio-capped decompress (batch + streaming) |
+| `dist/sankoch-core.cyr`      |   331 | **[lib.core]** kernel-safe LZ4 batch decompress only (types + xxhash32 + lz4_decode); no alloc / syscalls / mutex (AGNOS initrd) |
+| `dist/sankoch-zlib.cyr`      | 4,924 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
+| `dist/sankoch-gzip.cyr`      | 5,077 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
+| `dist/sankoch-xz.cyr`        | 2,697 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64 |
+| `dist/sankoch-bzip2.cyr`     | 2,014 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime |
+| `dist/sankoch-zstd.cyr`      |   782 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd decode, fully self-contained (own bit reader / FSE / Huffman). Smallest useful profile — the agnova `base-system.tar.zst` installer path + takumi's zstd tarballs |
+| `dist/sankoch-tar.cyr`       | 9,308 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
 
-All zero deps. Regenerated via `cyrius distlib`, `cyrius distlib zlib`, and `cyrius distlib core` at every release. CI gates on drift. (Note: bumped to **2.5.0** [+ `zstd.cyr` decoder + `tar.cyr` cursor]; other rows carry stale pre-2.4.7 figures pending a full state refresh — still outstanding after the 2.5.x distlib reorg; next P(-1) closeout should re-count source lines + dist sizes.)
+All zero deps. Regenerated at every release via `cyrius distlib` (full) plus the seven named profiles — `cyrius distlib core` / `zlib` / `gzip` / `xz` / `bzip2` / `zstd` / `tar` (eight bundles total). CI gates on drift across all eight.
 
 ## In-flight slots
 

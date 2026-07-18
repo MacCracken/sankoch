@@ -54,8 +54,12 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   checksum, gzip FHCRC + concatenated streaming, FDICT dict-scratch
   match-copy, alloc-fail propagation).
 
-Next periodic audit: **2.4.x P(-1) closeout** (after the decode-only
-xz/bzip2 arc), per [`docs/development/roadmap.md`](docs/development/roadmap.md).
+Next periodic audit: the **P(-1) scaffold-hardening closeout** run
+before the next minor cut (none currently scheduled — the codec set is
+complete through 2.5.x). Most recent run:
+`docs/audit/2026-06-16-pre-2.4.0.md` (2.3.8 closeout, zero
+HIGH/MEDIUM/LOW findings). Forward ladder in
+[`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Supported Versions
 

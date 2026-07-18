@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-07-18 (v2.5.2 cut — toolchain pin refresh to Cyrius 6.4.66; VERSION / cyrius.cyml / CHANGELOG / state / roadmap / SECURITY rows bumped) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-07-18 (structural-figure re-count pass, following the same-day 2.5.2 cut — state.md Source + Dist bundles and roadmap.md File Summary re-counted for the 19-module / 8-bundle tree; SECURITY.md next-audit pointer genericized) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -55,7 +55,7 @@ Also created: this file (`docs/doc-health.md`).
 | `CHANGELOG.md` | 2026-07-18 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.5.2] — 2026-07-18` (toolchain pin refresh → 6.4.66; no source/API change); `[2.5.1]` per-codec distlib profiles; `[2.5.0]` sovereign zstd + tar cursor + pin → 6.4.43. Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
-| `SECURITY.md` | 2026-07-18 | ✅ Fresh | Supported Versions table refreshed to 2.5.x at the 2.5.2 cut (was stale at 2.3.x). Audit list unchanged (next periodic audit still pending — 2.4.x P(-1) closeout). |
+| `SECURITY.md` | 2026-07-18 | ✅ Fresh | Supported Versions table at 2.5.x. "Next periodic audit" pointer genericized to the pre-next-minor P(-1) closeout (was a stale/dangling "2.4.x decode-only xz/bzip2 arc" ref — xz/bzip2 encode had since shipped @2.4.1/2.4.3 and roadmap no longer listed that item). |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
 | `VERSION` | 2026-07-18 | ✅ Fresh | `2.5.2`. Single source of truth per the standards. |
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-07-18 | ✅ Fresh | Status header (→ Stable v2.5.2) + Dependencies pin refreshed to 6.4.66 — the Dependencies line had drifted to a stale `6.2.44` (two pin bumps behind: real prior pins were 6.3.18 @2.4.8, 6.4.43 @2.5.0). Backlog unchanged (xz/bzip2 ratio-cap follow-on; encoder throughput). File Summary still at the 2.4.6 figures (deflate 2,540 / zlib 485 / gzip 638; total 10,078) — pre-zstd/tar; a full source-line re-count is the 2.5.x state-refresh debt tracked in state.md. |
-| `state.md` | 2026-07-18 | ✅ Fresh | Version/pin/date fields refreshed for 2.5.2 (version 2.5.2, pin 6.4.66, released 2026-07-18, recent-releases table extended through 2.5.x, vet dep count 22→25). Test/fuzz totals re-measured on 6.4.66 and unchanged (234 fns / 4,483,834 asserts; 3,929 fuzz). Source-line + dist-size rows still carry the pre-2.4.7 figures pending a full state refresh (flagged in-file since 2.5.0). |
+| `roadmap.md` | 2026-07-18 | ✅ Fresh | Status header (→ Stable v2.5.2) + Dependencies pin at 6.4.66. **File Summary re-counted** for the 19-module tree — added `runtime.cyr` (73) / `zstd.cyr` (729) / `tar.cyr` (513) rows, corrected `lib.cyr` 282→239 + `types.cyr` 41→42 + core-total 316→317, total 10,078→11,351; Distlib paragraph refreshed to the current eight bundles (full 11,394 / core 331 + six lean profiles). Anchor `#file-summary-at-230` kept stable. |
+| `state.md` | 2026-07-18 | ✅ Fresh | Version/pin/date fields at 2.5.2 (pin 6.4.66). **Source + Dist bundles rows re-counted** — Source 10,078/16-module → 11,351/19-module; Dist table refreshed (full 11,394 / core 331 / zlib 4,924) + five per-codec profile rows added (gzip 5,077 / xz 2,697 / bzip2 2,014 / zstd 782 / tar 9,308), regeneration note corrected to all eight profiles. Clears the pre-2.4.7 stale-figure debt flagged since 2.5.0. Test/fuzz totals unchanged (234 fns / 4,483,834 asserts; 3,929 fuzz). |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
 
