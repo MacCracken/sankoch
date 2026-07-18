@@ -1149,21 +1149,26 @@ fn _ze_lz_parse(src, n) {
     var lp = 0;                 # literals written into _zs_lit
     var litstart = 0;
     var pos = 0;
-    var chain_max = 32;
+    var chain_max = 128;
     while (pos + 4 <= n) {
         var hv = _ze_hash4(src, pos);
         var cand = load64(_ze_head + hv * 8);
         var best_len = 0; var best_off = 0;
         var depth = 0;
+        var lim = n - pos;
         while (cand >= 0 && depth < chain_max) {
             var off = pos - cand;
             if (off <= 0) { cand = 0 - 1; }
             else {
-                # extend the match
-                var l = 0;
-                var lim = n - pos;
-                while (l < lim && load8(src + cand + l) == load8(src + pos + l)) { l = l + 1; }
-                if (l > best_len) { best_len = l; best_off = off; }
+                # Quick reject: a candidate can only beat best_len if it matches
+                # at index best_len — skip the full scan otherwise (lets the
+                # deeper chain stay affordable). Same longest match recorded.
+                if (best_len == 0 || (best_len < lim
+                && load8(src + cand + best_len) == load8(src + pos + best_len))) {
+                    var l = 0;
+                    while (l < lim && load8(src + cand + l) == load8(src + pos + l)) { l = l + 1; }
+                    if (l > best_len) { best_len = l; best_off = off; }
+                }
                 cand = load64(_ze_prev + (cand & 131071) * 8);
             }
             depth = depth + 1;

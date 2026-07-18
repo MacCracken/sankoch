@@ -109,9 +109,18 @@ cousin. Sequenced as small bites:
   (ASCII / wide-alphabet / binary / mixed), all byte-identical. **2.5.5 is
   functionally complete + release-able here** — a correct sovereign zstd encoder
   (LZ77 + FSE + Huffman), ~4-17 % behind `zstd -1`. Bite 4 closes the rest.
-- **Bite 4 — competitiveness: FSE-compressed literal weights (wide/UTF-8/binary
-  alphabets, the biggest remaining gap), repeat-offset codes, a lazy/2-pass
-  parse, a level knob, `bench` ratio line, CI wiring.** Post-2.5.5 polish.
+- **Bite 4a — parse improvement (deeper chain + quick-reject) — 🟡 done, uncommitted.**
+  Match chain depth 32 → 128 with an xz-style `best_len` quick-reject (same
+  longest match, affordable deeper search). Format-neutral, so correctness is
+  automatic (full suite + 50/50 reference fuzz green). Modest win: gap to
+  `zstd -1` on deflate.cyr ~+9 % → +7 %.
+- **Bite 4b — FSE-compressed literal weights (the biggest remaining gap).**
+  Wide/UTF-8/binary alphabets (maxsym > 128) currently store literals raw; FSE
+  weights (simple normalize + `writeNCount` + 2-state FSE encode, reusing the
+  bite-3b-2 FSE machinery) let them Huffman-compress. ~150 lines of bit-exact
+  code — its own careful pass.
+- **Bite 4c — repeat-offset codes, lazy/2-pass parse, level knob, `bench`
+  ratio line, CI wiring.** Remaining polish toward `zstd -1` parity.
 - **Bite 4 — FSE-compressed literal weights (wide alphabets) + custom seq
   tables + a level knob + `bench` ratio line + CI wiring** (add the
   encode-smoke to CI).
