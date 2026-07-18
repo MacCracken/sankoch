@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **zstd encoder: FSE-compressed literal weights** (2.5.6) — the Huffman literals
+  block now handles wide alphabets. When the max literal symbol value exceeds 128
+  the direct weight table (header byte `127 + nw`, `nw ≤ 128`) can't represent the
+  tree, so the weights are themselves FSE-coded (two interleaved states, backward
+  bitstream) exactly as RFC 8878 §4.2.1.1 describes — the inverse of the decoder's
+  `_z_huff_tree` FSE branch. Before this, wide-alphabet literals (UTF-8 text,
+  binaries — any input reaching bytes ≥ 128) fell back to *raw* (uncompressed)
+  literals; now they compress. Reference `zstd -d` (v1.5.7) decodes every output
+  byte-identically. Measured on full 0–255-alphabet inputs: **+8–10 % vs `zstd -1`**
+  (was effectively uncompressed literals); mixed UTF-8 text (CHANGELOG.md) closes to
+  **+10 %**. New `test_zc_fse_weights` tcyr case (skewed full-range distribution,
+  `maxsym > 128`) and a `hwide` reference-interop case in `zstd-encode-smoke.sh`.
+
 ### Changed
 - **Toolchain pin 6.4.66 → 6.4.67** (part of the in-flight 2.5.6 work) — tracks the current Cyrius
   toolchain and clears the pin-vs-`cycc` drift warning. `cyrius deps` re-resolved the stdlib

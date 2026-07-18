@@ -229,6 +229,31 @@ fn test_zc_wide_alphabet() {
     return 0;
 }
 
+# Skewed distribution over the FULL byte range (2.5.6 FSE-compressed literal
+# weights). 75% of bytes fall in {0..7}; 25% spread over {128..255}, so the
+# max symbol value exceeds 128 — the direct weight table (header 127+nw, nw<=128)
+# can't represent it, forcing the FSE-compressed weight path. The skew keeps
+# literal entropy well under 8 bits, so the Huffman literals block must win.
+# Round-trips through our decoder; reference `zstd -d` interop is in the smoke.
+fn test_zc_fse_weights() {
+    var n = 12000;
+    var src = alloc(n);
+    var st = 424242;
+    var i = 0;
+    while (i < n) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        if (((st >> 33) & 3) == 0) {
+            store8(src + i, 128 + ((st >> 40) & 127));   # 25% -> 128..255 (maxsym > 128)
+        } else {
+            store8(src + i, (st >> 40) & 7);             # 75% -> 0..7 (skew)
+        }
+        i = i + 1;
+    }
+    var clen = _z_rt(src, n, "zstd_encode FSE literal weights (maxsym>128)");
+    assert(clen < (n * 7) / 10, "zstd_encode FSE-weight literals compress");
+    return 0;
+}
+
 # Repetitive input with clear matches → an LZ77 + FSE-sequences Compressed
 # block (2.5.5 bite 3b-2). Must round-trip and compress hard.
 fn test_zc_seq_matches() {
@@ -280,6 +305,7 @@ fn main() {
     test_zc_huff_4stream();
     test_zc_huff_128k();
     test_zc_wide_alphabet();
+    test_zc_fse_weights();
     return assert_summary();
 }
 

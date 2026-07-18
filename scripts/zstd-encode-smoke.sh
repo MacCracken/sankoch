@@ -29,9 +29,13 @@ head -c 131073 /dev/zero                        > "$WORK/blk128p1.bin"    # 128 
 yes 'the quick brown fox jumps over the lazy dog ' | head -c 900 > "$WORK/htext.bin"
 yes '{"key":"value","num":1234},'                  | head -c 800 > "$WORK/hjson.bin"
 awk 'BEGIN{a=1;b=1;for(s=0;s<14;s++){for(i=0;i<a;i++)printf "%c",65+s;t=a+b;a=b;b=t}}' > "$WORK/hfib.bin"   # deep tree -> length limiter
+# Skewed full-range distribution: 25% of bytes in 128..255 (maxsym > 128 -> the
+# direct weight table can't fit, forcing FSE-compressed literal weights), 75% in
+# 0..7 (skew -> Huffman literals win). Exercises the 2.5.6 FSE-weight encode path.
+awk 'BEGIN{for(i=0;i<40000;i++){if(i%4==0)printf "%c",128+(i%128);else printf "%c",i%8}}' > "$WORK/hwide.bin"
 
 rc=0; total=0; pass=0
-for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib; do
+for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide; do
     src="$WORK/$f.bin"
     [ -f "$src" ] || continue
     total=$((total + 1))

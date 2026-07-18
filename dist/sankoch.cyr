@@ -10595,6 +10595,14 @@ fn _zew_close() {
     return 0;
 }
 
+# Flush the accumulator's remaining bits as a partial final byte, WITHOUT a
+# marker bit — for forward LSB-first streams (the FSE table description /
+# writeNCount), which the decoder reads forward, not backward.
+fn _zew_flush() {
+    if (_zew_nbits > 0) { _ze_put(_zew_acc & 255); _zew_acc = 0; _zew_nbits = 0; }
+    return 0;
+}
+
 # Length-limited (<= `limit`) Huffman code lengths from _ze_cnt into
 # _ze_nb[0..maxsym]. Returns maxbits, or -1 if < 2 symbols present.
 fn _ze_huff_lengths(maxsym, limit) {
@@ -10774,10 +10782,6 @@ fn _ze_emit_huff_literals(litsrc, n) {
         i = i + 1;
     }
     if (maxsym < 1) { return 0 - 1; }     # single distinct byte
-    # Direct-weight table: header byte = 127 + maxsym must fit a byte, so the
-    # highest present symbol must be <= 128. Wider alphabets need FSE-compressed
-    # weights (a later bite); raw literals for those.
-    if (maxsym > 128) { return 0 - 1; }
     var maxbits = _ze_huff_lengths(maxsym, 11);
     if (maxbits < 0) { return 0 - 1; }
     _ze_huff_codes(maxsym, maxbits);
@@ -10792,14 +10796,20 @@ fn _ze_emit_huff_literals(litsrc, n) {
     var hdr = 3;                              # sizefmt 0 (single stream)
     if (n > 1023) { four = 1; if (n <= 16383) { hdr = 4; } else { hdr = 5; } }   # sizefmt 2 / 3
     _ze_op = hdr;
-    _ze_put(127 + maxsym);                    # Huffman_Tree_Description: direct weights
-    var j = 0;
-    while (j < maxsym) {
-        var hi = load64(_ze_wt + j * 8);
-        var lo = 0;
-        if (j + 1 < maxsym) { lo = load64(_ze_wt + (j + 1) * 8); }
-        _ze_put((hi << 4) | lo);
-        j = j + 2;
+    # Huffman_Tree_Description: direct weights (maxsym <= 128) or FSE-compressed
+    # weights (wider alphabets, where header byte 127+maxsym would overflow).
+    if (maxsym <= 128) {
+        _ze_put(127 + maxsym);
+        var j = 0;
+        while (j < maxsym) {
+            var hi = load64(_ze_wt + j * 8);
+            var lo = 0;
+            if (j + 1 < maxsym) { lo = load64(_ze_wt + (j + 1) * 8); }
+            _ze_put((hi << 4) | lo);
+            j = j + 2;
+        }
+    } else {
+        if (_ze_emit_fse_weights(maxsym, maxbits) < 0) { _ze_op = 0; return 0 - 1; }
     }
 
     var ok = 0;
@@ -11058,6 +11068,133 @@ fn _ze_fse_encode(ct, state, symbol) {
     var nbo = (state + dnb) >> 16;
     _zew_add(state, nbo);
     return load64(load64(ct + 0) + ((state >> nbo) + load64(load64(ct + 16) + symbol * 8)) * 8);
+}
+
+# ---- FSE table description (writeNCount) for FSE-compressed Huffman weights ----
+# Simple valid normalization of counts[0..alpha) (summing `total`) to a
+# distribution summing to 2^log, every present symbol >= 1 (no "less than one"
+# — simpler + valid). Result in norm[]. Requires 2^log >= #present symbols.
+fn _ze_fse_normalize(counts, alpha, total, log, norm) {
+    var tsize = 1 << log;
+    var sum = 0;
+    var s = 0;
+    while (s < alpha) {
+        var c = load64(counts + s * 8);
+        var nv = 0;
+        if (c > 0) { nv = (c * tsize) / total; if (nv < 1) { nv = 1; } }
+        store64(norm + s * 8, nv);
+        sum = sum + nv;
+        s = s + 1;
+    }
+    # adjust to exactly tsize by nudging the largest bucket (kept >= 1)
+    while (sum != tsize) {
+        var best = 0 - 1;
+        s = 0;
+        while (s < alpha) {
+            var v = load64(norm + s * 8);
+            if (v > 0 && (best == (0 - 1) || v > load64(norm + best * 8))) { best = s; }
+            s = s + 1;
+        }
+        if (sum > tsize) { store64(norm + best * 8, load64(norm + best * 8) - 1); sum = sum - 1; }
+        else { store64(norm + best * 8, load64(norm + best * 8) + 1); sum = sum + 1; }
+    }
+    return 0;
+}
+
+# Write the FSE table description (readNCount's exact inverse) for norm[0..alpha)
+# via _ze_put (forward LSB-first). All-positive counts (no -1). Returns bytes
+# written. Mirrors FSE_writeNCount_generic.
+fn _ze_fse_write_ncount(norm, alpha, log) {
+    var startop = _ze_op;
+    _zew_reset();
+    _zew_add(log - 5, 4);
+    var tsize = 1 << log;
+    var remaining = tsize + 1;
+    var threshold = tsize;
+    var nbBits = log + 1;
+    var symbol = 0;
+    var previous0 = 0;
+    while (symbol < alpha && remaining > 1) {
+        if (previous0 == 1) {
+            var start = symbol;
+            while (symbol < alpha && load64(norm + symbol * 8) == 0) { symbol = symbol + 1; }
+            while (symbol >= start + 24) { start = start + 24; _zew_add(0xFFFF, 16); }
+            while (symbol >= start + 3) { start = start + 3; _zew_add(3, 2); }
+            _zew_add(symbol - start, 2);
+            previous0 = 0;
+        }
+        var count = load64(norm + symbol * 8);
+        symbol = symbol + 1;
+        var max = (2 * threshold - 1) - remaining;
+        var ac = count; if (ac < 0) { ac = 0 - ac; }
+        remaining = remaining - ac;
+        count = count + 1;                    # +1 (decoder subtracts 1)
+        if (count >= threshold) { count = count + max; }
+        var nb = nbBits;
+        if (count < max) { nb = nbBits - 1; }
+        _zew_add(count, nb);
+        if (count == 1) { previous0 = 1; }    # original count 0 → run of zeros follows
+        while (remaining < threshold) { nbBits = nbBits - 1; threshold = threshold >> 1; }
+    }
+    _zew_flush();
+    return _ze_op - startop;
+}
+
+# Encode weights[0..m) with 2 interleaved FSE states, backward, marker-topped
+# (mirrors FSE_compress_usingCTable; the decoder reads even indices from st1,
+# odd from st2 — see _z_huff_tree's FSE branch). Writes via _ze_put.
+fn _ze_fse_encode_weights(ct, weights, m, log) {
+    _zew_reset();
+    var st1 = 0; var st2 = 0;
+    var ip = m;
+    if ((m & 1) == 1) {
+        ip = ip - 1; st1 = _ze_fse_init(ct, load64(weights + ip * 8));
+        ip = ip - 1; st2 = _ze_fse_init(ct, load64(weights + ip * 8));
+        ip = ip - 1; st1 = _ze_fse_encode(ct, st1, load64(weights + ip * 8));
+    } else {
+        ip = ip - 1; st2 = _ze_fse_init(ct, load64(weights + ip * 8));
+        ip = ip - 1; st1 = _ze_fse_init(ct, load64(weights + ip * 8));
+    }
+    while (ip > 0) {
+        ip = ip - 1; st2 = _ze_fse_encode(ct, st2, load64(weights + ip * 8));
+        ip = ip - 1; st1 = _ze_fse_encode(ct, st1, load64(weights + ip * 8));
+    }
+    _zew_add(st2, log);   # flush CState2 (below)
+    _zew_add(st1, log);   # flush CState1 (top → decoder reads first as st1)
+    _zew_close();
+    return 0;
+}
+
+# FSE-compressed Huffman weight table (for maxsym > 128, where direct weights'
+# header byte 127+maxsym overflows). Emits [headerByte < 128][ncount][weight
+# bitstream] into the current (temp) output starting at `at`. Returns the tree
+# byte length, or -1 if it doesn't apply / doesn't fit a <128 header byte.
+var _ze_wcnt = 0; var _ze_wnorm = 0;
+fn _ze_emit_fse_weights(maxsym, maxbits) {
+    if (_ze_wcnt == 0) { _ze_wcnt = alloc(16 * 8); _ze_wnorm = alloc(16 * 8); }
+    var alpha = maxbits + 1;
+    # weight-value counts over the transmitted weights _ze_wt[0..maxsym)
+    var w = 0;
+    while (w < alpha) { store64(_ze_wcnt + w * 8, 0); w = w + 1; }
+    var distinct = 0;
+    var s = 0;
+    while (s < maxsym) {
+        var wv = load64(_ze_wt + s * 8);
+        if (load64(_ze_wcnt + wv * 8) == 0) { distinct = distinct + 1; }
+        store64(_ze_wcnt + wv * 8, load64(_ze_wcnt + wv * 8) + 1);
+        s = s + 1;
+    }
+    if (distinct < 2) { return 0 - 1; }        # degenerate — RLE mode unhandled; store
+    _ze_fse_normalize(_ze_wcnt, alpha, maxsym, 6, _ze_wnorm);
+    var treestart = _ze_op;
+    _ze_put(0);                                # header byte placeholder
+    _ze_fse_write_ncount(_ze_wnorm, alpha, 6);
+    var ct = _ze_fse_ctable(_ze_wnorm, alpha, 6);
+    _ze_fse_encode_weights(ct, _ze_wt, maxsym, 6);
+    var fse_size = _ze_op - treestart - 1;
+    if (_ze_err != 0 || fse_size < 1 || fse_size >= 128) { return 0 - 1; }
+    store8(_ze_out + treestart, fse_size);     # header byte < 128 = FSE bytes
+    return _ze_op - treestart;
 }
 
 # LL / ML sequence-code lookup (inverse of the baseline tables; monotonic).
