@@ -1,0 +1,62 @@
+# zstd_encode_smoke.cyr — compress /tmp/sankoch-zstd-enc-in via sankoch's zstd_compress and write
+# the .zst frame to /tmp/sankoch-zstd-enc-out.zst. Driven by scripts/zstd-encode-smoke.sh, which
+# then decodes with the reference `zstd -d` and cmps against the original (the interop bar).
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(8, fd, 0, 2);
+    syscall(8, fd, 0, 0);
+    var buf = alloc(sz + 16);
+    var off = 0;
+    while (off < sz) {
+        var n = sys_read(fd, buf + off, sz - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+fn run() {
+    var buf = read_all("/tmp/sankoch-zstd-enc-in");
+    if (buf == 0) { return 1; }
+    var cap = g_len * 2 + 65536;
+    var dst = alloc(cap);
+    var n = zstd_compress(buf, g_len, dst, cap);
+    if (n < 0) { return 20 + (0 - n); }
+    # round-trip through our own decoder too, as a self-check.
+    var chk = alloc(g_len + 16);
+    var d = zstd_decompress(dst, n, chk, g_len + 16);
+    if (d != g_len) { return 10; }
+    var i = 0;
+    while (i < g_len) {
+        if (load8(chk + i) != load8(buf + i)) { return 11; }
+        i = i + 1;
+    }
+    var fd = sys_open("/tmp/sankoch-zstd-enc-out.zst", 577, 420);   # O_WRONLY|O_CREAT|O_TRUNC, 0644
+    if (fd < 0) { return 2; }
+    var off = 0;
+    while (off < n) {
+        var w = sys_write(fd, dst + off, n - off);
+        if (w <= 0) { break; }
+        off = off + w;
+    }
+    sys_close(fd);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    return run();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

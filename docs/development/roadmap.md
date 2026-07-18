@@ -47,8 +47,33 @@ higher levels + dictionary training can follow. No wire-format SIZE gate
 informational ratio line in `bench` like the xz / bzip2 encoders.
 Primitive reference: Duda, "Asymmetric Numeral Systems" (arXiv:1311.2540);
 shravan's Opus range encoder (`opus.cyr:175-284`) is the entropy-coding
-cousin. Minor effort — sequenced as small bites (FSE encoder → Huffman
-encoder → sequence/block builder → frame + validation).
+cousin. Sequenced as small bites:
+
+- **Bite 1 — frame + Raw/RLE blocks (store mode) — 🟡 in progress (foundation landed, uncommitted).**
+  `zstd_compress` emits valid single_segment RFC-8878 frames with Raw
+  (verbatim) + RLE (single repeated byte) blocks, block chunking at the
+  128 KiB `Block_Maximum_Size`, and the frame-content-size flag arithmetic
+  mirrored from the decoder. Wired into `compress`/`_compress_inner`
+  dispatch. Lock-free + self-contained (no runtime dep — `[lib.zstd]`
+  profile still closes). **Verified**: `tests/tcyr/zstd_compress.tcyr`
+  round-trip (encode → `zstd_decompress`, CI-gated) + `scripts/zstd-encode-smoke.sh`
+  (8/8 byte-identical through reference `zstd -d` v1.5.7: empty / tiny /
+  text / rand / zeros / repeat / 128 KiB / 128 KiB+1). Store mode does not
+  yet compress general data (only runs → RLE) — that is the compressed path
+  below.
+- **Bite 2 — Compressed block, Huffman literals (0 sequences).** Build the
+  canonical literals Huffman tree (maxbits 11), emit the weight table +
+  1-/4-stream bitstream + literals-section header; sequences count 0.
+  First real entropy compression (text). Validate vs `zstd -d`.
+- **Bite 3 — FSE sequences (predefined tables).** LZ77 match-find (reuse
+  the in-tree finder) → LL/OF/ML sequences, FSE-coded in Predefined mode
+  (no table description). Full LZ77 + entropy compression.
+- **Bite 4 — FSE-compressed literal weights + custom seq tables + a level
+  knob + `bench` ratio line + CI wiring** (add the encode-smoke to CI).
+
+No wire-format SIZE gate (zstd output isn't bit-reproducible across encoder
+versions). **Not shipped as a release until at least Bite 3 lands** (a
+store-mode-only `zstd_compress` doesn't compress general data).
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 

@@ -1,0 +1,137 @@
+# sankoch — zstd — compress (store-mode encode: Raw/RLE blocks, round-trip)
+#
+# 2.5.5 bite 1: `zstd_compress` emits valid RFC-8878 frames (single_segment,
+# Raw + RLE blocks). This suite round-trips encode → `zstd_decompress` →
+# byte-identical (no reference-tool dependency, so it runs in CI). Reference
+# `zstd -d` interop is covered by `scripts/zstd-encode-smoke.sh`.
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/zstd_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+# Compress src[0..n) with zstd_compress, decode with zstd_decompress, assert
+# the result is byte-identical to src. Returns the compressed length.
+fn _z_rt(src, n, label) {
+    var comp = alloc(n * 2 + 4096);
+    var clen = zstd_compress(src, n, comp, n * 2 + 4096);
+    assert(clen > 0 || n == 0, "zstd_compress produced a stream");
+    if (clen < 0) { assert(0 == 1, label); return clen; }
+    var dec = alloc(n + 16);
+    var dl = zstd_decompress(comp, clen, dec, n + 16);
+    assert(dl == n, label);
+    var i = 0;
+    var ok = 1;
+    while (i < n) {
+        if (load8(dec + i) != load8(src + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, label);
+    return clen;
+}
+
+# Empty input → a valid empty frame that decodes to 0 bytes.
+fn test_zc_empty() {
+    var src = alloc(1);
+    _z_rt(src, 0, "zstd_encode empty");
+    return 0;
+}
+
+# A single byte.
+fn test_zc_one() {
+    var src = alloc(1);
+    store8(src, 65);
+    _z_rt(src, 1, "zstd_encode one byte");
+    return 0;
+}
+
+# All-zeros small → RLE block.
+fn test_zc_rle_small() {
+    var n = 1000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 0); i = i + 1; }
+    var clen = _z_rt(src, n, "zstd_encode zeros -> RLE");
+    assert(clen < 20, "zstd_encode RLE is tiny (header + 1 byte)");
+    return 0;
+}
+
+# A run of a non-zero byte, at the RLE/raw boundary sizes.
+fn test_zc_rle_const() {
+    var n = 255;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 88); i = i + 1; }
+    _z_rt(src, n, "zstd_encode const 255 -> RLE (1-byte fcs)");
+    var n2 = 256;
+    var src2 = alloc(n2);
+    i = 0;
+    while (i < n2) { store8(src2 + i, 88); i = i + 1; }
+    _z_rt(src2, n2, "zstd_encode const 256 -> RLE (2-byte fcs)");
+    return 0;
+}
+
+# Compressible text → Raw block (store mode doesn't Huffman yet, but must
+# still round-trip exactly).
+fn test_zc_text() {
+    var n = 4000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 97 + (i % 26)); i = i + 1; }
+    _z_rt(src, n, "zstd_encode text -> Raw");
+    return 0;
+}
+
+# Incompressible random → Raw block.
+fn test_zc_random() {
+    var n = 4096;
+    var src = alloc(n);
+    var st = 88172645463325252;
+    var i = 0;
+    while (i < n) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        store8(src + i, (st >> 33) & 255);
+        i = i + 1;
+    }
+    _z_rt(src, n, "zstd_encode random -> Raw");
+    return 0;
+}
+
+# Block-boundary sizes: exactly 128 KiB (one block) and just over (two blocks).
+fn test_zc_block_boundary() {
+    var n = 131072;
+    var src = alloc(n + 64);
+    var i = 0;
+    while (i < n + 64) { store8(src + i, 97 + (i % 26)); i = i + 1; }
+    _z_rt(src, n, "zstd_encode exactly 128 KiB (1 block)");
+    _z_rt(src, n + 1, "zstd_encode 128 KiB + 1 (2 blocks)");
+    _z_rt(src, n + 50, "zstd_encode 128 KiB + 50 (2 blocks)");
+    return 0;
+}
+
+# Multi-block all-zeros → RLE blocks across the 128 KiB boundary.
+fn test_zc_multiblock_rle() {
+    var n = 300000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 0); i = i + 1; }
+    var clen = _z_rt(src, n, "zstd_encode 300 KB zeros -> multi RLE");
+    assert(clen < 40, "zstd_encode multi-RLE stays tiny");
+    return 0;
+}
+
+fn main() {
+    _test_init();
+    test_zc_empty();
+    test_zc_one();
+    test_zc_rle_small();
+    test_zc_rle_const();
+    test_zc_text();
+    test_zc_random();
+    test_zc_block_boundary();
+    test_zc_multiblock_rle();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

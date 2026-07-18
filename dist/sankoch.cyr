@@ -10482,6 +10482,103 @@ fn zstd_frame_content_size(src, src_len) {
     return _z_rd_le(p, 8);
 }
 
+# ============================================================
+# ENCODE SIDE (2.5.5)
+# ============================================================
+# Bite 1: frame + Raw/RLE blocks (store mode). Emits valid RFC-8878 frames
+# that reference `zstd -d` (and sankoch's own zstd_decompress) reproduce
+# byte-for-byte, using Raw blocks (verbatim bytes) and RLE blocks (a single
+# repeated byte). This is the framing foundation the compressed path
+# (Huffman literals + FSE sequences) builds on. Frames are single_segment
+# (Window_Size == Frame_Content_Size, no window byte), no dictionary, no
+# content checksum. Like the decoder, the encoder is lock-free and uses its
+# own globals — no runtime/mutex dependency, so the [lib.zstd] profile stays
+# self-contained. Not thread-safe (serialize concurrent zstd calls).
+
+var _ze_out = 0;   # output buffer (caller dst)
+var _ze_op = 0;    # write cursor (keeps advancing past cap; _ze_err flags overflow)
+var _ze_cap = 0;
+var _ze_err = 0;
+
+fn _ze_put(b) {
+    if (_ze_op < _ze_cap) { store8(_ze_out + _ze_op, b & 255); } else { _ze_err = 1; }
+    _ze_op = _ze_op + 1;
+    return 0;
+}
+
+# Write the `n` low bytes of `v`, little-endian.
+fn _ze_put_le(v, n) {
+    var i = 0;
+    while (i < n) { _ze_put((v >> (i * 8)) & 255); i = i + 1; }
+    return 0;
+}
+
+# Frame header: magic + descriptor + Frame_Content_Size. single_segment=1,
+# no dictionary, no checksum. The fcs_flag arithmetic mirrors the decoder
+# (see zstd_decompress): flag 0 → 1 byte = size; flag 1 → 2 bytes = size-256;
+# flag 2 → 4 bytes = size; flag 3 → 8 bytes = size.
+fn _ze_frame_header(content_size) {
+    _ze_put(0x28); _ze_put(0xB5); _ze_put(0x2F); _ze_put(0xFD);
+    var fcs_flag = 0;
+    if (content_size >= 4294967296) { fcs_flag = 3; }
+    elif (content_size >= 65792) { fcs_flag = 2; }
+    elif (content_size >= 256) { fcs_flag = 1; }
+    var fhd = (fcs_flag << 6) | (1 << 5);   # single_segment=1
+    _ze_put(fhd);
+    if (fcs_flag == 0) { _ze_put(content_size & 255); }
+    elif (fcs_flag == 1) { _ze_put_le(content_size - 256, 2); }
+    elif (fcs_flag == 2) { _ze_put_le(content_size, 4); }
+    else { _ze_put_le(content_size, 8); }
+    return 0;
+}
+
+# Block header (3 bytes LE): last_block | block_type<<1 | block_size<<3.
+fn _ze_block_header(last, btype, bsize) {
+    var h = (last & 1) | ((btype & 3) << 1) | ((bsize & 0x1FFFFF) << 3);
+    _ze_put_le(h, 3);
+    return 0;
+}
+
+# Public: compress src -> a .zst frame (store mode — Raw / RLE blocks).
+# Returns the frame byte length, or a negative error. Lock-free (see above).
+fn zstd_compress(src, src_len, dst, dst_cap) {
+    if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    _ze_out = dst; _ze_op = 0; _ze_cap = dst_cap; _ze_err = 0;
+    _ze_frame_header(src_len);
+
+    var BLKMAX = 131072;   # Block_Maximum_Size (128 KiB)
+    if (src_len == 0) {
+        _ze_block_header(1, 0, 0);   # empty frame: one last Raw block of size 0
+    } else {
+        var pos = 0;
+        while (pos < src_len) {
+            var chunk = src_len - pos;
+            if (chunk > BLKMAX) { chunk = BLKMAX; }
+            var last = 0;
+            if (pos + chunk == src_len) { last = 1; }
+            # RLE when the whole chunk is one repeated byte (breaks early otherwise).
+            var first = load8(src + pos) & 255;
+            var allsame = 1;
+            var k = 1;
+            while (k < chunk) {
+                if ((load8(src + pos + k) & 255) != first) { allsame = 0; break; }
+                k = k + 1;
+            }
+            if (allsame == 1) {
+                _ze_block_header(last, 1, chunk);   # RLE: 1 content byte
+                _ze_put(first);
+            } else {
+                _ze_block_header(last, 0, chunk);   # Raw: verbatim bytes
+                var i = 0;
+                while (i < chunk) { _ze_put(load8(src + pos + i) & 255); i = i + 1; }
+            }
+            pos = pos + chunk;
+        }
+    }
+    if (_ze_err != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
+    return _ze_op;
+}
+
 # --- tar.cyr ---
 
 # tar.cyr — sovereign tar (POSIX ustar + pre-POSIX v7) reader with a pull-cursor API.
@@ -11449,6 +11546,12 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
     if (format == FORMAT_BZIP2) {
         # bzip2 maps the level (1..9) to the block size (100..900 KB).
         return _bz2_compress_inner(src, src_len, dst, dst_cap, level);
+    }
+    if (format == FORMAT_ZSTD) {
+        # zstd encode (2.5.5) — store mode (Raw/RLE blocks) at this bite;
+        # level not yet used (the compressed path will map it). zstd_compress
+        # is lock-free and self-contained (matches the decoder).
+        return zstd_compress(src, src_len, dst, dst_cap);
     }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
