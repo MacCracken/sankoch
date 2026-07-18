@@ -48,5 +48,5 @@ done
 
 echo ""
 echo "  $pass/$total cases: sankoch-encoded frame decoded byte-identical by reference zstd -d"
-[ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store + Huffman-literal blocks)" || echo "zstd-encode-smoke: FAIL"
+[ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store + Huffman literals + LZ77/FSE sequences)" || echo "zstd-encode-smoke: FAIL"
 exit $rc

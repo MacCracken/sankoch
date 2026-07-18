@@ -229,8 +229,43 @@ fn test_zc_wide_alphabet() {
     return 0;
 }
 
+# Repetitive input with clear matches → an LZ77 + FSE-sequences Compressed
+# block (2.5.5 bite 3b-2). Must round-trip and compress hard.
+fn test_zc_seq_matches() {
+    var n = 6000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 97 + (i % 40)); i = i + 1; }   # period 40 -> long matches
+    var clen = _z_rt(src, n, "zstd_encode LZ77+FSE sequences");
+    assert(clen * 8 < n, "zstd_encode sequences compress repetitive > 8:1");
+    return 0;
+}
+
+# Literals interleaved with matches — exercises many sequences with varied
+# LL/ML/OF codes + trailing literals.
+fn test_zc_seq_mixed() {
+    var n = 5000;
+    var src = alloc(n);
+    var st = 12345;
+    var i = 0;
+    while (i < n) {
+        if ((i % 100) < 60 && i > 100) {
+            store8(src + i, load8(src + i - 80));            # copy-y region -> matches
+        } else {
+            st = st * 6364136223846793005 + 1442695040888963407;
+            store8(src + i, 97 + ((st >> 40) % 20));         # literal noise
+        }
+        i = i + 1;
+    }
+    var clen = _z_rt(src, n, "zstd_encode mixed literals+matches");
+    assert(clen < n, "zstd_encode mixed compresses");
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_zc_seq_matches();
+    test_zc_seq_mixed();
     test_zc_empty();
     test_zc_one();
     test_zc_rle_small();

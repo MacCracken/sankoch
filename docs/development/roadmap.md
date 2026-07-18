@@ -87,13 +87,23 @@ cousin. Sequenced as small bites:
   `_ze_lz_reconstruct` (byte-exact reconstruction: 97-99 % matched on periodic
   text, 0 % on random). Not yet wired into `zstd_compress` — it feeds the FSE
   emitter below.
-- **Bite 3b-2 — FSE sequence encoder + framing.** The hard part: build the FSE
-  **encoding** tables (`buildCTable`) for LL/OF/ML in Predefined mode, encode
-  the 3 interleaved states **backward** (mirroring the decoder's read order in
-  reverse), emit the sequences-section header (nbSeq + modes) + bitstream, and
-  wire the Huffman-literals block to carry these sequences. Validate vs
-  `zstd -d`. **2.5.5 is release-able once this lands** (LZ77 + entropy, not just
-  Huffman).
+- **Bite 3b-2 — FSE sequence encoder + framing — 🟡 done, uncommitted.**
+  FSE **encoding** tables (`_ze_fse_ctable`, mirroring `FSE_buildCTable`,
+  reusing the decoder's spread) for LL/OF/ML in Predefined mode; the 3
+  interleaved states encoded **backward** (init LL/OF/ML → per-seq OF/ML/LL
+  state + LL/ML/OF extra → flush ML/OF/LL, derived by reversing the decoder's
+  read order); sequences-section header (nbSeq + modes) + bitstream; Raw
+  literals for now. Wired into the block loop (sequences → Huffman → raw).
+  **Verified**: tcyr round-trip + reference `zstd -d` **and a 70/70 mixed-content
+  fuzz**, all byte-identical. Real LZ77 + entropy compression now (text 2 KB →
+  3 %, 50 KB → 0.1 %). Currently **~10-20 % behind `zstd -1`** — the gap is the
+  Raw literals (see 3b-3). (Caught + fixed: `_ze_try_seq_block` redirected the
+  writer to `_ze_tmp` without allocating it — null-pointer SIGSEGV on the first
+  block.)
+- **Bite 3b-3 — Huffman literals *inside* the sequences block.** Replace the
+  Raw literals section of the sequences block with the 4-stream Huffman coder
+  (for ASCII/maxsym ≤ 128), closing most of the gap to `zstd -1`. **2.5.5 is
+  release-able here** (competitive LZ77 + entropy).
 - **Bite 4 — FSE-compressed literal weights (wide alphabets) + custom seq
   tables + a level knob + `bench` ratio line + CI wiring** (add the
   encode-smoke to CI).
