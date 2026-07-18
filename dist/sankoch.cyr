@@ -10539,8 +10539,276 @@ fn _ze_block_header(last, btype, bsize) {
     return 0;
 }
 
-# Public: compress src -> a .zst frame (store mode — Raw / RLE blocks).
-# Returns the frame byte length, or a negative error. Lock-free (see above).
+# ---- Huffman literal encoder (2.5.5 bite 2) ------------------------------
+# Single-stream Huffman-coded literals for small blocks (regen <= 1023) — the
+# entropy-coding foundation. Builds a length-limited (<= 11-bit) canonical
+# Huffman code whose canonical assignment matches the decoder's _z_huff_build
+# exactly, emits the direct weight table + one backward bitstream + a
+# 0-sequences section (a Compressed block whose regenerated output is exactly
+# the literals). Larger blocks (4-stream literals + FSE sequences) are later
+# bites; they fall back to store mode here.
+
+var _ze_cnt = 0;    # i64[256] literal histogram
+var _ze_nb = 0;     # i64[256] code length per symbol (0 = absent)
+var _ze_wt = 0;     # i64[256] weight per symbol
+var _ze_code = 0;   # i64[256] canonical code per symbol
+var _ze_tmp = 0;    # scratch for one compressed block's content
+var _ze_hw = 0;     # i64[512] Huffman node weight
+var _ze_hp = 0;     # i64[512] Huffman node parent (-1 = root)
+var _ze_ha = 0;     # i64[512] active-root list / length histogram scratch
+var _ze_hsym = 0;   # i64[256] present-index -> symbol value
+
+fn _ze_huff_alloc() {
+    if (_ze_cnt != 0) { return 0; }
+    _ze_cnt = alloc(256 * 8); _ze_nb = alloc(256 * 8);
+    _ze_wt = alloc(256 * 8); _ze_code = alloc(256 * 8);
+    _ze_tmp = alloc(4096);
+    _ze_hw = alloc(512 * 8); _ze_hp = alloc(512 * 8);
+    _ze_ha = alloc(512 * 8); _ze_hsym = alloc(256 * 8);
+    return 0;
+}
+
+# ---- reverse/backward bit writer for the Huffman stream ----
+# Bits accumulate LSB-first and flush to output bytes as they fill. Symbols
+# are added in REVERSE order; a final marker '1' bit tops the stream, so the
+# decoder's backward MSB-first read recovers forward symbol order.
+var _zew_acc = 0;
+var _zew_nbits = 0;
+
+fn _zew_reset() { _zew_acc = 0; _zew_nbits = 0; return 0; }
+
+fn _zew_add(val, nb) {
+    _zew_acc = _zew_acc | ((val & ((1 << nb) - 1)) << _zew_nbits);
+    _zew_nbits = _zew_nbits + nb;
+    while (_zew_nbits >= 8) {
+        _ze_put(_zew_acc & 255);
+        _zew_acc = _zew_acc >> 8;
+        _zew_nbits = _zew_nbits - 8;
+    }
+    return 0;
+}
+
+# Close: add the marker bit, flush the final partial byte.
+fn _zew_close() {
+    _zew_add(1, 1);
+    if (_zew_nbits > 0) { _ze_put(_zew_acc & 255); _zew_acc = 0; _zew_nbits = 0; }
+    return 0;
+}
+
+# Length-limited (<= `limit`) Huffman code lengths from _ze_cnt into
+# _ze_nb[0..maxsym]. Returns maxbits, or -1 if < 2 symbols present.
+fn _ze_huff_lengths(maxsym, limit) {
+    var m = 0;
+    var s = 0;
+    while (s <= maxsym) {
+        store64(_ze_nb + s * 8, 0);
+        if (load64(_ze_cnt + s * 8) > 0) {
+            store64(_ze_hsym + m * 8, s);
+            store64(_ze_hw + m * 8, load64(_ze_cnt + s * 8));
+            store64(_ze_hp + m * 8, 0 - 1);
+            store64(_ze_ha + m * 8, m);
+            m = m + 1;
+        }
+        s = s + 1;
+    }
+    if (m < 2) { return 0 - 1; }
+    var nnodes = m;
+    var na = m;
+    while (na > 1) {
+        # i1 = min-weight active, i2 = min among the rest
+        var i1 = 0; var k = 1;
+        while (k < na) {
+            if (load64(_ze_hw + load64(_ze_ha + k * 8) * 8) < load64(_ze_hw + load64(_ze_ha + i1 * 8) * 8)) { i1 = k; }
+            k = k + 1;
+        }
+        var i2 = 0 - 1; k = 0;
+        while (k < na) {
+            if (k != i1) {
+                var wk = load64(_ze_hw + load64(_ze_ha + k * 8) * 8);
+                if (i2 == (0 - 1) || wk < load64(_ze_hw + load64(_ze_ha + i2 * 8) * 8)) { i2 = k; }
+            }
+            k = k + 1;
+        }
+        var a1 = load64(_ze_ha + i1 * 8);
+        var a2 = load64(_ze_ha + i2 * 8);
+        var idx = nnodes;
+        store64(_ze_hw + idx * 8, load64(_ze_hw + a1 * 8) + load64(_ze_hw + a2 * 8));
+        store64(_ze_hp + idx * 8, 0 - 1);
+        store64(_ze_hp + a1 * 8, idx);
+        store64(_ze_hp + a2 * 8, idx);
+        nnodes = nnodes + 1;
+        store64(_ze_ha + i1 * 8, idx);
+        store64(_ze_ha + i2 * 8, load64(_ze_ha + (na - 1) * 8));
+        na = na - 1;
+    }
+    var maxb = 0;
+    var i = 0;
+    while (i < m) {
+        var d = 0; var x = i;
+        while (load64(_ze_hp + x * 8) != (0 - 1)) { x = load64(_ze_hp + x * 8); d = d + 1; }
+        store64(_ze_nb + load64(_ze_hsym + i * 8) * 8, d);
+        if (d > maxb) { maxb = d; }
+        i = i + 1;
+    }
+    if (maxb <= limit) { return maxb; }
+
+    # Length-limit: fold lengths > limit into `limit`, then lengthen codes
+    # (Kraft-preserving) until the Kraft sum equals 2^limit. Histogram in _ze_ha.
+    var h = 0;
+    while (h <= limit + 1) { store64(_ze_ha + h * 8, 0); h = h + 1; }
+    i = 0;
+    while (i < m) {
+        var ln = load64(_ze_nb + load64(_ze_hsym + i * 8) * 8);
+        if (ln > limit) { ln = limit; }
+        store64(_ze_ha + ln * 8, load64(_ze_ha + ln * 8) + 1);
+        i = i + 1;
+    }
+    var target = 1 << limit;
+    var kk = 0;
+    var ln2 = 1;
+    while (ln2 <= limit) { kk = kk + (load64(_ze_ha + ln2 * 8) << (limit - ln2)); ln2 = ln2 + 1; }
+    # Kraft-exact repair (zlib gen_bitlen): while over-complete, demote one leaf
+    # at the deepest length < limit into an internal node (two leaves one deeper)
+    # and drop one leaf from `limit`. Net Kraft change is exactly -1 per step, so
+    # it converges to target with NO overshoot (an incomplete code is what
+    # reference zstd rejects).
+    while (kk > target) {
+        var bits = limit - 1;
+        while (bits >= 1 && load64(_ze_ha + bits * 8) == 0) { bits = bits - 1; }
+        store64(_ze_ha + bits * 8, load64(_ze_ha + bits * 8) - 1);
+        store64(_ze_ha + (bits + 1) * 8, load64(_ze_ha + (bits + 1) * 8) + 2);
+        store64(_ze_ha + limit * 8, load64(_ze_ha + limit * 8) - 1);
+        kk = kk - 1;
+    }
+    # Reassign lengths to symbols: most frequent -> shortest. Selection over
+    # present symbols by count, filling the histogram shortest-first.
+    var done[256];   # 256 bytes, one flag per present index (m <= 256)
+    i = 0;
+    while (i < m) { store8(&done + i, 0); i = i + 1; }
+    var lvl = 1;
+    while (lvl <= limit) {
+        var cntlvl = load64(_ze_ha + lvl * 8);
+        var t = 0;
+        while (t < cntlvl) {
+            # pick the highest-count not-yet-assigned present symbol
+            var best = 0 - 1;
+            var j = 0;
+            while (j < m) {
+                if (load8(&done + j) == 0) {
+                    if (best == (0 - 1) || load64(_ze_hw + j * 8) > load64(_ze_hw + best * 8)) { best = j; }
+                }
+                j = j + 1;
+            }
+            store64(_ze_nb + load64(_ze_hsym + best * 8) * 8, lvl);
+            store8(&done + best, 1);
+            t = t + 1;
+        }
+        lvl = lvl + 1;
+    }
+    # actual maxbits = deepest length still populated after the repair
+    var mb = limit;
+    while (mb >= 1 && load64(_ze_ha + mb * 8) == 0) { mb = mb - 1; }
+    return mb;
+}
+
+# Given _ze_nb (lengths) + maxbits, compute weights (_ze_wt) and canonical
+# codes (_ze_code) by replaying the decoder's _z_huff_build assignment order
+# (weight ascending, symbol index ascending, 2^(w-1) table slots each).
+fn _ze_huff_codes(maxsym, maxbits) {
+    var s = 0;
+    while (s <= maxsym) {
+        var nb = load64(_ze_nb + s * 8);
+        if (nb > 0) { store64(_ze_wt + s * 8, maxbits + 1 - nb); }
+        else { store64(_ze_wt + s * 8, 0); }
+        s = s + 1;
+    }
+    var pos = 0;
+    var w = 1;
+    while (w <= maxbits) {
+        var nb = maxbits + 1 - w;
+        var sy = 0;
+        while (sy <= maxsym) {
+            if (load64(_ze_wt + sy * 8) == w) {
+                store64(_ze_code + sy * 8, pos >> (w - 1));   # nb-bit canonical code
+                pos = pos + (1 << (w - 1));
+            }
+            sy = sy + 1;
+        }
+        w = w + 1;
+    }
+    return 0;
+}
+
+# Try to build a single-stream Huffman Compressed-block *content* (literals
+# section + 0-sequences byte) for src[0..n) into _ze_tmp. Returns the content
+# length if it applies and beats raw, else -1 (caller falls back to store).
+fn _ze_try_huff_block(src, n) {
+    if (n < 8 || n > 1023) { return 0 - 1; }   # single-stream regen limit
+    _ze_huff_alloc();
+    var s = 0;
+    while (s < 256) { store64(_ze_cnt + s * 8, 0); s = s + 1; }
+    var i = 0;
+    var maxsym = 0;
+    while (i < n) {
+        var c = load8(src + i) & 255;
+        store64(_ze_cnt + c * 8, load64(_ze_cnt + c * 8) + 1);
+        if (c > maxsym) { maxsym = c; }
+        i = i + 1;
+    }
+    if (maxsym < 1) { return 0 - 1; }   # single distinct byte -> RLE handles it
+    var maxbits = _ze_huff_lengths(maxsym, 11);
+    if (maxbits < 0) { return 0 - 1; }
+    _ze_huff_codes(maxsym, maxbits);
+
+    # Build content into _ze_tmp via the _ze_put writer redirected there.
+    var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
+    _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 4096; _ze_err = 0;
+
+    _ze_op = 3;   # reserve the 3-byte literals-section header
+    # Huffman_Tree_Description: direct weights for symbols 0..maxsym-1
+    # (symbol maxsym's weight is implicit). header byte = 127 + maxsym.
+    _ze_put(127 + maxsym);
+    var j = 0;
+    while (j < maxsym) {
+        var hi = load64(_ze_wt + j * 8);
+        var lo = 0;
+        if (j + 1 < maxsym) { lo = load64(_ze_wt + (j + 1) * 8); }
+        _ze_put((hi << 4) | lo);
+        j = j + 2;
+    }
+    var tree_bytes = _ze_op - 3;
+    # single Huffman stream: emit literals in REVERSE order, then the marker.
+    _zew_reset();
+    var q = n - 1;
+    while (q >= 0) {
+        var sym = load8(src + q) & 255;
+        _zew_add(load64(_ze_code + sym * 8), load64(_ze_nb + sym * 8));
+        q = q - 1;
+    }
+    _zew_close();
+    var comp = _ze_op - 3;
+    var regen = n;
+    var content = 0;
+    if (comp <= 1023 && _ze_err == 0) {
+        # backpatch the sizefmt-0 header (3 bytes LE): ltype=2, sizefmt=0.
+        var v = 2 | (regen << 4) | (comp << 14);
+        store8(_ze_tmp + 0, v & 255);
+        store8(_ze_tmp + 1, (v >> 8) & 255);
+        store8(_ze_tmp + 2, (v >> 16) & 255);
+        _ze_put(0);              # sequences section: 0 sequences
+        content = _ze_op;
+    } else {
+        content = 0 - 1;
+    }
+    _ze_out = save_out; _ze_op = save_op; _ze_cap = save_cap; _ze_err = save_err;
+    if (content < 0) { return 0 - 1; }
+    if (content >= n) { return 0 - 1; }   # not beneficial vs a raw block
+    return content;
+}
+
+# Public: compress src -> a .zst frame (Huffman-literal Compressed blocks for
+# small blocks; Raw / RLE store-mode otherwise). Returns the frame byte
+# length, or a negative error. Lock-free (see above).
 fn zstd_compress(src, src_len, dst, dst_cap) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _ze_out = dst; _ze_op = 0; _ze_cap = dst_cap; _ze_err = 0;
@@ -10568,9 +10836,17 @@ fn zstd_compress(src, src_len, dst, dst_cap) {
                 _ze_block_header(last, 1, chunk);   # RLE: 1 content byte
                 _ze_put(first);
             } else {
-                _ze_block_header(last, 0, chunk);   # Raw: verbatim bytes
-                var i = 0;
-                while (i < chunk) { _ze_put(load8(src + pos + i) & 255); i = i + 1; }
+                # Try a Huffman-literal Compressed block; fall back to Raw.
+                var hc = _ze_try_huff_block(src + pos, chunk);
+                if (hc > 0) {
+                    _ze_block_header(last, 2, hc);   # Compressed
+                    var t = 0;
+                    while (t < hc) { _ze_put(load8(_ze_tmp + t) & 255); t = t + 1; }
+                } else {
+                    _ze_block_header(last, 0, chunk);   # Raw: verbatim bytes
+                    var i = 0;
+                    while (i < chunk) { _ze_put(load8(src + pos + i) & 255); i = i + 1; }
+                }
             }
             pos = pos + chunk;
         }

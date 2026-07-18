@@ -25,9 +25,13 @@ head -c 100000 /dev/zero                        > "$WORK/zeros.bin"       # -> R
 yes 'AGNOS-the-sovereign-operating-system-0123' | head -c 300000 > "$WORK/repeat.bin"
 head -c 131072 "$WORK/text.bin" 2>/dev/null | cat > "$WORK/blk128.bin" || true
 head -c 131073 /dev/zero                        > "$WORK/blk128p1.bin"    # 128 KiB + 1 (2 blocks)
+# small compressible inputs (<= 1023) exercise the Huffman-literal Compressed block:
+yes 'the quick brown fox jumps over the lazy dog ' | head -c 900 > "$WORK/htext.bin"
+yes '{"key":"value","num":1234},'                  | head -c 800 > "$WORK/hjson.bin"
+awk 'BEGIN{a=1;b=1;for(s=0;s<14;s++){for(i=0;i<a;i++)printf "%c",65+s;t=a+b;a=b;b=t}}' > "$WORK/hfib.bin"   # deep tree -> length limiter
 
 rc=0; total=0; pass=0
-for f in empty tiny text rand zeros repeat blk128 blk128p1; do
+for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib; do
     src="$WORK/$f.bin"
     [ -f "$src" ] || continue
     total=$((total + 1))
@@ -44,5 +48,5 @@ done
 
 echo ""
 echo "  $pass/$total cases: sankoch-encoded frame decoded byte-identical by reference zstd -d"
-[ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store mode)" || echo "zstd-encode-smoke: FAIL"
+[ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store + Huffman-literal blocks)" || echo "zstd-encode-smoke: FAIL"
 exit $rc

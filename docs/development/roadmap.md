@@ -49,31 +49,37 @@ Primitive reference: Duda, "Asymmetric Numeral Systems" (arXiv:1311.2540);
 shravan's Opus range encoder (`opus.cyr:175-284`) is the entropy-coding
 cousin. Sequenced as small bites:
 
-- **Bite 1 — frame + Raw/RLE blocks (store mode) — 🟡 in progress (foundation landed, uncommitted).**
+- **Bite 1 — frame + Raw/RLE blocks (store mode) — ✅ committed.**
   `zstd_compress` emits valid single_segment RFC-8878 frames with Raw
-  (verbatim) + RLE (single repeated byte) blocks, block chunking at the
-  128 KiB `Block_Maximum_Size`, and the frame-content-size flag arithmetic
-  mirrored from the decoder. Wired into `compress`/`_compress_inner`
-  dispatch. Lock-free + self-contained (no runtime dep — `[lib.zstd]`
-  profile still closes). **Verified**: `tests/tcyr/zstd_compress.tcyr`
-  round-trip (encode → `zstd_decompress`, CI-gated) + `scripts/zstd-encode-smoke.sh`
-  (8/8 byte-identical through reference `zstd -d` v1.5.7: empty / tiny /
-  text / rand / zeros / repeat / 128 KiB / 128 KiB+1). Store mode does not
-  yet compress general data (only runs → RLE) — that is the compressed path
-  below.
-- **Bite 2 — Compressed block, Huffman literals (0 sequences).** Build the
-  canonical literals Huffman tree (maxbits 11), emit the weight table +
-  1-/4-stream bitstream + literals-section header; sequences count 0.
-  First real entropy compression (text). Validate vs `zstd -d`.
-- **Bite 3 — FSE sequences (predefined tables).** LZ77 match-find (reuse
-  the in-tree finder) → LL/OF/ML sequences, FSE-coded in Predefined mode
-  (no table description). Full LZ77 + entropy compression.
+  (verbatim) + RLE (single repeated byte) blocks, 128 KiB block chunking,
+  frame-content-size flag arithmetic mirrored from the decoder. Wired into
+  `compress`/`_compress_inner`. Lock-free + self-contained (no runtime dep —
+  `[lib.zstd]` profile still closes). Verified: `tests/tcyr/zstd_compress.tcyr`
+  + `scripts/zstd-encode-smoke.sh` (reference `zstd -d` v1.5.7).
+- **Bite 2 — Compressed block, single-stream Huffman literals (0 sequences) — 🟡 done, uncommitted.**
+  Length-limited (≤ 11-bit) canonical Huffman whose assignment matches the
+  decoder's `_z_huff_build`; direct weight table + backward single-stream
+  bitstream (symbols emitted in reverse, marker-topped) + `sizefmt`-0
+  literals header + 0-sequences byte. Applied to non-constant blocks ≤ 1023
+  bytes when it beats raw; larger blocks still store. First real entropy
+  compression — text ~30-50 % smaller. **Verified**: extended tcyr round-trip
+  (incl. a Fibonacci input that forces the length-limiter) + reference `zstd
+  -d` on the smoke battery **and an 80/80 random-skewed fuzz**, all
+  byte-identical. (Found + fixed a length-limiter overshoot: the Kraft repair
+  must be the exact zlib `gen_bitlen` demotion, or reference zstd rejects the
+  incomplete code — sankoch's own decoder was too lenient to catch it.)
+- **Bite 3 — 4-stream Huffman literals (regen > 1023) + FSE sequences
+  (predefined tables).** 4-stream literals (jump table) so full 128 KiB
+  blocks compress; then LZ77 match-find (reuse the in-tree finder) → LL/OF/ML
+  sequences, FSE-coded in Predefined mode. Full LZ77 + entropy compression.
+  **2.5.5 is release-able once this lands** (general data compresses).
 - **Bite 4 — FSE-compressed literal weights + custom seq tables + a level
   knob + `bench` ratio line + CI wiring** (add the encode-smoke to CI).
 
 No wire-format SIZE gate (zstd output isn't bit-reproducible across encoder
-versions). **Not shipped as a release until at least Bite 3 lands** (a
-store-mode-only `zstd_compress` doesn't compress general data).
+versions). **Not shipped as a release until Bite 3 lands** — Bites 1-2 only
+compress runs (RLE) and small blocks (single-stream Huffman); general data
+still stores.
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 
