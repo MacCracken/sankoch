@@ -79,11 +79,21 @@ cousin. Sequenced as small bites:
   sizes 100 B–180 KB and alphabets 2–250, all byte-identical. (Caught + fixed:
   the direct-weight header byte `127 + maxsym` overflows for maxsym > 128 —
   reference rejected a source file containing a UTF-8 byte; guard added.)
-- **Bite 3b — FSE sequences (predefined tables).** LZ77 match-find (reuse the
-  in-tree finder) → LL/OF/ML sequences, FSE-coded in Predefined mode (no table
-  description). This adds the LZ77 match compression on top of the entropy
-  coding (Bites 1-3a are entropy-only). **2.5.5 is release-able once this
-  lands** (compression competitive with `zstd`, not just Huffman).
+- **Bite 3b-1 — self-contained LZ77 match finder → sequences — 🟡 done, uncommitted (scaffolding, unwired).**
+  A greedy hash-chain matcher (own hash + chain in `zstd.cyr`, since `[lib.zstd]`
+  can't pull in `lz77.cyr`) parses input into zstd sequences (`_zs_ll` / `_zs_ml`
+  / `_zs_off` + concatenated literals `_zs_lit`), offsets emitted as literal
+  offsets (`offset_value = offset + 3`). **Verified in isolation** by
+  `_ze_lz_reconstruct` (byte-exact reconstruction: 97-99 % matched on periodic
+  text, 0 % on random). Not yet wired into `zstd_compress` — it feeds the FSE
+  emitter below.
+- **Bite 3b-2 — FSE sequence encoder + framing.** The hard part: build the FSE
+  **encoding** tables (`buildCTable`) for LL/OF/ML in Predefined mode, encode
+  the 3 interleaved states **backward** (mirroring the decoder's read order in
+  reverse), emit the sequences-section header (nbSeq + modes) + bitstream, and
+  wire the Huffman-literals block to carry these sequences. Validate vs
+  `zstd -d`. **2.5.5 is release-able once this lands** (LZ77 + entropy, not just
+  Huffman).
 - **Bite 4 — FSE-compressed literal weights (wide alphabets) + custom seq
   tables + a level knob + `bench` ratio line + CI wiring** (add the
   encode-smoke to CI).

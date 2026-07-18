@@ -1154,6 +1154,120 @@ fn _ze_try_huff_block(src, n) {
     return content;
 }
 
+# ---- LZ77 match finder + sequence generation (2.5.5 bite 3b) -------------
+# Self-contained greedy hash-chain matcher (the [lib.zstd] profile can't pull
+# in lz77.cyr). Produces zstd sequences (literal_length, match_length, offset)
+# into _zs_ll / _zs_ml / _zs_off, with the concatenated literals in _zs_lit.
+# Offsets are emitted as literal offsets (offset_value = offset + 3); the
+# repeat-offset codes are a later optimization.
+var _zs_ll = 0; var _zs_ml = 0; var _zs_off = 0;   # i64 sequence arrays
+var _zs_lit = 0; var _zs_litlen = 0;               # concatenated literals
+var _zs_nseq = 0;
+var _ze_head = 0;   # hash head table (1 << ZE_HLOG)
+var _ze_prev = 0;   # chain: prev occurrence, indexed by pos & (WINDOW-1)
+
+fn _ze_lz_alloc() {
+    if (_ze_head != 0) { return 0; }
+    _zs_ll = alloc(140000 * 8); _zs_ml = alloc(140000 * 8); _zs_off = alloc(140000 * 8);
+    _zs_lit = alloc(140000);
+    _ze_head = alloc((1 << 16) * 8);     # 65536 hash buckets
+    _ze_prev = alloc(140000 * 8);        # per-position chain
+    return 0;
+}
+
+fn _ze_hash4(src, pos) {
+    var v = load8(src + pos) | (load8(src + pos + 1) << 8)
+    | (load8(src + pos + 2) << 16) | (load8(src + pos + 3) << 24);
+    return ((v * 2654435761) >> 16) & 0xFFFF;    # 16-bit hash
+}
+
+# Greedy LZ parse of src[0..n) into sequences. MINMATCH 3, offset >= 1.
+# Returns the sequence count; sets _zs_litlen (concatenated literals) and the
+# trailing-literal count is (n - covered) captured as _zs_lastlit.
+var _zs_lastll = 0;
+fn _ze_lz_parse(src, n) {
+    _ze_lz_alloc();
+    var h = 0;
+    while (h < (1 << 16)) { store64(_ze_head + h * 8, 0 - 1); h = h + 1; }
+    var nseq = 0;
+    var lp = 0;                 # literals written into _zs_lit
+    var litstart = 0;
+    var pos = 0;
+    var chain_max = 32;
+    while (pos + 4 <= n) {
+        var hv = _ze_hash4(src, pos);
+        var cand = load64(_ze_head + hv * 8);
+        var best_len = 0; var best_off = 0;
+        var depth = 0;
+        while (cand >= 0 && depth < chain_max) {
+            var off = pos - cand;
+            if (off <= 0) { cand = 0 - 1; }
+            else {
+                # extend the match
+                var l = 0;
+                var lim = n - pos;
+                while (l < lim && load8(src + cand + l) == load8(src + pos + l)) { l = l + 1; }
+                if (l > best_len) { best_len = l; best_off = off; }
+                cand = load64(_ze_prev + (cand & 131071) * 8);
+            }
+            depth = depth + 1;
+        }
+        store64(_ze_prev + (pos & 131071) * 8, load64(_ze_head + hv * 8));
+        store64(_ze_head + hv * 8, pos);
+        if (best_len >= 3) {
+            var ll = pos - litstart;
+            var k = 0;
+            while (k < ll) { store8(_zs_lit + lp, load8(src + litstart + k)); lp = lp + 1; k = k + 1; }
+            store64(_zs_ll + nseq * 8, ll);
+            store64(_zs_ml + nseq * 8, best_len);
+            store64(_zs_off + nseq * 8, best_off);
+            nseq = nseq + 1;
+            # insert the covered positions into the hash (greedy skip)
+            var q = pos + 1;
+            var pend = pos + best_len;
+            while (q < pend && q + 4 <= n) {
+                var hv2 = _ze_hash4(src, q);
+                store64(_ze_prev + (q & 131071) * 8, load64(_ze_head + hv2 * 8));
+                store64(_ze_head + hv2 * 8, q);
+                q = q + 1;
+            }
+            pos = pos + best_len;
+            litstart = pos;
+        } else {
+            pos = pos + 1;
+        }
+    }
+    # trailing literals (litstart..n)
+    var t = litstart;
+    while (t < n) { store8(_zs_lit + lp, load8(src + t)); lp = lp + 1; t = t + 1; }
+    _zs_litlen = lp;
+    _zs_lastll = n - litstart;    # trailing literal length (after the last match)
+    _zs_nseq = nseq;
+    return nseq;
+}
+
+# Self-check: reconstruct src[0..n) from the parsed sequences + literals into
+# `out`. Returns the reconstructed length (must == n). No zstd framing — this
+# validates the match finder / sequence logic in isolation.
+fn _ze_lz_reconstruct(out) {
+    var op = 0;
+    var lp = 0;
+    var i = 0;
+    while (i < _zs_nseq) {
+        var ll = load64(_zs_ll + i * 8);
+        var k = 0;
+        while (k < ll) { store8(out + op, load8(_zs_lit + lp)); op = op + 1; lp = lp + 1; k = k + 1; }
+        var ml = load64(_zs_ml + i * 8);
+        var off = load64(_zs_off + i * 8);
+        var mbase = op - off;
+        var m = 0;
+        while (m < ml) { store8(out + op, load8(out + mbase + m)); op = op + 1; m = m + 1; }
+        i = i + 1;
+    }
+    while (lp < _zs_litlen) { store8(out + op, load8(_zs_lit + lp)); op = op + 1; lp = lp + 1; }
+    return op;
+}
+
 # Public: compress src -> a .zst frame (Huffman-literal Compressed blocks for
 # small blocks; Raw / RLE store-mode otherwise). Returns the frame byte
 # length, or a negative error. Lock-free (see above).
