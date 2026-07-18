@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.4.6) | **Last Updated**: 2026-06-25
+> **Status**: Stable (v2.5.2) | **Last Updated**: 2026-07-18
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — backlog, deferred items, known limitations, and the
@@ -141,7 +141,7 @@ the +1 `ERR_RATIO_LIMIT` enum line having landed at 2.4.5).
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; pin is 6.2.44).
+ship with Cyrius ≥ 6.0.1; pin is 6.4.66).
 
 ## Key References
 
@@ -158,4 +158,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.2.44).
 
 ---
 
-*Last Updated: 2026-06-25 (2.4.6 cut — streaming ratio cap shipped. Next: xz/bzip2 ratio-cap follow-on, or the Future bucket.)*
+*Last Updated: 2026-07-18 (2.5.2 cut — toolchain pin refresh to Cyrius 6.4.66; no source change. Next: xz/bzip2 ratio-cap follow-on, or the Future bucket.)*

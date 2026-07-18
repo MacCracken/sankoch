@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.2] — 2026-07-18 — toolchain pin refresh (Cyrius 6.4.66)
+
+Maintenance release: tracks the current Cyrius toolchain. **No source, API, or wire-format
+changes** — every codec's output is byte-identical to 2.5.1, and the 43-line SIZE wire-format
+gate is unchanged.
+
+### Changed
+- **Toolchain pin 6.4.43 → 6.4.66** (latest), so the bundle folds cleanly into the current
+  Cyrius stdlib and clears the pin-vs-`cycc` drift warning. `cyrius deps` re-resolved the
+  stdlib snapshot (`syscalls` / `string` / `alloc` / `fmt` / `vec` / `fnptr` / `thread` /
+  `assert`) — no stdlib API changes surfaced. All gates green on 6.4.66: `lint` / `fmt` /
+  `vet` (25 deps, 0 untrusted, 0 missing) clean; all tcyr suites (234 functions, 4,483,834
+  assertions) and all fuzz harnesses (3,929 iterations) pass; the aarch64 cross-build and the
+  kernel-safe tripwire (`programs/core_smoke.cyr`) hold.
+- Regenerated the committed distlib bundles (`dist/sankoch.cyr`, `dist/sankoch-core.cyr`,
+  `dist/sankoch-zlib.cyr`) — version-header line only; module content byte-identical.
+
 ## [2.5.1] — 2026-07-10 — per-codec distlib profiles
 
 Organizes the distribution bundles by codec, so a consumer that needs only one archive envelope

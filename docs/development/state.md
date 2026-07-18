@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-06-25 (v2.4.6 cut — streaming ratio cap `*_dec_init_capped` extends the 2.4.5 batch zip-bomb defense to the incremental decode path) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-07-18 (v2.5.2 cut — toolchain pin refresh to Cyrius 6.4.66; no source/API/wire-format change) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,14 +14,14 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.5.1` — single source of truth (2.5.1 = per-codec distlib profiles: `[lib.zstd]` 782L / `[lib.bzip2]` / `[lib.xz]` / `[lib.gzip]` / `[lib.tar]`, so a consumer pulls one codec's closure not the whole lib; 2.5.0 = sovereign `zstd.cyr` decoder [40/40 vs reference zstd v1.5.7] + shared `tar.cyr` cursor)
-- **`cyrius.cyml [package].cyrius`**: `6.4.43` — toolchain pin (bumped from 6.3.18 at 2.5.0 to fold into the current stdlib)
-- **Tag**: `2.5.1` (bare semver, no `v` prefix)
-- **Released**: 2026-07-10
+- **`VERSION`**: `2.5.2` — single source of truth (2.5.2 = toolchain pin refresh to Cyrius 6.4.66, no source/API/wire-format change; 2.5.1 = per-codec distlib profiles: `[lib.zstd]` / `[lib.bzip2]` / `[lib.xz]` / `[lib.gzip]` / `[lib.tar]`, so a consumer pulls one codec's closure not the whole lib; 2.5.0 = sovereign `zstd.cyr` decoder [40/40 vs reference zstd v1.5.7] + shared `tar.cyr` cursor)
+- **`cyrius.cyml [package].cyrius`**: `6.4.66` — toolchain pin (bumped from 6.4.43 at 2.5.2; clears the pin-vs-`cycc` drift warning, re-resolves the current stdlib snapshot)
+- **Tag**: `2.5.2` (bare semver, no `v` prefix)
+- **Released**: 2026-07-18
 
 ## Distribution
 
-- **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius 6.2.x toolchain releases (full profile).
+- **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius 6.4.x toolchain releases (full profile).
 - **Kernel-safe subset**: `lib/sankoch-core.cyr` ships alongside since the 2.1.2 cut (LZ4 batch decompress only; no alloc / no syscalls / no mutex).
 - **Consumers import via**: `include "lib/sankoch.cyr"` — no separate `[deps]` declaration in their `cyrius.cyml`.
 - **Stdlib fold-in**: folded into the Cyrius stdlib since 2.0.2 (Cyrius 5.6.34); tracks the toolchain pin in `cyrius.cyml`. Per-version fold-in chronology lives in `CHANGELOG.md`.
@@ -70,7 +70,7 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 | `dist/sankoch-core.cyr`      |   316 | Kernel-safe LZ4 batch decompress only (AGNOS initrd); +1 line at 2.4.5 (the `ERR_RATIO_LIMIT` enum constant in the core `types.cyr`) |
 | `dist/sankoch-zlib.cyr`      | ~4,900 | **2.4.9** — DEFLATE/zlib-only (`zlib_compress`/`zlib_decompress` + closure), drops LZ4/gzip/xz/bzip2/streaming. **53 initialised globals vs the full 175** so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). `cyrius distlib zlib`; runtime helpers via the extracted `src/runtime.cyr` |
 
-All zero deps. Regenerated via `cyrius distlib`, `cyrius distlib zlib`, and `cyrius distlib core` at every release. CI gates on drift. (Note: bumped to **2.5.0** [+ `zstd.cyr` decoder + `tar.cyr` cursor]; other rows carry stale pre-2.4.7 figures pending a full state refresh — planned for the 2.5.1 distlib reorg.)
+All zero deps. Regenerated via `cyrius distlib`, `cyrius distlib zlib`, and `cyrius distlib core` at every release. CI gates on drift. (Note: bumped to **2.5.0** [+ `zstd.cyr` decoder + `tar.cyr` cursor]; other rows carry stale pre-2.4.7 figures pending a full state refresh — still outstanding after the 2.5.x distlib reorg; next P(-1) closeout should re-count source lines + dist sizes.)
 
 ## In-flight slots
 
@@ -106,7 +106,7 @@ none scheduled:
 
 ## CI / release gates
 
-- **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (22 deps, 0 untrusted, 0 missing).
+- **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (25 deps, 0 untrusted, 0 missing).
 - **Tests**: all tcyr suites green (18 split codec×direction suites + `ratio_cap` + `git_object`, auto-discovered by the CI Test loop); all 21 fuzz harness functions green.
 - **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The **xz and bzip2 encoders** (2.4.1 / 2.4.3) are **deliberately excluded** from this gate — they ship informational ratio lines in `bench` instead, as does the 2.4.5 ratio-cap section.
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
@@ -121,6 +121,12 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.5.2  | 2026-07-18 | Toolchain pin refresh → Cyrius 6.4.66 (maintenance; no source/API/wire-format change) |
+| 2.5.1  | 2026-07-10 | Per-codec distlib profiles (`[lib.zstd]` / `[lib.bzip2]` / `[lib.xz]` / `[lib.gzip]` / `[lib.tar]`) — pull one codec's closure, not the whole lib |
+| 2.5.0  | 2026-07-10 | Sovereign zstd decode (`zstd.cyr`, 40/40 vs reference zstd v1.5.7) + shared `tar.cyr` cursor + pin → 6.4.43 |
+| 2.4.9  | 2026-07-03 | `[lib.zlib]` distlib profile (`dist/sankoch-zlib.cyr`) + shared `runtime.cyr` seam extraction |
+| 2.4.8  | 2026-07-01 | Undersized-array stack-smash sweep (cyrius 6.3.13+ stack-allocated locals) + pin → 6.3.18 |
+| 2.4.7  | 2026-06-30 | bzip2 undersized-array stack-smash fix (cyrius 6.3.13+ stack-allocated locals) |
 | 2.4.6  | 2026-06-25 | Streaming ratio cap (`*_dec_init_capped`) — incremental zip-bomb defense extending 2.4.5 to the streaming decode path |
 | 2.4.5  | 2026-06-25 | Ratio-capped decompression (`*_with_ratio_cap`; `ERR_RATIO_LIMIT`; sit zip-bomb defense) + cyrius pin → 6.2.44 |
 | 2.4.4  | 2026-06-18 | AGNOS-compatible lock primitives (`_sankoch_lock` / `_unlock` no-op under `CYRIUS_TARGET_AGNOS`; surfaced by kii) |

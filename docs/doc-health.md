@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-06-25 (v2.4.6 cut — streaming ratio cap `*_dec_init_capped` extends the 2.4.5 batch zip-bomb defense to the incremental decode path) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-07-18 (v2.5.2 cut — toolchain pin refresh to Cyrius 6.4.66; VERSION / cyrius.cyml / CHANGELOG / state / roadmap / SECURITY rows bumped) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -52,14 +52,14 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-06-25 | ✅ Fresh | Current through 2.4.6: ratio-cap API subsection (batch `*_with_ratio_cap` + streaming `*_dec_init_capped`); Architecture table rows note ratio-cap on deflate/zlib/gzip + the agnos lock no-op on lib. Defers all volatile line / test / assertion / distlib counts to state.md (no inlined figures). |
-| `CHANGELOG.md` | 2026-06-25 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.4.6] — 2026-06-25` (streaming ratio cap `*_dec_init_capped`); `[2.4.5]` batch ratio cap + pin → 6.2.44; `[2.4.4]` agnos-lock. Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
+| `CHANGELOG.md` | 2026-07-18 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.5.2] — 2026-07-18` (toolchain pin refresh → 6.4.66; no source/API change); `[2.5.1]` per-codec distlib profiles; `[2.5.0]` sovereign zstd + tar cursor + pin → 6.4.43. Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-05-23 | ✅ Fresh | **Restructured 2026-05-23**: volatile state extracted to `docs/development/state.md`; durable rules retained. Broken standards link fixed (`applications/` → `first-party/`). Stale `cc5` refs updated. Now matches example_claude.md shape. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
-| `SECURITY.md` | 2026-05-23 | ✅ Fresh | Supported Versions table updated for 2.3.x; audit list extended through 2026-05-23-pre-2.3.0-redux. |
+| `SECURITY.md` | 2026-07-18 | ✅ Fresh | Supported Versions table refreshed to 2.5.x at the 2.5.2 cut (was stale at 2.3.x). Audit list unchanged (next periodic audit still pending — 2.4.x P(-1) closeout). |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-06-25 | ✅ Fresh | `2.4.6`. Single source of truth per the standards. |
-| `cyrius.cyml` | 2026-06-25 | ✅ Fresh | Toolchain pin `cyrius = "6.2.44"` (bumped from 6.2.15 in 2.4.5; `cyrius deps` re-resolved, all gates clean on the new toolchain). |
+| `VERSION` | 2026-07-18 | ✅ Fresh | `2.5.2`. Single source of truth per the standards. |
+| `cyrius.cyml` | 2026-07-18 | ✅ Fresh | Toolchain pin `cyrius = "6.4.66"` (bumped from 6.4.43 in 2.5.2; `cyrius deps` re-resolved, all gates clean on the new toolchain). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
 ---
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-06-25 | ✅ Fresh | **2.4.6 shipped — streaming ratio cap `*_dec_init_capped`** atop the 2.4.5 batch cap; sit zip-bomb item closed (batch + streaming). **Forward-ladder cleanup 2026-06-25**: removed the completed ✅ sections (xz/bzip2 codecs, ratio cap — now in CHANGELOG); consolidated open follow-ons into a Backlog section; added a Known-limitations/non-goals section. File Summary refreshed (deflate 2,540 / zlib 485 / gzip 638; total 10,078). |
-| `state.md` | 2026-06-25 | ✅ Fresh | Refreshed for 2.4.6. Version 2.4.6, pin 6.2.44, no committed in-flight slot. Source 10,078 / 16 modules; tests 234 fns / 4,483,834 asserts; fuzz 3,929 / 4 files; dist 10,056 + 316. |
+| `roadmap.md` | 2026-07-18 | ✅ Fresh | Status header (→ Stable v2.5.2) + Dependencies pin refreshed to 6.4.66 — the Dependencies line had drifted to a stale `6.2.44` (two pin bumps behind: real prior pins were 6.3.18 @2.4.8, 6.4.43 @2.5.0). Backlog unchanged (xz/bzip2 ratio-cap follow-on; encoder throughput). File Summary still at the 2.4.6 figures (deflate 2,540 / zlib 485 / gzip 638; total 10,078) — pre-zstd/tar; a full source-line re-count is the 2.5.x state-refresh debt tracked in state.md. |
+| `state.md` | 2026-07-18 | ✅ Fresh | Version/pin/date fields refreshed for 2.5.2 (version 2.5.2, pin 6.4.66, released 2026-07-18, recent-releases table extended through 2.5.x, vet dep count 22→25). Test/fuzz totals re-measured on 6.4.66 and unchanged (234 fns / 4,483,834 asserts; 3,929 fuzz). Source-line + dist-size rows still carry the pre-2.4.7 figures pending a full state refresh (flagged in-file since 2.5.0). |
 | `issues/archived/2026-04-24-zlib-compress-2.0.2-partial-fix-2-remaining-inputs.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.3 cl-tree depth-cap fix. |
 | `issues/archived/2026-04-24-zlib-compress-non-roundtrip-on-tree-shaped-input.md` | 2026-04-24 | 📦 Archive | Resolved by 2.0.2 + 2.0.3 cl-tree depth-cap fixes. |
 

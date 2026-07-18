@@ -61,8 +61,8 @@ xz/bzip2 arc), per [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 | Version | Supported |
 |---------|-----------|
-| 2.3.x   | Yes       |
-| 2.2.x   | Security fixes only |
-| < 2.2.0 | No — upgrade |
+| 2.5.x   | Yes       |
+| 2.4.x   | Security fixes only |
+| < 2.4.0 | No — upgrade |
 
-**Last Updated**: 2026-05-23
+**Last Updated**: 2026-07-18
