@@ -18,6 +18,16 @@ release in [`VERSION`](VERSION)).
 | gzip            | `FORMAT_GZIP`    | ✓     | ✓         | `gunzip`               |
 | xz / LZMA2      | `FORMAT_XZ`      | ✓     | —         | `xz -dc` / `xz -d`     |
 | bzip2           | `FORMAT_BZIP2`   | ✓     | —         | `bzip2 -dc` / `bzip2 -d` |
+| zstd            | `FORMAT_ZSTD`    | ✓     | —         | `zstd` / `zstd -d`     |
+
+zstd is a **full codec** — decode (`zstd_decompress` / `FORMAT_ZSTD`,
+v2.5.0+) and encode (`zstd_compress` / `compress(FORMAT_ZSTD, …)`, v2.5.5+):
+a sovereign RFC-8878 implementation (own bit reader / FSE / Huffman, no
+runtime/mutex — the smallest self-contained profile). The encoder does LZ77
+(hash-chain matcher) + FSE-coded sequences + length-limited Huffman literals;
+its output decodes byte-identical via reference `zstd -d` v1.5.7. Compression
+is within a few percent of `zstd -1` on ASCII (competitiveness — FSE literal
+weights for wide alphabets, repeat offsets — is on the ladder for 2.5.6).
 
 bzip2 is a **full codec** — decode (`bzip2_decompress` / `FORMAT_BZIP2`,
 v2.4.2+) and encode (`bzip2_compress` / `compress(FORMAT_BZIP2, …)`,

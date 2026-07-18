@@ -1,18 +1,17 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.4) | **Last Updated**: 2026-07-18
+> **Status**: Stable (v2.5.5) | **Last Updated**: 2026-07-18
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
-limitations, and the longer-horizon Future bucket. The codec set through
-2.5.4 is complete — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2
-(de + compress, batch + streaming) + zstd decode + a shared tar cursor —
-with ratio-capped decompression across the DEFLATE family + xz + bzip2
-(2.5.3) and a retuned xz / bzip2 encoder (2.5.4, ~5× faster xz on text,
-output-identical). The scheduled ladder below continues that (2.5.5 zstd
-encode — completing the zstd codec) and opens a full-feature ZIP archive
-container arc (2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the
-rest of the surface across 2.6.1+).
+limitations, and the longer-horizon Future bucket. **Every codec now
+de+compresses** — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 / **zstd**
+(the sovereign zstd encoder completed the last codec at 2.5.5) — plus a
+shared tar cursor and ratio-capped decompression across the DEFLATE family
++ xz + bzip2. The scheduled ladder below finishes zstd-encode
+competitiveness (2.5.6) and opens a full-feature ZIP archive container arc
+(2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the rest across
+2.6.1+).
 
 ---
 
@@ -30,105 +29,35 @@ rest of the surface across 2.6.1+).
 > `best` pre-check); bzip2 ~5% on random (`% n` → conditional subtract in the
 > BWT sort + scalarized 6-group Huffman-cost accumulator).
 
-### 2.5.5 — zstd encode
+> **2.5.5 — sovereign zstd encoder — ✅ shipped 2026-07-18** (see CHANGELOG +
+> [`docs/benchmarks/2026-07-18-2.5.5-zstd-encode.md`](../benchmarks/2026-07-18-2.5.5-zstd-encode.md)).
+> `zstd_compress` — LZ77 (a self-contained hash-chain matcher, since `[lib.zstd]`
+> can't pull in `lz77.cyr`) + FSE sequences (Predefined tables; 3 interleaved
+> states encoded backward, order derived by reversing the decoder's read order)
+> + Huffman literals (length-limited canonical, single/4-stream) — completing
+> the codec that shipped decode-only at 2.5.0. Reference-`zstd -d`-validated
+> across hundreds of fuzz cases; ~2-17 % behind `zstd -1` (it *beats* `-1` on
+> repetitive / incompressible data). Built as bites 1 → 4a; **three spec bugs
+> caught by the reference decoder** (Huffman length-limiter overshoot fixed with
+> the exact zlib `gen_bitlen` repair; the direct-weight header-byte overflow for
+> maxsym > 128; a null-scratch SIGSEGV) — each a case where sankoch's own decoder
+> was lenient enough to round-trip an invalid stream.
 
-The sovereign Zstandard **encoder** (RFC 8878, compress side) — completes
-the codec that shipped decode-only at 2.5.0, and lands **before** the
-2.6.x ZIP arc so ZIP method 93 can be written, not just read. Reuses the
-in-tree LZ77 match-finder for sequence generation; adds the FSE + Huffman
-*encoders* (the decoder's predefined tables run in reverse) + block/frame
-construction (Raw / RLE / Compressed blocks, the recent-offset model).
-**Reference-CLI parity is the bar**: output must round-trip through
-reference `zstd -d` (v1.5.7 — the same text / random / repetitive /
-multi-block fixture set the 2.5.0 decoder was validated against, 40/40).
-One practical compression level to start (not the full `--ultra` parse);
-higher levels + dictionary training can follow. No wire-format SIZE gate
-(zstd output isn't bit-reproducible across encoder versions) — ships an
-informational ratio line in `bench` like the xz / bzip2 encoders.
-Primitive reference: Duda, "Asymmetric Numeral Systems" (arXiv:1311.2540);
-shravan's Opus range encoder (`opus.cyr:175-284`) is the entropy-coding
-cousin. Sequenced as small bites:
+### 2.5.6 — zstd encode competitiveness
 
-- **Bite 1 — frame + Raw/RLE blocks (store mode) — ✅ committed.**
-  `zstd_compress` emits valid single_segment RFC-8878 frames with Raw
-  (verbatim) + RLE (single repeated byte) blocks, 128 KiB block chunking,
-  frame-content-size flag arithmetic mirrored from the decoder. Wired into
-  `compress`/`_compress_inner`. Lock-free + self-contained (no runtime dep —
-  `[lib.zstd]` profile still closes). Verified: `tests/tcyr/zstd_compress.tcyr`
-  + `scripts/zstd-encode-smoke.sh` (reference `zstd -d` v1.5.7).
-- **Bite 2 — Compressed block, single-stream Huffman literals (0 sequences) — 🟡 done, uncommitted.**
-  Length-limited (≤ 11-bit) canonical Huffman whose assignment matches the
-  decoder's `_z_huff_build`; direct weight table + backward single-stream
-  bitstream (symbols emitted in reverse, marker-topped) + `sizefmt`-0
-  literals header + 0-sequences byte. Applied to non-constant blocks ≤ 1023
-  bytes when it beats raw; larger blocks still store. First real entropy
-  compression — text ~30-50 % smaller. **Verified**: extended tcyr round-trip
-  (incl. a Fibonacci input that forces the length-limiter) + reference `zstd
-  -d` on the smoke battery **and an 80/80 random-skewed fuzz**, all
-  byte-identical. (Found + fixed a length-limiter overshoot: the Kraft repair
-  must be the exact zlib `gen_bitlen` demotion, or reference zstd rejects the
-  incomplete code — sankoch's own decoder was too lenient to catch it.)
-- **Bite 3a — 4-stream Huffman literals (regen > 1023) — 🟡 done, uncommitted.**
-  Full 128 KiB blocks Huffman-compress their literals via 4 streams (jump
-  table) sharing one table (`sizefmt` 2/3), plus a cheap size pre-estimate
-  that skips the build when Huffman can't beat raw. ASCII text now compresses
-  at any size (~42-58 % of original). Direct weights cap the alphabet at
-  maxsym ≤ 128, so wide-alphabet / high-byte / binary blocks store for now
-  (FSE weights = bite 4). **Verified**: tcyr round-trip (8 KB / 128 KiB / wide
-  alphabet) + reference `zstd -d` on large text **and a 60/60 fuzz** across
-  sizes 100 B–180 KB and alphabets 2–250, all byte-identical. (Caught + fixed:
-  the direct-weight header byte `127 + maxsym` overflows for maxsym > 128 —
-  reference rejected a source file containing a UTF-8 byte; guard added.)
-- **Bite 3b-1 — self-contained LZ77 match finder → sequences — 🟡 done, uncommitted (scaffolding, unwired).**
-  A greedy hash-chain matcher (own hash + chain in `zstd.cyr`, since `[lib.zstd]`
-  can't pull in `lz77.cyr`) parses input into zstd sequences (`_zs_ll` / `_zs_ml`
-  / `_zs_off` + concatenated literals `_zs_lit`), offsets emitted as literal
-  offsets (`offset_value = offset + 3`). **Verified in isolation** by
-  `_ze_lz_reconstruct` (byte-exact reconstruction: 97-99 % matched on periodic
-  text, 0 % on random). Not yet wired into `zstd_compress` — it feeds the FSE
-  emitter below.
-- **Bite 3b-2 — FSE sequence encoder + framing — 🟡 done, uncommitted.**
-  FSE **encoding** tables (`_ze_fse_ctable`, mirroring `FSE_buildCTable`,
-  reusing the decoder's spread) for LL/OF/ML in Predefined mode; the 3
-  interleaved states encoded **backward** (init LL/OF/ML → per-seq OF/ML/LL
-  state + LL/ML/OF extra → flush ML/OF/LL, derived by reversing the decoder's
-  read order); sequences-section header (nbSeq + modes) + bitstream; Raw
-  literals for now. Wired into the block loop (sequences → Huffman → raw).
-  **Verified**: tcyr round-trip + reference `zstd -d` **and a 70/70 mixed-content
-  fuzz**, all byte-identical. Real LZ77 + entropy compression now (text 2 KB →
-  3 %, 50 KB → 0.1 %). Currently **~10-20 % behind `zstd -1`** — the gap is the
-  Raw literals (see 3b-3). (Caught + fixed: `_ze_try_seq_block` redirected the
-  writer to `_ze_tmp` without allocating it — null-pointer SIGSEGV on the first
-  block.)
-- **Bite 3b-3 — Huffman literals *inside* the sequences block — 🟡 done, uncommitted.**
-  The literals-section builder was extracted into a shared `_ze_emit_huff_literals`;
-  the sequences block now Huffman-codes its literals (single- or 4-stream) when
-  they apply (maxsym ≤ 128 + beneficial), else Raw. Narrows the gap to `zstd -1`
-  on ASCII from ~+9 % to ~+4 % (code) / ~+17 % to ~+11 % (prose). **Verified**:
-  full suite + reference `zstd -d` on real ASCII files **and a 60/60 fuzz**
-  (ASCII / wide-alphabet / binary / mixed), all byte-identical. **2.5.5 is
-  functionally complete + release-able here** — a correct sovereign zstd encoder
-  (LZ77 + FSE + Huffman), ~4-17 % behind `zstd -1`. Bite 4 closes the rest.
-- **Bite 4a — parse improvement (deeper chain + quick-reject) — 🟡 done, uncommitted.**
-  Match chain depth 32 → 128 with an xz-style `best_len` quick-reject (same
-  longest match, affordable deeper search). Format-neutral, so correctness is
-  automatic (full suite + 50/50 reference fuzz green). Modest win: gap to
-  `zstd -1` on deflate.cyr ~+9 % → +7 %.
-- **Bite 4b — FSE-compressed literal weights (the biggest remaining gap).**
-  Wide/UTF-8/binary alphabets (maxsym > 128) currently store literals raw; FSE
-  weights (simple normalize + `writeNCount` + 2-state FSE encode, reusing the
-  bite-3b-2 FSE machinery) let them Huffman-compress. ~150 lines of bit-exact
-  code — its own careful pass.
-- **Bite 4c — repeat-offset codes, lazy/2-pass parse, level knob, `bench`
-  ratio line, CI wiring.** Remaining polish toward `zstd -1` parity.
-- **Bite 4 — FSE-compressed literal weights (wide alphabets) + custom seq
-  tables + a level knob + `bench` ratio line + CI wiring** (add the
-  encode-smoke to CI).
-
-No wire-format SIZE gate (zstd output isn't bit-reproducible across encoder
-versions). **Not shipped as a release until Bite 3b lands** — through Bite 3a
-the encoder is entropy-only (Huffman literals, no LZ77 matches) and stores
-wide-alphabet data.
+Close the gap to `zstd -1` parity. The biggest item is **FSE-compressed literal
+weights**: wide / UTF-8 / binary alphabets (maxsym > 128) currently store
+literals raw because the direct weight table's header byte (`127 + maxsym`)
+overflows a byte; FSE weights (a simple normalize + `writeNCount` [inverting the
+decoder's `readNCount`] + a 2-state FSE encode, reusing the 2.5.5 FSE machinery
+— ~150 lines of bit-exact code) let them Huffman-compress. Then **repeat-offset
+codes** (offset_value 1/2/3 when a match reuses a recent offset — the recent-
+offset model the decoder's `_z_resolve_offset` already tracks), a **lazy /
+2-pass parse** (better match choice than greedy), a **compression-level knob**
+(chain depth / nice-length), an informational `bench` ratio line, and **CI
+wiring** of `scripts/zstd-encode-smoke.sh`. Reference `zstd -d` remains the
+correctness bar throughout. (Bite 4a — the depth-128 match finder — already
+shipped in 2.5.5.)
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 
@@ -268,12 +197,12 @@ at 2.5.5.)
 | gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 1819 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
 | bzip2.cyr        | 1316 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
-| zstd.cyr         |  729 | `.zst` decode (RFC 8878): frames + Raw/RLE/Compressed blocks + FSE/Huffman literals + sequences + recent-offsets (`zstd_decompress`); self-contained bit reader / FSE / Huffman — decode only (2.5.0) | full |
+| zstd.cyr         | 1462 | `.zst` de+compress (RFC 8878): decoder (2.5.0) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream); self-contained bit reader / FSE / Huffman, no runtime | full |
 | tar.cyr          |  513 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + path-traversal guards (2.5.0) | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  239 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **11509** | | |
+| **Total**        | **12248** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -326,4 +255,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.66).
 
 ---
 
-*Last Updated: 2026-07-18 (2.5.4 xz/bzip2 encoder throughput shipped [output-identical, xz ~5× on text]; 2.5.3 ratio cap shipped [INFO-F closed]. Remaining ladder 2.5.5 zstd encode → 2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0. Zstandard moved out of Future — all codecs live here, modular by profile. Deferred unchanged.)*
+*Last Updated: 2026-07-18 (2.5.5 sovereign zstd encoder shipped — every codec now de+compresses. Remaining ladder 2.5.6 zstd-encode competitiveness [FSE literal weights, repeat offsets, lazy parse, level knob] → 2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0. Deferred + Future unchanged.)*

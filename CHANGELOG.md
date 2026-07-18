@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.5] — 2026-07-18 — sovereign zstd encoder
+
+Completes the Zstandard codec: `zstd_compress` — a sovereign RFC-8878 **encoder** to match the
+decode-only `zstd.cyr` that shipped at 2.5.0. Produces valid frames that reference `zstd -d` v1.5.7
+decodes **byte-identical** across hundreds of fuzz cases. Wired into `compress` / `compress_level`
+as `FORMAT_ZSTD`, and unblocks the ZIP method-93 write path on the 2.6.x arc.
+
+### Added
+- **`zstd_compress(src, src_len, dst, dst_cap)`** — the full encode pipeline, built over the 2.5.5
+  arc as verified bites:
+  - **Frame + block framing** — single_segment frames, Raw / RLE / Compressed blocks, 128 KiB
+    block chunking, frame-content-size flag arithmetic mirrored from the decoder.
+  - **Huffman literals** — length-limited (≤ 11-bit) canonical codes whose assignment matches the
+    decoder's `_z_huff_build`; direct weight table; single-stream (≤ 1023 B) and 4-stream (jump
+    table) backward bitstreams; a size pre-estimate to skip non-beneficial blocks.
+  - **LZ77 sequences** — a self-contained greedy hash-chain match finder (depth 128 + `best_len`
+    quick-reject; `[lib.zstd]` can't pull in `lz77.cyr`) → LL/OF/ML sequences.
+  - **FSE sequences** — FSE *encoding* tables (`FSE_buildCTable` shape, reusing the decoder's symbol
+    spread) for LL/OF/ML in Predefined mode; the 3 interleaved states encoded **backward** (order
+    derived by reversing the decoder's read order); Huffman-coded literals inside the sequences
+    block. Lock-free + self-contained (no runtime/mutex dep), so the `[lib.zstd]` profile stays a
+    closed closure.
+- **Coverage**: `tests/tcyr/zstd_compress.tcyr` (16 round-trip tests, CI-gated — store / RLE /
+  single- & 4-stream Huffman / length-limiter / LZ77+FSE sequences / wide-alphabet fallback) +
+  `programs/zstd_encode_smoke.cyr` + `scripts/zstd-encode-smoke.sh` (reference `zstd -d` interop).
+
+### Notes
+- **Compression is within ~2–17 % of `zstd -1`** at this cut (within +2.4 % on ASCII source; it
+  *beats* `zstd -1` on highly repetitive data and incompressible data). Ratios:
+  [`docs/benchmarks/2026-07-18-2.5.5-zstd-encode.md`](docs/benchmarks/2026-07-18-2.5.5-zstd-encode.md).
+  The remaining gap is FSE-compressed literal weights for wide/UTF-8/binary alphabets (which still
+  store literals raw), repeat-offset codes, and a lazy parse — the **2.5.6** follow-on.
+- Three spec bugs were caught **by reference `zstd -d`** during development — each a case where
+  sankoch's own decoder was lenient enough to round-trip an invalid stream: a Huffman length-limiter
+  overshoot (fixed with the exact zlib `gen_bitlen` repair), the direct-weight header-byte overflow
+  for `maxsym > 128`, and a null-scratch SIGSEGV. Reference-CLI parity remains load-bearing (the
+  1.6.1 xxHash32 lesson).
+
 ## [2.5.4] — 2026-07-18 — xz / bzip2 encoder throughput
 
 Pure speed work on the two slow encoders — **output byte-identical**. Every codec's compressed

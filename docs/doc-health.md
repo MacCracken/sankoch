@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-07-18 (**2.5.4 cut — xz / bzip2 encoder throughput**; VERSION / CHANGELOG / state / roadmap bumped to 2.5.4, source + dist figures re-counted [xz 1,819 / bzip2 1,316; full bundle 11,552], new benchmark doc `2026-07-18-2.5.4-encoder-throughput.md` [xz ~5× text, output-identical]. Same-day earlier cuts: 2.5.3 ratio cap [INFO-F closed], 2.5.2 pin refresh, structural re-count + forward-ladder scheduling.) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
+> **Last refresh**: 2026-07-18 (**2.5.5 cut — sovereign zstd encoder**; VERSION / CHANGELOG / state / roadmap bumped to 2.5.5, source re-counted [zstd.cyr 729→1,462; total 12,248; full bundle 12,291], test totals 260 fns / 4,483,964 [+zstd_compress suite], new benchmark doc + `programs/zstd_encode_smoke.cyr` + `scripts/zstd-encode-smoke.sh`, roadmap 2.5.5 shipped + 2.5.6 competitiveness) | **Refresh cadence**: opportunistic — update the affected row whenever a doc is touched.
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -51,14 +51,14 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-06-25 | ✅ Fresh | Current through 2.4.6: ratio-cap API subsection (batch `*_with_ratio_cap` + streaming `*_dec_init_capped`); Architecture table rows note ratio-cap on deflate/zlib/gzip + the agnos lock no-op on lib. Defers all volatile line / test / assertion / distlib counts to state.md (no inlined figures). |
-| `CHANGELOG.md` | 2026-07-18 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.5.4] — 2026-07-18` (xz / bzip2 encoder throughput; output-byte-identical, xz ~5× on text); `[2.5.3]` xz/bzip2 ratio cap (closes INFO-F); `[2.5.2]` toolchain pin → 6.4.66; `[2.5.1]` per-codec distlib profiles; `[2.5.0]` sovereign zstd + tar cursor. Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
+| `README.md` | 2026-07-18 | ✅ Fresh | Formats table + codec paragraphs updated at 2.5.5 to add **zstd** (de+compress, `FORMAT_ZSTD`) — was stale (missing zstd/tar since 2.5.0). Current through 2.4.6 otherwise: ratio-cap API subsection (batch `*_with_ratio_cap` + streaming `*_dec_init_capped`); Architecture table rows note ratio-cap on deflate/zlib/gzip + the agnos lock no-op on lib. Defers all volatile line / test / assertion / distlib counts to state.md (no inlined figures). |
+| `CHANGELOG.md` | 2026-07-18 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.5.5] — 2026-07-18` (sovereign zstd encoder `zstd_compress` — LZ77+FSE+Huffman, completes the codec); `[2.5.4]` xz/bzip2 encoder throughput; `[2.5.3]` xz/bzip2 ratio cap (closes INFO-F); `[2.5.2]` toolchain pin → 6.4.66; `[2.5.1]` per-codec distlib profiles; `[2.5.0]` sovereign zstd + tar cursor. Empty `[Unreleased]` header at top per Keep-a-Changelog convention. |
 | `CLAUDE.md` | 2026-07-18 | ✅ Fresh | Restructured 2026-05-23 (volatile state → state.md; standards link + `cc5` refs fixed). **2026-07-18**: removed the stale "Do not implement Zstandard in this crate" hard rule (superseded — zstd decode shipped 2.5.0, encode scheduled 2.5.5) and added a positive **Modular by profile — every lossless codec lives here** principle capturing why (per-codec distlib profiles mean no consumer bloat). |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-07-18 | ✅ Fresh | Supported Versions table at 2.5.x. "Next periodic audit" pointer genericized to the pre-next-minor P(-1) closeout (was a stale/dangling "2.4.x decode-only xz/bzip2 arc" ref — xz/bzip2 encode had since shipped @2.4.1/2.4.3 and roadmap no longer listed that item). |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-07-18 | ✅ Fresh | `2.5.4`. Single source of truth per the standards. |
+| `VERSION` | 2026-07-18 | ✅ Fresh | `2.5.5`. Single source of truth per the standards. |
 | `cyrius.cyml` | 2026-07-18 | ✅ Fresh | Toolchain pin `cyrius = "6.4.66"` (bumped from 6.4.43 in 2.5.2; `cyrius deps` re-resolved, all gates clean on the new toolchain). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
@@ -133,6 +133,7 @@ Next periodic audit: **2.3.4 P(-1) closeout** for the 2.3.x line per [`developme
 | `2026-06-16-2.3.4-crc-sliceby8.md` | 2026-06-16 | 🔵 Dated artifact (CRC-32 slice-by-8 before/after; ~2× throughput, wire-identical) |
 | `2026-06-16-pre-2.4.0.md` | 2026-06-16 | 🔵 Dated artifact (2.3.8 P(-1) baseline; 43-line SIZE wire-format gate reference for 2.4.0+) |
 | `2026-07-18-2.5.4-encoder-throughput.md` | 2026-07-18 | 🔵 Dated artifact (2.5.4 xz/bzip2 encoder before/after; xz ~5× on text, output-byte-identical) |
+| `2026-07-18-2.5.5-zstd-encode.md` | 2026-07-18 | 🔵 Dated artifact (2.5.5 zstd encoder compression ratios vs reference `zstd -1/-3`; within +2.4% on ASCII, beats -1 on repetitive) |
 
 Pattern: every P(-1) closeout captures a new bench reference. The wire-format gate (43 SIZE lines) must remain byte-for-byte stable across patch / minor releases.
 
