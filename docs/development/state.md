@@ -28,7 +28,7 @@ type: state
 
 ## Source
 
-- **Source**: **10,078 lines** across 16 domain modules (`src/*.cyr`). The 2.4.6 streaming cap grew `deflate.cyr` (**2,540** — ctx slot + 3 emit-site checks + `deflate_dec_init_capped` / `_deflate_dec_set_ratio`), `zlib.cyr` (**485**, +`zlib_dec_init_capped`), `gzip.cyr` (**638**, +`gzip_dec_init_capped`); `lib.cyr` **282**, `types.cyr` **41**.
+- **Source**: **11,351 lines** across 19 domain modules (`src/*.cyr`) — up from 16 as the 2.4.9 → 2.5.0 arc added three files: `runtime.cyr` (**73** — the lock + alloc seam, extracted from `lib.cyr` at 2.4.9, which dropped `lib.cyr` to **239**), then `zstd.cyr` (**729** — sovereign RFC-8878 decoder) and `tar.cyr` (**513** — POSIX ustar/v7 pull-cursor) at 2.5.0. Largest modules: `deflate.cyr` **2,540**, `xz.cyr` **1,738**, `bzip2.cyr` **1,239**, `lz4.cyr` **935**, `zstd.cyr` **729**, `huffman.cyr` **683**, `gzip.cyr` **638**; `types.cyr` **42**.
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals

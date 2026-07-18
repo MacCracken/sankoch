@@ -43,8 +43,9 @@ jobs:
       - name: Resolve dependencies
         # Stdlib-only (zero git deps), so no cyrius.lock is committed
         # and `cyrius deps --verify` has nothing to check against. The
-        # stdlib itself is pinned by the cyrius = "6.0.1" toolchain line
-        # in cyrius.cyml — every CI run pulls the same stdlib snapshot.
+        # stdlib itself is pinned by the cyrius = "X.Y.Z" toolchain line
+        # in cyrius.cyml (read dynamically in the install step above) —
+        # every CI run pulls the same stdlib snapshot.
         run: cyrius deps
 
       - name: Lint

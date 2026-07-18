@@ -86,13 +86,13 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.4.6** (streaming ratio cap — `deflate.cyr` / `zlib.cyr`
-> / `gzip.cyr` grew the `*_dec_init_capped` plumbing atop the 2.4.5 batch
-> `*_with_ratio_cap`; `lib.cyr` reflects the 2.4.4 agnos lock no-op).
+> Current as of **2.5.0** — the tree grew from 16 to 19 modules: `runtime.cyr`
+> (the lock + alloc seam, extracted from `lib.cyr` at 2.4.9) plus `zstd.cyr`
+> (sovereign RFC-8878 decoder) and `tar.cyr` (POSIX ustar/v7 cursor) at 2.5.0.
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
-| types.cyr        |   41 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2), errors (incl. ERR_OOM, ERR_RATIO_LIMIT), limits | core |
+| types.cyr        |   42 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2, FORMAT_ZSTD), errors (incl. ERR_OOM, ERR_RATIO_LIMIT), limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
 | checksum.cyr     |  546 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs (alloc-using) | full |
 | bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
@@ -106,11 +106,14 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 | gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 1738 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) | full |
 | bzip2.cyr        | 1239 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) | full |
-| lib.cyr          |  282 | Public API, `_sankoch_mtx`, two-tier lock dispatch (agnos no-op since 2.4.4), `_sankoch_alloc` + fault-injection + `_sankoch_reset_tables` | full |
+| zstd.cyr         |  729 | `.zst` decode (RFC 8878): frames + Raw/RLE/Compressed blocks + FSE/Huffman literals + sequences + recent-offsets (`zstd_decompress`); self-contained bit reader / FSE / Huffman — decode only (2.5.0) | full |
+| tar.cyr          |  513 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + path-traversal guards (2.5.0) | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| **Total**        | **10078** | | |
+| runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
+| lib.cyr          |  239 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
+| **Total**        | **11351** | | |
 
-`core` modules (types + xxhash32 + lz4_decode = 316 source lines)
+`core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
@@ -131,10 +134,13 @@ Fuzz: 3,929 iterations across 4 files (`fuzz_lz4` 700, `fuzz_deflate`
 corruption + 300 encode→decode, `fuzz_bzip2` 800 — 300 random + 200
 corruption + 300 encode→decode).
 
-Distlib: `dist/sankoch.cyr` at 10,056 lines (full) +
-`dist/sankoch-core.cyr` at 316 lines (kernel-safe) — at 2.4.6
-(streaming-cap plumbing added to the full bundle; core unchanged at 316,
-the +1 `ERR_RATIO_LIMIT` enum line having landed at 2.4.5).
+Distlib: `dist/sankoch.cyr` at 11,394 lines (full) +
+`dist/sankoch-core.cyr` at 331 lines (kernel-safe), plus six lean
+single-purpose profiles from the 2.4.9 → 2.5.1 reorg —
+`sankoch-zlib.cyr` (4,924), `sankoch-gzip.cyr` (5,077),
+`sankoch-xz.cyr` (2,697), `sankoch-bzip2.cyr` (2,014),
+`sankoch-zstd.cyr` (782), `sankoch-tar.cyr` (9,308). Eight profiles
+total; per-bundle roles in [`state.md` § Dist bundles](state.md#dist-bundles).
 
 ## Dependencies
 
