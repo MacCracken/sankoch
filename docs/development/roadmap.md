@@ -100,10 +100,18 @@ cousin. Sequenced as small bites:
   Raw literals (see 3b-3). (Caught + fixed: `_ze_try_seq_block` redirected the
   writer to `_ze_tmp` without allocating it — null-pointer SIGSEGV on the first
   block.)
-- **Bite 3b-3 — Huffman literals *inside* the sequences block.** Replace the
-  Raw literals section of the sequences block with the 4-stream Huffman coder
-  (for ASCII/maxsym ≤ 128), closing most of the gap to `zstd -1`. **2.5.5 is
-  release-able here** (competitive LZ77 + entropy).
+- **Bite 3b-3 — Huffman literals *inside* the sequences block — 🟡 done, uncommitted.**
+  The literals-section builder was extracted into a shared `_ze_emit_huff_literals`;
+  the sequences block now Huffman-codes its literals (single- or 4-stream) when
+  they apply (maxsym ≤ 128 + beneficial), else Raw. Narrows the gap to `zstd -1`
+  on ASCII from ~+9 % to ~+4 % (code) / ~+17 % to ~+11 % (prose). **Verified**:
+  full suite + reference `zstd -d` on real ASCII files **and a 60/60 fuzz**
+  (ASCII / wide-alphabet / binary / mixed), all byte-identical. **2.5.5 is
+  functionally complete + release-able here** — a correct sovereign zstd encoder
+  (LZ77 + FSE + Huffman), ~4-17 % behind `zstd -1`. Bite 4 closes the rest.
+- **Bite 4 — competitiveness: FSE-compressed literal weights (wide/UTF-8/binary
+  alphabets, the biggest remaining gap), repeat-offset codes, a lazy/2-pass
+  parse, a level knob, `bench` ratio line, CI wiring.** Post-2.5.5 polish.
 - **Bite 4 — FSE-compressed literal weights (wide alphabets) + custom seq
   tables + a level knob + `bench` ratio line + CI wiring** (add the
   encode-smoke to CI).

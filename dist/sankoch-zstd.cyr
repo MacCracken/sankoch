@@ -1053,51 +1053,45 @@ fn _ze_emit_huff_stream(src, off, count) {
     return _ze_op - start;
 }
 
-# Try to build a Huffman-literal Compressed-block *content* (literals section
-# + a 0-sequences byte) for src[0..n) into _ze_tmp. Single-stream literals for
-# n <= 1023, else 4 streams (jump table) sharing one Huffman table. Returns the
-# content length if it beats a raw block, else -1 (caller stores).
-fn _ze_try_huff_block(src, n) {
+# Emit a Huffman literals section for litsrc[0..n) at the START of the current
+# (already-redirected temp) output — single-stream for n <= 1023, else 4-stream.
+# Returns the section byte length, or -1 if Huffman doesn't apply (single
+# distinct byte / maxsym > 128 / not beneficial vs raw literals). Assumes
+# _ze_op == 0 on entry; resets _ze_op to 0 on failure. Shared by the
+# Huffman-only block and the sequences block's literals section.
+fn _ze_emit_huff_literals(litsrc, n) {
     if (n < 8) { return 0 - 1; }
     if (n > 262143) { return 0 - 1; }   # sizefmt-3 regenerated-size limit (18 bits)
-    _ze_huff_alloc();
     var s = 0;
     while (s < 256) { store64(_ze_cnt + s * 8, 0); s = s + 1; }
     var i = 0;
     var maxsym = 0;
     while (i < n) {
-        var c = load8(src + i) & 255;
+        var c = load8(litsrc + i) & 255;
         store64(_ze_cnt + c * 8, load64(_ze_cnt + c * 8) + 1);
         if (c > maxsym) { maxsym = c; }
         i = i + 1;
     }
-    if (maxsym < 1) { return 0 - 1; }     # single distinct byte -> RLE handles it
+    if (maxsym < 1) { return 0 - 1; }     # single distinct byte
     # Direct-weight table: header byte = 127 + maxsym must fit a byte, so the
-    # highest present symbol must be <= 128 (i.e. <= 129 distinct low values).
-    # Wider alphabets (high/UTF-8 bytes) need FSE-compressed weights — a later
-    # bite; store those blocks for now.
+    # highest present symbol must be <= 128. Wider alphabets need FSE-compressed
+    # weights (a later bite); raw literals for those.
     if (maxsym > 128) { return 0 - 1; }
     var maxbits = _ze_huff_lengths(maxsym, 11);
     if (maxbits < 0) { return 0 - 1; }
     _ze_huff_codes(maxsym, maxbits);
 
-    # Cheap size estimate: bits = sum(count*len); skip the build (and its cost)
-    # when Huffman can't beat a raw block.
+    # Cheap size estimate: bits = sum(count*len); skip when Huffman can't beat raw.
     var estbits = 0;
     s = 0;
     while (s <= maxsym) { estbits = estbits + load64(_ze_cnt + s * 8) * load64(_ze_nb + s * 8); s = s + 1; }
     if ((estbits / 8) + maxsym + 16 >= n) { return 0 - 1; }
 
-    var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
-    _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 133120; _ze_err = 0;
-
     var four = 0;
     var hdr = 3;                              # sizefmt 0 (single stream)
     if (n > 1023) { four = 1; if (n <= 16383) { hdr = 4; } else { hdr = 5; } }   # sizefmt 2 / 3
     _ze_op = hdr;
-    # Huffman_Tree_Description: direct weights for symbols 0..maxsym-1
-    # (symbol maxsym's weight is implicit). header byte = 127 + maxsym.
-    _ze_put(127 + maxsym);
+    _ze_put(127 + maxsym);                    # Huffman_Tree_Description: direct weights
     var j = 0;
     while (j < maxsym) {
         var hi = load64(_ze_wt + j * 8);
@@ -1107,27 +1101,26 @@ fn _ze_try_huff_block(src, n) {
         j = j + 2;
     }
 
-    var content = 0 - 1;
+    var ok = 0;
     if (four == 0) {
-        _ze_emit_huff_stream(src, 0, n);
+        _ze_emit_huff_stream(litsrc, 0, n);
         var comp = _ze_op - hdr;
         if (_ze_err == 0 && comp <= 1023) {
             var v = 2 | (n << 4) | (comp << 14);          # sizefmt 0
-            store8(_ze_tmp + 0, v & 255); store8(_ze_tmp + 1, (v >> 8) & 255); store8(_ze_tmp + 2, (v >> 16) & 255);
-            _ze_put(0);
-            content = _ze_op;
+            store8(_ze_out + 0, v & 255); store8(_ze_out + 1, (v >> 8) & 255); store8(_ze_out + 2, (v >> 16) & 255);
+            ok = 1;
         }
     } else {
         var jt = _ze_op;
         _ze_op = _ze_op + 6;                              # reserve the jump table
         var each = (n + 3) / 4;
-        var s1 = _ze_emit_huff_stream(src, 0, each);
-        var s2 = _ze_emit_huff_stream(src, each, each);
-        var s3 = _ze_emit_huff_stream(src, each * 2, each);
-        _ze_emit_huff_stream(src, each * 3, n - each * 3);
-        store8(_ze_tmp + jt + 0, s1 & 255); store8(_ze_tmp + jt + 1, (s1 >> 8) & 255);
-        store8(_ze_tmp + jt + 2, s2 & 255); store8(_ze_tmp + jt + 3, (s2 >> 8) & 255);
-        store8(_ze_tmp + jt + 4, s3 & 255); store8(_ze_tmp + jt + 5, (s3 >> 8) & 255);
+        var s1 = _ze_emit_huff_stream(litsrc, 0, each);
+        var s2 = _ze_emit_huff_stream(litsrc, each, each);
+        var s3 = _ze_emit_huff_stream(litsrc, each * 2, each);
+        _ze_emit_huff_stream(litsrc, each * 3, n - each * 3);
+        store8(_ze_out + jt + 0, s1 & 255); store8(_ze_out + jt + 1, (s1 >> 8) & 255);
+        store8(_ze_out + jt + 2, s2 & 255); store8(_ze_out + jt + 3, (s2 >> 8) & 255);
+        store8(_ze_out + jt + 4, s3 & 255); store8(_ze_out + jt + 5, (s3 >> 8) & 255);
         var comp2 = _ze_op - hdr;
         var fieldmax = 16383;
         if (hdr == 5) { fieldmax = 262143; }
@@ -1136,21 +1129,35 @@ fn _ze_try_huff_block(src, n) {
         if (_ze_err == 0 && okstream == 1 && comp2 <= fieldmax) {
             if (hdr == 4) {
                 var v2 = 2 | (2 << 2) | (n << 4) | (comp2 << 18);   # sizefmt 2
-                store8(_ze_tmp + 0, v2 & 255); store8(_ze_tmp + 1, (v2 >> 8) & 255);
-                store8(_ze_tmp + 2, (v2 >> 16) & 255); store8(_ze_tmp + 3, (v2 >> 24) & 255);
+                store8(_ze_out + 0, v2 & 255); store8(_ze_out + 1, (v2 >> 8) & 255);
+                store8(_ze_out + 2, (v2 >> 16) & 255); store8(_ze_out + 3, (v2 >> 24) & 255);
             } else {
                 var v3 = 2 | (3 << 2) | (n << 4) | (comp2 << 22);   # sizefmt 3
-                store8(_ze_tmp + 0, v3 & 255); store8(_ze_tmp + 1, (v3 >> 8) & 255);
-                store8(_ze_tmp + 2, (v3 >> 16) & 255); store8(_ze_tmp + 3, (v3 >> 24) & 255);
-                store8(_ze_tmp + 4, (v3 >> 32) & 255);
+                store8(_ze_out + 0, v3 & 255); store8(_ze_out + 1, (v3 >> 8) & 255);
+                store8(_ze_out + 2, (v3 >> 16) & 255); store8(_ze_out + 3, (v3 >> 24) & 255);
+                store8(_ze_out + 4, (v3 >> 32) & 255);
             }
-            _ze_put(0);
-            content = _ze_op;
+            ok = 1;
         }
     }
+    if (ok == 0) { _ze_op = 0; return 0 - 1; }
+    return _ze_op;                            # literals-section length (started at 0)
+}
+
+# Try to build a Huffman-literal Compressed-block content (literals section +
+# a 0-sequences byte) for src[0..n) into _ze_tmp. Returns content length if it
+# beats a raw block, else -1.
+fn _ze_try_huff_block(src, n) {
+    _ze_huff_alloc();
+    var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
+    _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 133120; _ze_err = 0;
+    var lc = _ze_emit_huff_literals(src, n);
+    var content = 0 - 1;
+    if (lc > 0) { _ze_put(0); content = _ze_op; }   # sequences section: 0 sequences
+    var terr = _ze_err;
     _ze_out = save_out; _ze_op = save_op; _ze_cap = save_cap; _ze_err = save_err;
-    if (content < 0) { return 0 - 1; }
-    if (content >= n) { return 0 - 1; }   # not beneficial vs a raw block
+    if (lc < 0 || terr != 0) { return 0 - 1; }
+    if (content >= n) { return 0 - 1; }
     return content;
 }
 
@@ -1422,17 +1429,21 @@ fn _ze_try_seq_block(src, n) {
     var litlen = _zs_litlen;
     var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
     _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 133120; _ze_err = 0;
-    # Literals section: Raw (ltype 0). size formats: <=31 1-byte, <=4095 2-byte, else 3-byte.
-    if (litlen <= 31) {
-        _ze_put(litlen << 3);                                     # sizefmt 0
-    } elif (litlen <= 4095) {
-        _ze_put(4 | ((litlen & 15) << 4)); _ze_put(litlen >> 4);  # sizefmt 1
-    } else {
-        _ze_put(12 | ((litlen & 15) << 4));                       # sizefmt 3
-        _ze_put((litlen >> 4) & 255); _ze_put((litlen >> 12) & 255);
+    # Literals section: Huffman when it applies + beats raw (2.5.5 bite 3b-3),
+    # else Raw literals (ltype 0). Sequences follow either way.
+    if (_ze_emit_huff_literals(_zs_lit, litlen) < 0) {
+        # Raw literals — size formats: <=31 1-byte, <=4095 2-byte, else 3-byte.
+        if (litlen <= 31) {
+            _ze_put(litlen << 3);                                     # sizefmt 0
+        } elif (litlen <= 4095) {
+            _ze_put(4 | ((litlen & 15) << 4)); _ze_put(litlen >> 4);  # sizefmt 1
+        } else {
+            _ze_put(12 | ((litlen & 15) << 4));                       # sizefmt 3
+            _ze_put((litlen >> 4) & 255); _ze_put((litlen >> 12) & 255);
+        }
+        var k = 0;
+        while (k < litlen) { _ze_put(load8(_zs_lit + k) & 255); k = k + 1; }
     }
-    var k = 0;
-    while (k < litlen) { _ze_put(load8(_zs_lit + k) & 255); k = k + 1; }
     _ze_encode_sequences();
     var terr = _ze_err;
     var content = _ze_op;
