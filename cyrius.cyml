@@ -5,7 +5,7 @@ description = "Lossless compression + archive library — LZ4, DEFLATE, zlib, gz
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/sankoch"
 language = "cyrius"
-cyrius = "6.4.66"
+cyrius = "6.4.67"
 
 [build]
 entry = "src/lib.cyr"

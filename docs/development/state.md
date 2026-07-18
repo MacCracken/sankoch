@@ -15,7 +15,7 @@ type: state
 ## Version
 
 - **`VERSION`**: `2.5.5` — single source of truth (2.5.5 = **sovereign zstd encoder** `zstd_compress` [LZ77 + FSE sequences + Huffman literals; completes the codec, decode shipped 2.5.0]; 2.5.4 = xz / bzip2 encoder throughput [output byte-identical]; 2.5.3 = xz / bzip2 ratio cap; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
-- **`cyrius.cyml [package].cyrius`**: `6.4.66` — toolchain pin (unchanged since 2.5.2; bumped from 6.4.43 at 2.5.2)
+- **`cyrius.cyml [package].cyrius`**: `6.4.67` — toolchain pin (bumped from 6.4.66 as in-flight 2.5.6 work; 2.5.5 shipped on 6.4.66. `cyrius deps` re-resolved, all gates green + distlib byte-identical on 6.4.67)
 - **Tag**: `2.5.5` (bare semver, no `v` prefix)
 - **Released**: 2026-07-18
 
@@ -91,7 +91,9 @@ reference-`zstd -d`-validated — ~2-17 % behind `zstd -1`, and it *beats*
 Remaining forward ladder in
 [`roadmap.md`](roadmap.md#-scheduled--the-committed-next-release-ladder):
 
-- **2.5.6 — zstd encode competitiveness.** FSE-compressed literal weights
+- **2.5.6 — zstd encode competitiveness + toolchain refresh.** Toolchain pin
+  6.4.66 → 6.4.67 (done, in-flight — distlib byte-identical, all gates green).
+  FSE-compressed literal weights
   (wide/UTF-8/binary alphabets, maxsym > 128 — the biggest remaining gap,
   currently raw literals), repeat-offset codes, a lazy/2-pass parse, a level
   knob, a `bench` ratio line, and CI wiring of the encode-smoke. Closes the

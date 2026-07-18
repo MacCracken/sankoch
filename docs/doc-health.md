@@ -59,7 +59,7 @@ Also created: this file (`docs/doc-health.md`).
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
 | `VERSION` | 2026-07-18 | ✅ Fresh | `2.5.5`. Single source of truth per the standards. |
-| `cyrius.cyml` | 2026-07-18 | ✅ Fresh | Toolchain pin `cyrius = "6.4.66"` (bumped from 6.4.43 in 2.5.2; `cyrius deps` re-resolved, all gates clean on the new toolchain). |
+| `cyrius.cyml` | 2026-07-18 | ✅ Fresh | Toolchain pin `cyrius = "6.4.67"` (bumped from 6.4.66 as in-flight 2.5.6 work; 2.5.5 shipped on 6.4.66. `cyrius deps` re-resolved, all gates clean + distlib byte-identical on 6.4.67). |
 | `.gitignore` | 2026-05-23 | ✅ Fresh | Updated 2026-05-23 to match the first-party standard: `/dist/`, `*.tar.gz`, `cyrius-*.tar.gz`, `SHA256SUMS`, `!lib/k*.cyr` exception, `.env*` / `*.pem` / `*.key`. |
 
 ---

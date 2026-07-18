@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Toolchain pin 6.4.66 → 6.4.67** (part of the in-flight 2.5.6 work) — tracks the current Cyrius
+  toolchain and clears the pin-vs-`cycc` drift warning. `cyrius deps` re-resolved the stdlib
+  snapshot (no stdlib API changes surfaced); all gates green on 6.4.67 — lint / fmt / vet (25 deps,
+  0 untrusted, 0 missing), full tcyr suite (4,483,964 assertions) + all fuzz harnesses, the 43-line
+  SIZE wire-format gate, aarch64 cross-build, and the kernel-safe tripwire. **distlib output is
+  byte-identical** across 6.4.66 → 6.4.67 (no source / API / wire-format change).
+
 ## [2.5.5] — 2026-07-18 — sovereign zstd encoder
 
 Completes the Zstandard codec: `zstd_compress` — a sovereign RFC-8878 **encoder** to match the
