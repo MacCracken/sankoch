@@ -130,6 +130,62 @@ fn fuzz_bz_roundtrip(seed, data_len, mode) {
     return 0;
 }
 
+# Strategy 4 (2.5.3): ratio-capped decode invariants. For any input the
+# capped decode must never crash and must return either ERR_RATIO_LIMIT or
+# the *exact* uncapped output — the cap trips whole, never a partial or
+# altered decode. A generous cap is always transparent (== uncapped).
+fn fuzz_bz_ratiocap(seed, data_len, mode) {
+    _fuzz_seed(seed);
+    var src[2048];
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+    if (capped < 1) { capped = 1; }
+    var i = 0;
+    while (i < capped) {
+        var b = 0;
+        if (mode == 0) {
+            b = _fuzz_next();
+        } elif (mode == 1) {
+            b = 97 + (i % (1 + (seed & 7)));   # periodic → compressible
+        } else {
+            b = 0;
+            if ((_fuzz_next() & 31) == 0) { b = _fuzz_next(); }   # mostly zeros → bomb-like
+        }
+        store8(&src + i, b);
+        i = i + 1;
+    }
+    var comp[8192];
+    var clen = bzip2_compress(&src, capped, &comp, 8192);
+    assert(clen > 0, "fuzz_bz ratiocap: compress");
+
+    var decu[2048];
+    var du = bzip2_decompress(&comp, clen, &decu, 2048);
+    assert(du == capped, "fuzz_bz ratiocap: uncapped length");
+
+    var decc[2048];
+    # Tight cap (2:1): ERR_RATIO_LIMIT, or an exact full decode — never other.
+    var rt = bzip2_decompress_with_ratio_cap(&comp, clen, &decc, 2048, 2);
+    if (rt < 0) {
+        assert(rt == 0 - ERR_RATIO_LIMIT, "fuzz_bz ratiocap: tight neg is ERR_RATIO_LIMIT");
+    } else {
+        assert(rt == du, "fuzz_bz ratiocap: tight-pass length == uncapped");
+        var a = 0;
+        while (a < du) {
+            assert(load8(&decc + a) == load8(&decu + a), "fuzz_bz ratiocap: tight-pass bytes match");
+            a = a + 1;
+        }
+    }
+    # Generous cap: always the full transparent decode.
+    var rg = bzip2_decompress_with_ratio_cap(&comp, clen, &decc, 2048, 100000);
+    assert(rg == du, "fuzz_bz ratiocap: generous length == uncapped");
+    var g = 0;
+    while (g < du) {
+        assert(load8(&decc + g) == load8(&decu + g), "fuzz_bz ratiocap: generous bytes match");
+        g = g + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -163,6 +219,13 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_bzip2: 300 encode round-trip tests passed");
+
+    seed = 1;
+    while (seed <= 100) {
+        fuzz_bz_ratiocap(seed * 2654435761, (seed * 37) % 2048, seed % 3);
+        seed = seed + 1;
+    }
+    println("fuzz_bzip2: 100 ratio-cap tests passed");
 
     return 0;
 }

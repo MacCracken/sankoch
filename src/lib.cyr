@@ -169,10 +169,10 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
         return lz4f_decompress(src, src_len, dst, dst_cap);
     }
     if (format == FORMAT_XZ) {
-        return _xz_decompress_inner(src, src_len, dst, dst_cap);
+        return _xz_decompress_inner(src, src_len, dst, dst_cap, 0);
     }
     if (format == FORMAT_BZIP2) {
-        return _bz2_decompress_inner(src, src_len, dst, dst_cap);
+        return _bz2_decompress_inner(src, src_len, dst, dst_cap, 0);
     }
     if (format == FORMAT_ZSTD) {
         return zstd_decompress(src, src_len, dst, dst_cap);

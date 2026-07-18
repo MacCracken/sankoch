@@ -1,28 +1,107 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.2) | **Last Updated**: 2026-07-18
+> **Status**: Stable (v2.5.3) | **Last Updated**: 2026-07-18
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
-ladder — backlog, deferred items, known limitations, and the
-longer-horizon Future bucket. **No release is currently committed.** The
-codec set is complete — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2,
-de + compress, batch + streaming — with ratio-capped decompression for
-the DEFLATE family (batch + streaming).
+ladder — the committed next-release ladder, deferred items, known
+limitations, and the longer-horizon Future bucket. The codec set through
+2.5.3 is complete — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2
+(de + compress, batch + streaming) + zstd decode + a shared tar cursor —
+with ratio-capped decompression across the DEFLATE family + xz + bzip2
+(the xz/bzip2 cap shipped 2.5.3). The scheduled ladder below continues that
+(2.5.4 encoder speed, 2.5.5 zstd encode — completing the zstd codec) and
+opens a full-feature ZIP archive container arc (2.6.x — agnosai's `.agpkg`
+need first at 2.6.0, then the rest of the surface across 2.6.1+).
 
 ---
 
-## ▢ Backlog — candidate follow-ons (none scheduled)
+## ▶ Scheduled — the committed next-release ladder
 
-- **xz / bzip2 ratio cap** — extend the DEFLATE-family ratio cap (2.4.5
-  batch `*_with_ratio_cap` + 2.4.6 streaming `*_dec_init_capped`) to xz
-  and bzip2 decode. Both funnel output through localized chokepoints
-  (`_xz_put` / `_xz_copy_match`; the bzip2 RLE1 run-emit), so the same
-  incremental `ERR_RATIO_LIMIT` guard applies. Not needed by sit (zlib
-  only); pick up if a consumer inflates untrusted `.xz` / `.bz2`.
-- **xz / bzip2 encoder throughput** — the optimal-parse DP (xz) and the
-  BWT block-sort (bzip2) dominate encode time. Fine for the
-  archival / one-shot use they target; revisit if encode latency
-  surfaces as a consumer priority.
+> **2.5.3 — xz / bzip2 ratio cap — ✅ shipped 2026-07-18** (see CHANGELOG).
+> `xz_decompress_with_ratio_cap` / `bzip2_decompress_with_ratio_cap` extended
+> the DEFLATE-family `ERR_RATIO_LIMIT` zip-bomb defense to the last two batch
+> decoders. Closed the INFO-F gap.
+
+### 2.5.4 — xz / bzip2 encoder throughput
+
+The optimal-parse DP (xz) and the BWT block-sort (bzip2) dominate their
+encode time. Profile both, then land throughput wins that **preserve
+output bytes** — the xz encoder stays within its ~1–5 % of `xz -6`, and
+bzip2 stays byte-identical to `bzip2 -9`. Neither encoder sits in the
+wire-format SIZE gate, so this is pure speed work: capture before/after
+`bench` ratio + ns/op lines per the "numbers don't lie" rule. Patch
+release.
+
+### 2.5.5 — zstd encode
+
+The sovereign Zstandard **encoder** (RFC 8878, compress side) — completes
+the codec that shipped decode-only at 2.5.0, and lands **before** the
+2.6.x ZIP arc so ZIP method 93 can be written, not just read. Reuses the
+in-tree LZ77 match-finder for sequence generation; adds the FSE + Huffman
+*encoders* (the decoder's predefined tables run in reverse) + block/frame
+construction (Raw / RLE / Compressed blocks, the recent-offset model).
+**Reference-CLI parity is the bar**: output must round-trip through
+reference `zstd -d` (v1.5.7 — the same text / random / repetitive /
+multi-block fixture set the 2.5.0 decoder was validated against, 40/40).
+One practical compression level to start (not the full `--ultra` parse);
+higher levels + dictionary training can follow. No wire-format SIZE gate
+(zstd output isn't bit-reproducible across encoder versions) — ships an
+informational ratio line in `bench` like the xz / bzip2 encoders.
+Primitive reference: Duda, "Asymmetric Numeral Systems" (arXiv:1311.2540);
+shravan's Opus range encoder (`opus.cyr:175-284`) is the entropy-coding
+cousin. Minor effort — sequenced as small bites (FSE encoder → Huffman
+encoder → sequence/block builder → frame + validation).
+
+### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
+
+A new `zip.cyr` archive module built out to the same completeness the
+codecs carry — read + write, every method sankoch owns, zip64, streaming
+— but delivered **across the 2.6.x arc so agnosai's lean `.agpkg` need
+lands first (2.6.0) and unblocks the port before the rest fills in**. The
+PKZIP `.zip` container throughout: local file headers + central directory
++ end-of-central-directory record, per-entry CRC-32 (all already in-tree,
+reusing the DEFLATE codec). **Reference-CLI parity is the bar** — every
+round-trip must decode via `unzip` / Python `zipfile`, the same load-
+bearing rule the codecs hold. Bites may merge/split per the usual sizing
+rule; the ordering is the commitment, not the exact boundaries.
+
+- **2.6.0 — agnosai core: store + DEFLATE, read + write.** Scoped
+  directly from the consumer, not guessed: agnosai's
+  `src/definitions/packaging.rs` round-trips an `.agpkg` bundle (a ZIP of
+  `manifest.json` + one JSON per agent definition) — `ZipWriter` with
+  `CompressionMethod::Deflated` on `export()`, `ZipArchive` on
+  `import(&[u8])`, proven by `test_export_import_round_trip`. In-memory
+  reader (enumerate the central directory, pull each entry by name) +
+  store/DEFLATE writer (local headers + central directory), both over byte
+  buffers — agnosai's `export_to_file` / `import_from_file` stay thin
+  `std::fs` wrappers on its side. A per-entry **uncompressed-size cap** is
+  built in (agnosai hand-rolls a 1 MiB/file + entry-count zip-bomb guard;
+  sankoch's `ERR_RATIO_LIMIT` ratio-cap absorbs it natively). Zip-slip /
+  path-traversal guards mirror `tar.cyr`. **This is the whole agnosai
+  filing** (~250 lines, deflate + crc32); everything below is parity
+  build-out that **does not block agnosai** — its ZIP need is behind the
+  non-default `definitions` feature, excluded from agnosai v2.0.0 parity
+  (the `sankoch` row in
+  [`agnosai/docs/development/cyrius-port-plan.md`](https://github.com/MacCracken/agnosai/blob/main/docs/development/cyrius-port-plan.md)).
+- **2.6.1 — the other methods.** Wire the codecs sankoch owns into ZIP's
+  method field, all **both ways**: **12 (bzip2)**, **95 (xz)**, and
+  **93 (zstd)** — the last is full round-trip because 2.5.5 zstd encode
+  lands before this arc. Method 14 (raw LZMA alone-format) stays
+  unsupported — same non-goal as the codec, which handles the `.xz`
+  container, not `.lzma`.
+- **2.6.2 — zip64.** >4 GB entries and >65 535-entry / >4 GB archives: the
+  Zip64 end-of-central-directory record + locator + the Zip64 extended-
+  information extra field, on read and write.
+- **2.6.3 — streaming + metadata.** Streaming read + streaming write (data
+  descriptors — bit-3 sizes-after-data) mirroring the codec `*_enc_*` /
+  `*_dec_*` shape, plus per-entry metadata (mtime, mode, symlink) for
+  tar-parity extraction.
+
+**Non-goals** (like the codec non-goals): **encryption** — ZipCrypto is
+cryptographically broken, and AES-in-ZIP needs a real AES primitive
+sankoch deliberately doesn't carry (zero-crypto-dep, cf. xz's unverified
+SHA-256); **multi-disk / spanned** archives (obsolete); **Deflate64**
+(method 9 — a separate codec, not RFC 1951).
 
 ## ⏸ Deferred — SIMD CRC-32 via `PCLMULQDQ`
 
@@ -55,21 +134,26 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
   (optimal parse, not bit-identical to `xz`); bzip2 encode is
   byte-identical to `bzip2 -9`. Neither encoder is in the wire-format
   SIZE gate — both ship informational ratio lines in `bench`.
-- **Zstandard** is intentionally out of scope for this crate — it
-  warrants its own crate / major version (see Future).
 
 ---
 
-## Future (separate crate or major version)
+## Future — additional codecs (in-scope, unscheduled)
 
-- **Zstandard** — tANS + LZ77. Shravan's Opus range encoder
-  (`opus.cyr:175-284`) is the entropy-coding primitive tANS
-  generalizes from. ~30K lines in the reference impl. Research
-  Duda's ANS paper (arXiv:1311.2540) first.
-- **Brotli** — if web serving needs arise.
-- **GPU texture compression** (BC1-BC7, ASTC) — mabda has generic
-  compute dispatch (`compute.cyr`). Texture format enums are
-  defined but codecs not yet implemented.
+Because the per-codec distlib profiles let a consumer pull only the
+closure it needs (see *Modular by profile* in [`CLAUDE.md`](../../CLAUDE.md)),
+sankoch is the home for **every** lossless-compression codec — new formats
+never bloat consumers that don't use them, so nothing here is "a separate
+crate." These are simply not yet implemented:
+
+- **Brotli** — DEFLATE-family with a static dictionary + context modeling;
+  land it when a web-serving / font consumer needs it.
+- **GPU texture compression** (BC1-BC7, ASTC) — the one genuinely
+  different beast (lossy, GPU-format-specific); mabda has generic compute
+  dispatch (`compute.cyr`) and the texture format enums, but no codecs
+  yet. May instead live with mabda — decide when a consumer surfaces.
+
+(Zstandard is no longer here — decode shipped 2.5.0, encode is scheduled
+at 2.5.5.)
 
 ### Primitive sources for future codecs
 
@@ -104,14 +188,14 @@ pick up if sit's `zlib_compress(1MB)` target resurfaces as a priority.
 | deflate.cyr      | 2540 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
 | zlib.cyr         |  485 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
 | gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
-| xz.cyr           | 1738 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) | full |
-| bzip2.cyr        | 1239 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) | full |
+| xz.cyr           | 1771 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
+| bzip2.cyr        | 1272 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
 | zstd.cyr         |  729 | `.zst` decode (RFC 8878): frames + Raw/RLE/Compressed blocks + FSE/Huffman literals + sequences + recent-offsets (`zstd_decompress`); self-contained bit reader / FSE / Huffman — decode only (2.5.0) | full |
 | tar.cyr          |  513 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + path-traversal guards (2.5.0) | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  239 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **11351** | | |
+| **Total**        | **11417** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -164,4 +248,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.66).
 
 ---
 
-*Last Updated: 2026-07-18 (2.5.2 cut — toolchain pin refresh to Cyrius 6.4.66; no source change. Next: xz/bzip2 ratio-cap follow-on, or the Future bucket.)*
+*Last Updated: 2026-07-18 (2.5.3 xz/bzip2 ratio cap shipped [INFO-F closed]; remaining ladder 2.5.4 xz/bzip2 encoder throughput → 2.5.5 zstd encode → 2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0. Zstandard moved out of Future — all codecs live here, modular by profile. Deferred unchanged.)*

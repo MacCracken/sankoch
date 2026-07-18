@@ -91,6 +91,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 
 - **Correctness is the optimum sovereignty** — wrong compression silently corrupts data. Every DEFLATE round-trip must match a known-good zlib output byte-for-byte.
 - **Own the stack** — zero external dependencies; every byte in this tree.
+- **Modular by profile — every lossless codec lives here.** The per-codec distlib profiles (`cyrius distlib <codec>`) let a consumer pull only the closure it needs, so adding a compression format never bloats consumers that don't use it. sankoch is therefore the home for *all* lossless-compression codecs (Zstandard included — decode shipped 2.5.0, encode on the ladder) — no "it deserves its own crate" carve-outs.
 - **Numbers don't lie** — never claim a performance improvement without before/after benchmark numbers.
 - **Test after EVERY change**, not after the feature is done.
 - **ONE change at a time** — never bundle unrelated changes.
@@ -104,7 +105,6 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 - **NEVER use `gh` CLI** — use `curl` to the GitHub API if needed
 - Do not add external dependencies — zero-dep is load-bearing
 - Do not depend on sigil for Adler-32 / CRC-32 / xxHash32 — they're inline (30-line primitives that live inside the compression format specs anyway)
-- Do not implement Zstandard in this crate — it deserves its own
 - Do not skip spec verification — every DEFLATE test must round-trip against known-good zlib output
 - Do not hand-edit `dist/sankoch.cyr` or `dist/sankoch-core.cyr` — regenerate with `cyrius distlib` / `cyrius distlib core`
 - Do not add Cyrius stdlib includes in individual `src/*.cyr` — `src/lib.cyr` owns the whole include chain

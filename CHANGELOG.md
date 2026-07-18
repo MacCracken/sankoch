@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.3] — 2026-07-18 — xz / bzip2 ratio cap
+
+Extends the DEFLATE-family decompression-bomb defense to the two remaining batch decoders, so a
+consumer can inflate untrusted `.xz` / `.bz2` under the same relative-expansion bound the DEFLATE
+family already enforces. No wire-format change — decode of legitimate streams is byte-identical
+and unaffected (the 43-line SIZE gate is untouched).
+
+### Added
+- **`xz_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)`** and
+  **`bzip2_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)`** — reject a stream
+  whose output exceeds `max_ratio * src_len` with `ERR_RATIO_LIMIT`, checked **incrementally during
+  decode** (xz at the `_xz_put` / `_xz_copy_match` output chokepoints; bzip2 at the RLE1 run-emit)
+  before the bomb materialises. The 16 MB `DECOMPRESS_MAX_OUTPUT` ceiling and the caller's `dst_cap`
+  remain the hard backstops; this adds a tunable *relative* bound. **Batch-only** — neither codec
+  has a streaming decode path. The bzip2 cap is **cumulative across concatenated `.bz2` streams**
+  (output position persists). `max_ratio < 1` (or negative `src_len` / `dst_cap`) →
+  `ERR_INVALID_INPUT`.
+- **Test + fuzz coverage**: 10 new `ratio_cap.tcyr` tests (bomb-rejected / generous-passes /
+  boundary-crossover / uncapped-equivalence / arg-validation, × xz × bzip2) and a ratio-cap fuzz
+  strategy in `fuzz_xz` / `fuzz_bzip2` (100 iterations each — a capped decode must return either
+  `ERR_RATIO_LIMIT` or the *exact* uncapped output, never a partial or altered decode).
+
+### Notes
+- xz and bzip2 each carry a local `_xz_ratio_ceiling` / `_bz2_ratio_ceiling` (a copy of deflate's
+  overflow-safe `min(src_len * max_ratio, 16 MB)` math) rather than calling deflate's, so the
+  `[lib.xz]` / `[lib.bzip2]` distlib profiles stay self-contained closures — neither module may
+  reference `deflate.cyr`.
+- Closes the last open **INFO-F** item (the ratio cap previously covered the DEFLATE family only).
+
 ## [2.5.2] — 2026-07-18 — toolchain pin refresh (Cyrius 6.4.66)
 
 Maintenance release: tracks the current Cyrius toolchain. **No source, API, or wire-format

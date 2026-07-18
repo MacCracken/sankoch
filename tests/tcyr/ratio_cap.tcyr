@@ -271,6 +271,197 @@ fn test_rc_invalid_args() {
 }
 
 # ================================================================
+# xz / bzip2 batch ratio cap (2.5.3 — the DEFLATE-family cap
+# extended to the two remaining batch-only decoders)
+# ================================================================
+
+# 64 KB of zeros → a tiny .xz stream (huge expansion). A 2:1 cap must
+# reject with ERR_RATIO_LIMIT even though dst_cap (64 KB) and the absolute
+# 16 MB ceiling would both let it through — the check fires incrementally
+# at `_xz_put` / `_xz_copy_match`.
+fn test_rc_xz_bomb_rejected() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = xz_compress(src, n, c, 4096);
+    assert(clen > 0, "rc xz bomb: compress");
+    var d = alloc(n);
+    var r = xz_decompress_with_ratio_cap(c, clen, d, n, 2);
+    assert(r == 0 - ERR_RATIO_LIMIT, "rc xz bomb: cap=2 -> ERR_RATIO_LIMIT");
+    return 0;
+}
+
+# Same bomb, generous cap (100000:1): decodes fully, round-trips byte-exact.
+fn test_rc_xz_generous_passes() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = xz_compress(src, n, c, 4096);
+    assert(clen > 0, "rc xz generous: compress");
+    var d = alloc(n);
+    var r = xz_decompress_with_ratio_cap(c, clen, d, n, 100000);
+    assert(r == n, "rc xz generous: cap=100000 returns full length");
+    _rc_assert_zeros(d, n, "rc xz generous: content all zeros");
+    return 0;
+}
+
+# Boundary: derive the crossover from the measured compressed size. A cap
+# just below the real ratio must reject; comfortably above must pass.
+fn test_rc_xz_boundary() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = xz_compress(src, n, c, 4096);
+    assert(clen > 0, "rc xz boundary: compress");
+    var actual = n / clen;            # floor expansion ratio
+    assert(actual >= 3, "rc xz boundary: ratio high enough to test");
+    var d = alloc(n);
+    var lo = xz_decompress_with_ratio_cap(c, clen, d, n, actual - 1);
+    assert(lo == 0 - ERR_RATIO_LIMIT, "rc xz boundary: cap just below rejected");
+    var hi = xz_decompress_with_ratio_cap(c, clen, d, n, actual + 2);
+    assert(hi == n, "rc xz boundary: cap just above passes");
+    return 0;
+}
+
+# A within-cap legitimate stream must decode identically through the capped
+# and uncapped paths — the cap is transparent when not tripped.
+fn test_rc_xz_equivalence_uncapped() {
+    var n = 20000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, (i % 200) & 255); i = i + 1; }
+    var c = alloc(8192);
+    var clen = xz_compress(src, n, c, 8192);
+    assert(clen > 0, "rc xz equiv: compress");
+    var d1 = alloc(n);
+    var d2 = alloc(n);
+    var u = xz_decompress(c, clen, d1, n);
+    var k = xz_decompress_with_ratio_cap(c, clen, d2, n, 100000);
+    assert(u == n, "rc xz equiv: uncapped full length");
+    assert(k == u, "rc xz equiv: capped length == uncapped length");
+    var j = 0;
+    var ok = 1;
+    while (j < n) {
+        if (load8(d1 + j) != load8(d2 + j)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "rc xz equiv: capped output == uncapped output byte-for-byte");
+    return 0;
+}
+
+# Argument validation: max_ratio must be >= 1; the guard fires before any
+# stream parsing.
+fn test_rc_xz_invalid_args() {
+    var n = 64;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = xz_compress(src, n, c, 4096);
+    assert(clen > 0, "rc xz args: compress");
+    var d = alloc(n);
+    assert(xz_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
+    "rc xz args: max_ratio=0 rejected");
+    assert(xz_decompress_with_ratio_cap(c, clen, d, n, 0 - 5) == 0 - ERR_INVALID_INPUT,
+    "rc xz args: negative max_ratio rejected");
+    return 0;
+}
+
+# 64 KB of zeros → a tiny .bz2 stream. A 2:1 cap must reject with
+# ERR_RATIO_LIMIT — the check fires incrementally at the RLE1 run-emit
+# (bzip2's output-expansion chokepoint).
+fn test_rc_bzip2_bomb_rejected() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = bzip2_compress(src, n, c, 4096);
+    assert(clen > 0, "rc bzip2 bomb: compress");
+    var d = alloc(n);
+    var r = bzip2_decompress_with_ratio_cap(c, clen, d, n, 2);
+    assert(r == 0 - ERR_RATIO_LIMIT, "rc bzip2 bomb: cap=2 -> ERR_RATIO_LIMIT");
+    return 0;
+}
+
+# Same bomb, generous cap: decodes fully, round-trips byte-exact.
+fn test_rc_bzip2_generous_passes() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = bzip2_compress(src, n, c, 4096);
+    assert(clen > 0, "rc bzip2 generous: compress");
+    var d = alloc(n);
+    var r = bzip2_decompress_with_ratio_cap(c, clen, d, n, 100000);
+    assert(r == n, "rc bzip2 generous: cap=100000 returns full length");
+    _rc_assert_zeros(d, n, "rc bzip2 generous: content all zeros");
+    return 0;
+}
+
+# Boundary: cap just below the measured ratio rejects; comfortably above
+# passes.
+fn test_rc_bzip2_boundary() {
+    var n = 65536;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = bzip2_compress(src, n, c, 4096);
+    assert(clen > 0, "rc bzip2 boundary: compress");
+    var actual = n / clen;            # floor expansion ratio
+    assert(actual >= 3, "rc bzip2 boundary: ratio high enough to test");
+    var d = alloc(n);
+    var lo = bzip2_decompress_with_ratio_cap(c, clen, d, n, actual - 1);
+    assert(lo == 0 - ERR_RATIO_LIMIT, "rc bzip2 boundary: cap just below rejected");
+    var hi = bzip2_decompress_with_ratio_cap(c, clen, d, n, actual + 2);
+    assert(hi == n, "rc bzip2 boundary: cap just above passes");
+    return 0;
+}
+
+# A within-cap legitimate stream must decode identically through the capped
+# and uncapped paths — the cap is transparent when not tripped.
+fn test_rc_bzip2_equivalence_uncapped() {
+    var n = 20000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, (i % 200) & 255); i = i + 1; }
+    var c = alloc(16384);
+    var clen = bzip2_compress(src, n, c, 16384);
+    assert(clen > 0, "rc bzip2 equiv: compress");
+    var d1 = alloc(n);
+    var d2 = alloc(n);
+    var u = bzip2_decompress(c, clen, d1, n);
+    var k = bzip2_decompress_with_ratio_cap(c, clen, d2, n, 100000);
+    assert(u == n, "rc bzip2 equiv: uncapped full length");
+    assert(k == u, "rc bzip2 equiv: capped length == uncapped length");
+    var j = 0;
+    var ok = 1;
+    while (j < n) {
+        if (load8(d1 + j) != load8(d2 + j)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "rc bzip2 equiv: capped output == uncapped output byte-for-byte");
+    return 0;
+}
+
+# Argument validation: max_ratio must be >= 1.
+fn test_rc_bzip2_invalid_args() {
+    var n = 512;
+    var src = alloc(n);
+    _rc_fill_zeros(src, n);
+    var c = alloc(4096);
+    var clen = bzip2_compress(src, n, c, 4096);
+    assert(clen > 0, "rc bzip2 args: compress");
+    var d = alloc(n);
+    assert(bzip2_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
+    "rc bzip2 args: max_ratio=0 rejected");
+    assert(bzip2_decompress_with_ratio_cap(c, clen, d, n, 0 - 5) == 0 - ERR_INVALID_INPUT,
+    "rc bzip2 args: negative max_ratio rejected");
+    return 0;
+}
+
+# ================================================================
 # Streaming ratio cap (2.4.6 — *_dec_init_capped)
 # ================================================================
 
@@ -440,6 +631,16 @@ fn main() {
     test_rc_equivalence_uncapped();
     test_rc_gzip_concatenated_cumulative();
     test_rc_invalid_args();
+    test_rc_xz_bomb_rejected();
+    test_rc_xz_generous_passes();
+    test_rc_xz_boundary();
+    test_rc_xz_equivalence_uncapped();
+    test_rc_xz_invalid_args();
+    test_rc_bzip2_bomb_rejected();
+    test_rc_bzip2_generous_passes();
+    test_rc_bzip2_boundary();
+    test_rc_bzip2_equivalence_uncapped();
+    test_rc_bzip2_invalid_args();
     test_rc_stream_zlib_bomb();
     test_rc_stream_zlib_generous();
     test_rc_stream_zlib_chunked_trips();
