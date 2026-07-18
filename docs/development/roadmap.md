@@ -68,18 +68,30 @@ cousin. Sequenced as small bites:
   byte-identical. (Found + fixed a length-limiter overshoot: the Kraft repair
   must be the exact zlib `gen_bitlen` demotion, or reference zstd rejects the
   incomplete code — sankoch's own decoder was too lenient to catch it.)
-- **Bite 3 — 4-stream Huffman literals (regen > 1023) + FSE sequences
-  (predefined tables).** 4-stream literals (jump table) so full 128 KiB
-  blocks compress; then LZ77 match-find (reuse the in-tree finder) → LL/OF/ML
-  sequences, FSE-coded in Predefined mode. Full LZ77 + entropy compression.
-  **2.5.5 is release-able once this lands** (general data compresses).
-- **Bite 4 — FSE-compressed literal weights + custom seq tables + a level
-  knob + `bench` ratio line + CI wiring** (add the encode-smoke to CI).
+- **Bite 3a — 4-stream Huffman literals (regen > 1023) — 🟡 done, uncommitted.**
+  Full 128 KiB blocks Huffman-compress their literals via 4 streams (jump
+  table) sharing one table (`sizefmt` 2/3), plus a cheap size pre-estimate
+  that skips the build when Huffman can't beat raw. ASCII text now compresses
+  at any size (~42-58 % of original). Direct weights cap the alphabet at
+  maxsym ≤ 128, so wide-alphabet / high-byte / binary blocks store for now
+  (FSE weights = bite 4). **Verified**: tcyr round-trip (8 KB / 128 KiB / wide
+  alphabet) + reference `zstd -d` on large text **and a 60/60 fuzz** across
+  sizes 100 B–180 KB and alphabets 2–250, all byte-identical. (Caught + fixed:
+  the direct-weight header byte `127 + maxsym` overflows for maxsym > 128 —
+  reference rejected a source file containing a UTF-8 byte; guard added.)
+- **Bite 3b — FSE sequences (predefined tables).** LZ77 match-find (reuse the
+  in-tree finder) → LL/OF/ML sequences, FSE-coded in Predefined mode (no table
+  description). This adds the LZ77 match compression on top of the entropy
+  coding (Bites 1-3a are entropy-only). **2.5.5 is release-able once this
+  lands** (compression competitive with `zstd`, not just Huffman).
+- **Bite 4 — FSE-compressed literal weights (wide alphabets) + custom seq
+  tables + a level knob + `bench` ratio line + CI wiring** (add the
+  encode-smoke to CI).
 
 No wire-format SIZE gate (zstd output isn't bit-reproducible across encoder
-versions). **Not shipped as a release until Bite 3 lands** — Bites 1-2 only
-compress runs (RLE) and small blocks (single-stream Huffman); general data
-still stores.
+versions). **Not shipped as a release until Bite 3b lands** — through Bite 3a
+the encoder is entropy-only (Huffman literals, no LZ77 matches) and stores
+wide-alphabet data.
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 

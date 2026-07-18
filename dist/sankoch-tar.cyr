@@ -8953,7 +8953,7 @@ fn _ze_huff_alloc() {
     if (_ze_cnt != 0) { return 0; }
     _ze_cnt = alloc(256 * 8); _ze_nb = alloc(256 * 8);
     _ze_wt = alloc(256 * 8); _ze_code = alloc(256 * 8);
-    _ze_tmp = alloc(4096);
+    _ze_tmp = alloc(133120);   # holds one block's compressed content (128 KiB + overhead)
     _ze_hw = alloc(512 * 8); _ze_hp = alloc(512 * 8);
     _ze_ha = alloc(512 * 8); _ze_hsym = alloc(256 * 8);
     return 0;
@@ -9130,11 +9130,28 @@ fn _ze_huff_codes(maxsym, maxbits) {
     return 0;
 }
 
-# Try to build a single-stream Huffman Compressed-block *content* (literals
-# section + 0-sequences byte) for src[0..n) into _ze_tmp. Returns the content
-# length if it applies and beats raw, else -1 (caller falls back to store).
+# Emit one backward Huffman stream for src[off..off+count) (reverse-order
+# symbols topped by a marker bit). Returns the byte length written.
+fn _ze_emit_huff_stream(src, off, count) {
+    var start = _ze_op;
+    _zew_reset();
+    var q = off + count - 1;
+    while (q >= off) {
+        var sym = load8(src + q) & 255;
+        _zew_add(load64(_ze_code + sym * 8), load64(_ze_nb + sym * 8));
+        q = q - 1;
+    }
+    _zew_close();
+    return _ze_op - start;
+}
+
+# Try to build a Huffman-literal Compressed-block *content* (literals section
+# + a 0-sequences byte) for src[0..n) into _ze_tmp. Single-stream literals for
+# n <= 1023, else 4 streams (jump table) sharing one Huffman table. Returns the
+# content length if it beats a raw block, else -1 (caller stores).
 fn _ze_try_huff_block(src, n) {
-    if (n < 8 || n > 1023) { return 0 - 1; }   # single-stream regen limit
+    if (n < 8) { return 0 - 1; }
+    if (n > 262143) { return 0 - 1; }   # sizefmt-3 regenerated-size limit (18 bits)
     _ze_huff_alloc();
     var s = 0;
     while (s < 256) { store64(_ze_cnt + s * 8, 0); s = s + 1; }
@@ -9146,16 +9163,30 @@ fn _ze_try_huff_block(src, n) {
         if (c > maxsym) { maxsym = c; }
         i = i + 1;
     }
-    if (maxsym < 1) { return 0 - 1; }   # single distinct byte -> RLE handles it
+    if (maxsym < 1) { return 0 - 1; }     # single distinct byte -> RLE handles it
+    # Direct-weight table: header byte = 127 + maxsym must fit a byte, so the
+    # highest present symbol must be <= 128 (i.e. <= 129 distinct low values).
+    # Wider alphabets (high/UTF-8 bytes) need FSE-compressed weights — a later
+    # bite; store those blocks for now.
+    if (maxsym > 128) { return 0 - 1; }
     var maxbits = _ze_huff_lengths(maxsym, 11);
     if (maxbits < 0) { return 0 - 1; }
     _ze_huff_codes(maxsym, maxbits);
 
-    # Build content into _ze_tmp via the _ze_put writer redirected there.
-    var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
-    _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 4096; _ze_err = 0;
+    # Cheap size estimate: bits = sum(count*len); skip the build (and its cost)
+    # when Huffman can't beat a raw block.
+    var estbits = 0;
+    s = 0;
+    while (s <= maxsym) { estbits = estbits + load64(_ze_cnt + s * 8) * load64(_ze_nb + s * 8); s = s + 1; }
+    if ((estbits / 8) + maxsym + 16 >= n) { return 0 - 1; }
 
-    _ze_op = 3;   # reserve the 3-byte literals-section header
+    var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
+    _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 133120; _ze_err = 0;
+
+    var four = 0;
+    var hdr = 3;                              # sizefmt 0 (single stream)
+    if (n > 1023) { four = 1; if (n <= 16383) { hdr = 4; } else { hdr = 5; } }   # sizefmt 2 / 3
+    _ze_op = hdr;
     # Huffman_Tree_Description: direct weights for symbols 0..maxsym-1
     # (symbol maxsym's weight is implicit). header byte = 127 + maxsym.
     _ze_put(127 + maxsym);
@@ -9167,29 +9198,47 @@ fn _ze_try_huff_block(src, n) {
         _ze_put((hi << 4) | lo);
         j = j + 2;
     }
-    var tree_bytes = _ze_op - 3;
-    # single Huffman stream: emit literals in REVERSE order, then the marker.
-    _zew_reset();
-    var q = n - 1;
-    while (q >= 0) {
-        var sym = load8(src + q) & 255;
-        _zew_add(load64(_ze_code + sym * 8), load64(_ze_nb + sym * 8));
-        q = q - 1;
-    }
-    _zew_close();
-    var comp = _ze_op - 3;
-    var regen = n;
-    var content = 0;
-    if (comp <= 1023 && _ze_err == 0) {
-        # backpatch the sizefmt-0 header (3 bytes LE): ltype=2, sizefmt=0.
-        var v = 2 | (regen << 4) | (comp << 14);
-        store8(_ze_tmp + 0, v & 255);
-        store8(_ze_tmp + 1, (v >> 8) & 255);
-        store8(_ze_tmp + 2, (v >> 16) & 255);
-        _ze_put(0);              # sequences section: 0 sequences
-        content = _ze_op;
+
+    var content = 0 - 1;
+    if (four == 0) {
+        _ze_emit_huff_stream(src, 0, n);
+        var comp = _ze_op - hdr;
+        if (_ze_err == 0 && comp <= 1023) {
+            var v = 2 | (n << 4) | (comp << 14);          # sizefmt 0
+            store8(_ze_tmp + 0, v & 255); store8(_ze_tmp + 1, (v >> 8) & 255); store8(_ze_tmp + 2, (v >> 16) & 255);
+            _ze_put(0);
+            content = _ze_op;
+        }
     } else {
-        content = 0 - 1;
+        var jt = _ze_op;
+        _ze_op = _ze_op + 6;                              # reserve the jump table
+        var each = (n + 3) / 4;
+        var s1 = _ze_emit_huff_stream(src, 0, each);
+        var s2 = _ze_emit_huff_stream(src, each, each);
+        var s3 = _ze_emit_huff_stream(src, each * 2, each);
+        _ze_emit_huff_stream(src, each * 3, n - each * 3);
+        store8(_ze_tmp + jt + 0, s1 & 255); store8(_ze_tmp + jt + 1, (s1 >> 8) & 255);
+        store8(_ze_tmp + jt + 2, s2 & 255); store8(_ze_tmp + jt + 3, (s2 >> 8) & 255);
+        store8(_ze_tmp + jt + 4, s3 & 255); store8(_ze_tmp + jt + 5, (s3 >> 8) & 255);
+        var comp2 = _ze_op - hdr;
+        var fieldmax = 16383;
+        if (hdr == 5) { fieldmax = 262143; }
+        var okstream = 1;
+        if (s1 > 65535 || s2 > 65535 || s3 > 65535) { okstream = 0; }
+        if (_ze_err == 0 && okstream == 1 && comp2 <= fieldmax) {
+            if (hdr == 4) {
+                var v2 = 2 | (2 << 2) | (n << 4) | (comp2 << 18);   # sizefmt 2
+                store8(_ze_tmp + 0, v2 & 255); store8(_ze_tmp + 1, (v2 >> 8) & 255);
+                store8(_ze_tmp + 2, (v2 >> 16) & 255); store8(_ze_tmp + 3, (v2 >> 24) & 255);
+            } else {
+                var v3 = 2 | (3 << 2) | (n << 4) | (comp2 << 22);   # sizefmt 3
+                store8(_ze_tmp + 0, v3 & 255); store8(_ze_tmp + 1, (v3 >> 8) & 255);
+                store8(_ze_tmp + 2, (v3 >> 16) & 255); store8(_ze_tmp + 3, (v3 >> 24) & 255);
+                store8(_ze_tmp + 4, (v3 >> 32) & 255);
+            }
+            _ze_put(0);
+            content = _ze_op;
+        }
     }
     _ze_out = save_out; _ze_op = save_op; _ze_cap = save_cap; _ze_err = save_err;
     if (content < 0) { return 0 - 1; }

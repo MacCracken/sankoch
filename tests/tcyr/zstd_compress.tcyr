@@ -179,6 +179,56 @@ fn test_zc_huff_random_spread() {
     return 0;
 }
 
+# Large compressible text (> 1023) uses 4-stream Huffman literals (one shared
+# table). Must round-trip and shrink (2.5.5 bite 3a).
+fn test_zc_huff_4stream() {
+    var n = 8000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var b = 97 + (i % 16);
+        if ((i % 9) == 0) { b = 32; }
+        store8(src + i, b);
+        i = i + 1;
+    }
+    var clen = _z_rt(src, n, "zstd_encode 4-stream Huffman");
+    assert(clen < (n * 3) / 4, "zstd_encode 4-stream compresses text >= 25%");
+    return 0;
+}
+
+# A full 128 KiB block Huffman-compressed as a single 4-stream literals
+# section (exercises the largest single-table path + sizefmt 3).
+fn test_zc_huff_128k() {
+    var n = 131072;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var b = 97 + (i % 20);
+        if ((i % 11) == 0) { b = 32; }
+        store8(src + i, b);
+        i = i + 1;
+    }
+    var clen = _z_rt(src, n, "zstd_encode 128 KiB 4-stream");
+    assert(clen < n, "zstd_encode 128 KiB block compresses");
+    return 0;
+}
+
+# Wide alphabet (high bytes present) must fall back to a store block for now
+# (direct weights cap maxsym at 128) and still round-trip byte-exact.
+fn test_zc_wide_alphabet() {
+    var n = 4000;
+    var src = alloc(n);
+    var st = 777;
+    var i = 0;
+    while (i < n) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        store8(src + i, (st >> 40) & 255);   # full 0..255 range
+        i = i + 1;
+    }
+    _z_rt(src, n, "zstd_encode wide alphabet -> store, round-trips");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zc_empty();
@@ -192,6 +242,9 @@ fn main() {
     test_zc_huff_text();
     test_zc_huff_length_limit();
     test_zc_huff_random_spread();
+    test_zc_huff_4stream();
+    test_zc_huff_128k();
+    test_zc_wide_alphabet();
     return assert_summary();
 }
 
