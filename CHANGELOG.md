@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.4] — 2026-07-18 — xz / bzip2 encoder throughput
+
+Pure speed work on the two slow encoders — **output byte-identical**. Every codec's compressed
+bytes are unchanged (xz stays within its ratio band; bzip2 stays byte-identical to `bzip2 -9`), so
+the 43-line SIZE wire-format gate is untouched and no decode path is affected.
+
+### Changed
+- **xz optimal-parse encoder — ~5× faster on text, ~2.5× on repetitive input** (4 KB text
+  119.4M → 24.0M ns/op; zeros 135.6M → 54.3M). The block-DP `_xze_dp_fill` did O(n × MATCH_MAX)
+  work on inputs with long matches. Three output-preserving changes: (1) **hoisted the
+  `_xze_price_dist` recompute** out of the normal-match length loop — the distance price depends on
+  length only via `len_state = min(len-2, 3)`, so it has ≤ 3 distinct values per match but was
+  recomputed once per length; (2) **inlined `_xze_relax`** at the two hot length loops with the
+  loop-invariant state/rep-set/kind/dist args hoisted, so the common non-improving case is a
+  load+compare not a 10-arg call; (3) a **match-finder `best` pre-check** in `_xze_get_matches`
+  that skips the full byte-scan of candidates that cannot beat the current best. Random input is
+  unaffected (its match loops rarely run).
+- **bzip2 encoder — ~5% faster on random** (4 KB rand 3.65M → 3.45M ns/op). Two output-preserving
+  changes: **`% n` → conditional subtraction** in the BWT prefix-doubling sort (`_bze_csort` +
+  rank reassignment + last-column build), and a **scalarized 6-group cost accumulator** in
+  `_bze_send_mtf` (the hot random-case Huffman-group loop). The random worst case is MTF/Huffman-
+  bound, not BWT-bound, so the sort's modulo removal is the minor of the two.
+
+### Notes
+- Verified output-identical by a 40-input fingerprint battery (compressed length + CRC-32 unchanged
+  across xz + bzip2 × 4 sizes × 5 input shapes), the full tcyr round-trip suite (4,483,866
+  assertions), and the `fuzz_xz` / `fuzz_bzip2` encode→decode harnesses. Before/after numbers:
+  [`docs/benchmarks/2026-07-18-2.5.4-encoder-throughput.md`](docs/benchmarks/2026-07-18-2.5.4-encoder-throughput.md).
+
 ## [2.5.3] — 2026-07-18 — xz / bzip2 ratio cap
 
 Extends the DEFLATE-family decompression-bomb defense to the two remaining batch decoders, so a

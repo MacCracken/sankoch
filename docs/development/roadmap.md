@@ -1,17 +1,18 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.3) | **Last Updated**: 2026-07-18
+> **Status**: Stable (v2.5.4) | **Last Updated**: 2026-07-18
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
 limitations, and the longer-horizon Future bucket. The codec set through
-2.5.3 is complete — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2
+2.5.4 is complete — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2
 (de + compress, batch + streaming) + zstd decode + a shared tar cursor —
 with ratio-capped decompression across the DEFLATE family + xz + bzip2
-(the xz/bzip2 cap shipped 2.5.3). The scheduled ladder below continues that
-(2.5.4 encoder speed, 2.5.5 zstd encode — completing the zstd codec) and
-opens a full-feature ZIP archive container arc (2.6.x — agnosai's `.agpkg`
-need first at 2.6.0, then the rest of the surface across 2.6.1+).
+(2.5.3) and a retuned xz / bzip2 encoder (2.5.4, ~5× faster xz on text,
+output-identical). The scheduled ladder below continues that (2.5.5 zstd
+encode — completing the zstd codec) and opens a full-feature ZIP archive
+container arc (2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the
+rest of the surface across 2.6.1+).
 
 ---
 
@@ -22,15 +23,12 @@ need first at 2.6.0, then the rest of the surface across 2.6.1+).
 > the DEFLATE-family `ERR_RATIO_LIMIT` zip-bomb defense to the last two batch
 > decoders. Closed the INFO-F gap.
 
-### 2.5.4 — xz / bzip2 encoder throughput
-
-The optimal-parse DP (xz) and the BWT block-sort (bzip2) dominate their
-encode time. Profile both, then land throughput wins that **preserve
-output bytes** — the xz encoder stays within its ~1–5 % of `xz -6`, and
-bzip2 stays byte-identical to `bzip2 -9`. Neither encoder sits in the
-wire-format SIZE gate, so this is pure speed work: capture before/after
-`bench` ratio + ns/op lines per the "numbers don't lie" rule. Patch
-release.
+> **2.5.4 — xz / bzip2 encoder throughput — ✅ shipped 2026-07-18** (see
+> CHANGELOG + [`docs/benchmarks/2026-07-18-2.5.4-encoder-throughput.md`](../benchmarks/2026-07-18-2.5.4-encoder-throughput.md)).
+> Output-byte-identical speedups: xz optimal-parse ~5× on text / ~2.5× on
+> repetitive input (hoisted distance-price + inlined `_xze_relax` + match-finder
+> `best` pre-check); bzip2 ~5% on random (`% n` → conditional subtract in the
+> BWT sort + scalarized 6-group Huffman-cost accumulator).
 
 ### 2.5.5 — zstd encode
 
@@ -188,14 +186,14 @@ at 2.5.5.)
 | deflate.cyr      | 2540 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
 | zlib.cyr         |  485 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
 | gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
-| xz.cyr           | 1771 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
-| bzip2.cyr        | 1272 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
+| xz.cyr           | 1819 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
+| bzip2.cyr        | 1316 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
 | zstd.cyr         |  729 | `.zst` decode (RFC 8878): frames + Raw/RLE/Compressed blocks + FSE/Huffman literals + sequences + recent-offsets (`zstd_decompress`); self-contained bit reader / FSE / Huffman — decode only (2.5.0) | full |
 | tar.cyr          |  513 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + path-traversal guards (2.5.0) | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  239 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **11417** | | |
+| **Total**        | **11509** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -248,4 +246,4 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.66).
 
 ---
 
-*Last Updated: 2026-07-18 (2.5.3 xz/bzip2 ratio cap shipped [INFO-F closed]; remaining ladder 2.5.4 xz/bzip2 encoder throughput → 2.5.5 zstd encode → 2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0. Zstandard moved out of Future — all codecs live here, modular by profile. Deferred unchanged.)*
+*Last Updated: 2026-07-18 (2.5.4 xz/bzip2 encoder throughput shipped [output-identical, xz ~5× on text]; 2.5.3 ratio cap shipped [INFO-F closed]. Remaining ladder 2.5.5 zstd encode → 2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0. Zstandard moved out of Future — all codecs live here, modular by profile. Deferred unchanged.)*

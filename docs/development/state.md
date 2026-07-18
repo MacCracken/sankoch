@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-07-18 (v2.5.3 cut — xz / bzip2 ratio cap `*_decompress_with_ratio_cap`, extending the DEFLATE-family zip-bomb defense to the last two batch decoders; no wire-format change) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-07-18 (v2.5.4 cut — xz / bzip2 encoder throughput; xz optimal-parse ~5× faster on text / ~2.5× on repetitive input, bzip2 ~5% on random; **output byte-identical**, no wire-format change) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.5.3` — single source of truth (2.5.3 = xz / bzip2 ratio cap [`xz_decompress_with_ratio_cap` / `bzip2_decompress_with_ratio_cap`; `ERR_RATIO_LIMIT`], extending the DEFLATE-family zip-bomb defense to the last two batch decoders — no wire-format change; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
+- **`VERSION`**: `2.5.4` — single source of truth (2.5.4 = xz / bzip2 encoder throughput [output byte-identical: xz optimal-parse ~5× on text / ~2.5× on repetitive input, bzip2 ~5% on random]; 2.5.3 = xz / bzip2 ratio cap [`*_decompress_with_ratio_cap`; `ERR_RATIO_LIMIT`]; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
 - **`cyrius.cyml [package].cyrius`**: `6.4.66` — toolchain pin (unchanged since 2.5.2; bumped from 6.4.43 at 2.5.2)
-- **Tag**: `2.5.3` (bare semver, no `v` prefix)
+- **Tag**: `2.5.4` (bare semver, no `v` prefix)
 - **Released**: 2026-07-18
 
 ## Distribution
@@ -28,7 +28,7 @@ type: state
 
 ## Source
 
-- **Source**: **11,417 lines** across 19 domain modules (`src/*.cyr`). The 2.5.3 ratio cap grew `xz.cyr` (**1,771**, +33 — `_xz_ratio_max` + emit-site checks + `_xz_ratio_ceiling` + `xz_decompress_with_ratio_cap`) and `bzip2.cyr` (**1,272**, +33 — the same shape). Largest modules: `deflate.cyr` **2,540**, `xz.cyr` **1,771**, `bzip2.cyr` **1,272**, `lz4.cyr` **935**, `zstd.cyr` **729**, `huffman.cyr` **683**, `gzip.cyr` **638**, `tar.cyr` **513**; `runtime.cyr` **73**, `lib.cyr` **239**, `types.cyr` **42**.
+- **Source**: **11,509 lines** across 19 domain modules (`src/*.cyr`). The 2.5.4 encoder-throughput work grew `xz.cyr` (**1,819**, +48 — hoisted distance-price + inlined `_xze_relax` at the two hot DP loops + match-finder `best` pre-check) and `bzip2.cyr` (**1,316**, +44 — `% n` → conditional subtract in the BWT sort + a scalarized 6-group cost accumulator in `_bze_send_mtf`). Largest modules: `deflate.cyr` **2,540**, `xz.cyr` **1,819**, `bzip2.cyr` **1,316**, `lz4.cyr` **935**, `zstd.cyr` **729**, `huffman.cyr` **683**, `gzip.cyr` **638**, `tar.cyr` **513**; `runtime.cyr` **73**, `lib.cyr` **239**, `types.cyr` **42**.
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
@@ -66,28 +66,27 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 11,460 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd decode + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
+| `dist/sankoch.cyr`           | 11,552 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd decode + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
 | `dist/sankoch-core.cyr`      |   331 | **[lib.core]** kernel-safe LZ4 batch decompress only (types + xxhash32 + lz4_decode); no alloc / syscalls / mutex (AGNOS initrd) |
 | `dist/sankoch-zlib.cyr`      | 4,924 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
 | `dist/sankoch-gzip.cyr`      | 5,077 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
-| `dist/sankoch-xz.cyr`        | 2,730 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-bzip2.cyr`     | 2,047 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-xz.cyr`        | 2,778 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-bzip2.cyr`     | 2,091 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
 | `dist/sankoch-zstd.cyr`      |   782 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd decode, fully self-contained (own bit reader / FSE / Huffman). Smallest useful profile — the agnova `base-system.tar.zst` installer path + takumi's zstd tarballs |
-| `dist/sankoch-tar.cyr`       | 9,374 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
+| `dist/sankoch-tar.cyr`       | 9,466 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
 
 All zero deps. Regenerated at every release via `cyrius distlib` (full) plus the seven named profiles — `cyrius distlib core` / `zlib` / `gzip` / `xz` / `bzip2` / `zstd` / `tar` (eight bundles total). CI gates on drift across all eight.
 
 ## In-flight slots
 
-**Ladder committed; 2.5.3 shipped (2026-07-18), 2.5.4 next.** 2.5.3 landed
-the xz / bzip2 ratio cap (`*_decompress_with_ratio_cap`), closing the last
-untrusted-input zip-bomb gap beyond the DEFLATE family (INFO-F). Remaining
-forward ladder in
+**Ladder committed; 2.5.4 shipped (2026-07-18), 2.5.5 next.** 2.5.3 landed
+the xz / bzip2 ratio cap (INFO-F closed); 2.5.4 landed the xz / bzip2
+encoder-throughput work (xz optimal-parse ~5× on text / ~2.5× on repetitive
+input, bzip2 ~5% on random — all output-byte-identical; before/after numbers
+in [`docs/benchmarks/2026-07-18-2.5.4-encoder-throughput.md`](../benchmarks/2026-07-18-2.5.4-encoder-throughput.md)).
+Remaining forward ladder in
 [`roadmap.md`](roadmap.md#-scheduled--the-committed-next-release-ladder):
 
-- **2.5.4 — xz / bzip2 encoder throughput.** Speed the optimal-parse DP
-  (xz) + BWT block-sort (bzip2) while preserving output bytes; before/after
-  `bench` numbers required.
 - **2.5.5 — zstd encode.** The RFC-8878 encoder completing the codec that
   shipped decode-only at 2.5.0 (FSE + Huffman encoders + sequence/block/
   frame build atop the in-tree LZ77); validated round-tripping through
@@ -143,6 +142,7 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.5.4  | 2026-07-18 | xz / bzip2 encoder throughput — output-byte-identical speedups (xz optimal-parse ~5× text / ~2.5× repetitive; bzip2 ~5% random) |
 | 2.5.3  | 2026-07-18 | xz / bzip2 ratio cap (`*_decompress_with_ratio_cap`; `ERR_RATIO_LIMIT`) — DEFLATE-family zip-bomb defense extended to the last two batch decoders; closes INFO-F |
 | 2.5.2  | 2026-07-18 | Toolchain pin refresh → Cyrius 6.4.66 (maintenance; no source/API/wire-format change) |
 | 2.5.1  | 2026-07-10 | Per-codec distlib profiles (`[lib.zstd]` / `[lib.bzip2]` / `[lib.xz]` / `[lib.gzip]` / `[lib.tar]`) — pull one codec's closure, not the whole lib |
