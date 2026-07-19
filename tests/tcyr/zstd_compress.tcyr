@@ -30,6 +30,24 @@ fn _z_rt(src, n, label) {
     return clen;
 }
 
+# Same, but compress at an explicit level via zstd_compress_level.
+fn _z_rt_lvl(src, n, level, label) {
+    var comp = alloc(n * 2 + 4096);
+    var clen = zstd_compress_level(src, n, comp, n * 2 + 4096, level);
+    if (clen < 0) { assert(0 == 1, label); return clen; }
+    var dec = alloc(n + 16);
+    var dl = zstd_decompress(comp, clen, dec, n + 16);
+    assert(dl == n, label);
+    var i = 0;
+    var ok = 1;
+    while (i < n) {
+        if (load8(dec + i) != load8(src + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, label);
+    return clen;
+}
+
 # Empty input → a valid empty frame that decodes to 0 bytes.
 fn test_zc_empty() {
     var src = alloc(1);
@@ -365,10 +383,36 @@ fn test_zc_repeat_offsets() {
     return 0;
 }
 
+# Compression-level knob (2.5.6). The same semi-compressible input at every level
+# 1..9 must round-trip byte-exact, and a deeper level must never compress worse than
+# a shallower one (level 9 <= level 1) — a monotonicity check on the match-finder knob.
+fn test_zc_level_knob() {
+    var n = 20000;
+    var src = alloc(n);
+    var st = 7;
+    var i = 0;
+    while (i < n) {
+        if ((i % 20) < 12 && i > 40) {
+            store8(src + i, load8(src + i - 37));           # recurring fragment -> matches
+        } else {
+            st = st * 6364136223846793005 + 1442695040888963407;
+            store8(src + i, 97 + ((st >> 40) % 24));        # literal noise
+        }
+        i = i + 1;
+    }
+    var c1 = _z_rt_lvl(src, n, 1, "zstd_encode level 1 round-trips");
+    _z_rt_lvl(src, n, 3, "zstd_encode level 3 round-trips");
+    _z_rt_lvl(src, n, 6, "zstd_encode level 6 round-trips");
+    var c9 = _z_rt_lvl(src, n, 9, "zstd_encode level 9 round-trips");
+    assert(c9 <= c1, "zstd_encode deeper level compresses at least as well");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zc_malformed_survive();
     test_zc_repeat_offsets();
+    test_zc_level_knob();
     test_zc_seq_matches();
     test_zc_seq_mixed();
     test_zc_empty();

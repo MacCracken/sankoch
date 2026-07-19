@@ -470,6 +470,21 @@ fn main() {
     bench_d("xz  d text  4K", FORMAT_XZ, c, clen, d, 16384, iters);
     println("");
 
+    # ---- zstd encode throughput (2.5.6) — informational, not SIZE-gated.
+    # LZ77 hash-chain + one-step lazy parse + FSE sequences / Huffman literals;
+    # level 6 is the default. Output decodes byte-identically via reference `zstd -d`.
+    println("--- zstd encode (LZ77+FSE, lazy parse, 10 iters) ---");
+    fill_text(src4k, 4096);
+    bench_c("zstd c text  4K", FORMAT_ZSTD, src4k, 4096, c, 16384, 10);
+    fill_zeros(src4k, 4096);
+    bench_c("zstd c zeros 4K", FORMAT_ZSTD, src4k, 4096, c, 16384, 10);
+    fill_random(src4k, 4096);
+    bench_c("zstd c rand  4K", FORMAT_ZSTD, src4k, 4096, c, 16384, 10);
+    fill_text(src4k, 4096);
+    clen = compress(FORMAT_ZSTD, src4k, 4096, c, 16384);
+    bench_d("zstd d text  4K", FORMAT_ZSTD, c, clen, d, 16384, iters);
+    println("");
+
     # ---- ratio-capped decompress (2.4.5) — informational, not SIZE-gated.
     # Zip-bomb defense: a 4K zero block compresses to a tiny stream
     # (hundreds:1), rejected by a tight cap (ERR_RATIO_LIMIT, mid-inflate)
@@ -568,6 +583,18 @@ fn main() {
     size_line("zlib6_text_256K",    262144, zlib_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("gzip6_text_256K",    262144, gzip_compress_level(lsrc, 262144, lc, 270336, 6));
     size_line("lz4f_text_256K",     262144, lz4f_compress(lsrc, 262144, lc, 270336));
+
+    # ---- zstd sizes (2.5.6) ----
+    # Default level 6 (LZ77 hash-chain + lazy parse + FSE sequences). The 1..9
+    # level knob's ratio spread shows on mixed/source data, not this trivially
+    # periodic fill_text (which is one long match at any level) — see the
+    # test_zc_level_knob monotonicity check and the CHANGELOG numbers.
+    fill_text(lsrc, 4096);
+    size_line("zstd6_text_4K",   4096,   zstd_compress_level(lsrc, 4096, lc, 270336, 6));
+    fill_text(lsrc, 65536);
+    size_line("zstd6_text_64K",  65536,  zstd_compress_level(lsrc, 65536, lc, 270336, 6));
+    fill_text(lsrc, 262144);
+    size_line("zstd6_text_256K", 262144, zstd_compress_level(lsrc, 262144, lc, 270336, 6));
 
     # ---- LZ4F block-max sweep sizes (v2.3.3) ----
     # Same 256K text input at each BD block-max ID. Output shrinks as the

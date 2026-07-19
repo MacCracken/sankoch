@@ -9361,6 +9361,25 @@ var _ze_prev = 0;   # chain: prev occurrence, indexed by pos & (WINDOW-1)
 # decode stay in lockstep across a multi-block frame.
 var _ze_ro1 = 1; var _ze_ro2 = 4; var _ze_ro3 = 8;
 
+# Match-finder knobs set by zstd_set_level. _ze_chain = hash-chain search depth,
+# _ze_lazy = whether to run the one-step lazy lookahead. Default is level 6.
+var _ze_chain = 128; var _ze_lazy = 1;
+
+# Map a 1..9 level to match-finder effort (fast -> best), mirroring the DEFLATE
+# convention: level 1 is greedy/shallow, 6 is the default, 9 searches deepest.
+fn zstd_set_level(level) {
+    if (level <= 1) { _ze_chain = 8; _ze_lazy = 0; }
+    elif (level == 2) { _ze_chain = 16; _ze_lazy = 1; }
+    elif (level == 3) { _ze_chain = 32; _ze_lazy = 1; }
+    elif (level == 4) { _ze_chain = 64; _ze_lazy = 1; }
+    elif (level == 5) { _ze_chain = 96; _ze_lazy = 1; }
+    elif (level == 6) { _ze_chain = 128; _ze_lazy = 1; }
+    elif (level == 7) { _ze_chain = 192; _ze_lazy = 1; }
+    elif (level == 8) { _ze_chain = 256; _ze_lazy = 1; }
+    else { _ze_chain = 512; _ze_lazy = 1; }
+    return 0;
+}
+
 # Decide the Offset_Value to emit for a match of byte `offset` preceded by `llen`
 # literals, and advance _ze_ro1/2/3 exactly as the decoder's _z_resolve_offset
 # does for that value. Prefers a repeat code (Offset_Value 1/2/3 -> offset code
@@ -9473,15 +9492,15 @@ fn _ze_lz_parse(src, n) {
     var lp = 0;                 # literals written into _zs_lit
     var litstart = 0;
     var pos = 0;
-    var chain_max = 128;
+    var chain_max = _ze_chain;
     while (pos + 4 <= n) {
         _ze_find(src, pos, n, chain_max);
         var blen = _ze_bestlen; var boff = _ze_bestoff;
         _ze_insert(src, pos, n);
         if (blen >= 3) {
-            # lazy lookahead, unless the match is already "nice" (long enough that a
-            # 1-byte-later match rarely beats it — saves the second search on runs).
-            if (blen < 128 && pos + 5 <= n) {
+            # lazy lookahead (when enabled), unless the match is already "nice" (long
+            # enough that a 1-byte-later match rarely beats it — saves the second search).
+            if (_ze_lazy == 1 && blen < 128 && pos + 5 <= n) {
                 _ze_find(src, pos + 1, n, chain_max);   # lazy: pos is now in the chain
                 if (_ze_bestlen > blen) {
                     _ze_insert(src, pos + 1, n);        # defer -> pos+1 is the match position
@@ -9851,10 +9870,11 @@ fn _ze_try_seq_block(src, n) {
     return content;
 }
 
-# Public: compress src -> a .zst frame (Huffman-literal Compressed blocks for
-# small blocks; Raw / RLE store-mode otherwise). Returns the frame byte
-# length, or a negative error. Lock-free (see above).
-fn zstd_compress(src, src_len, dst, dst_cap) {
+# Core encode: src -> a .zst frame (Compressed blocks — LZ77+FSE sequences or
+# Huffman literals; Raw / RLE store-mode otherwise), using the match-finder knobs
+# already set via zstd_set_level. Returns the frame byte length, or a negative
+# error. Lock-free (see above).
+fn _ze_encode(src, src_len, dst, dst_cap) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _ze_out = dst; _ze_op = 0; _ze_cap = dst_cap; _ze_err = 0;
     _ze_ro1 = 1; _ze_ro2 = 4; _ze_ro3 = 8;   # recent offsets reset per frame
@@ -9906,6 +9926,20 @@ fn zstd_compress(src, src_len, dst, dst_cap) {
     }
     if (_ze_err != 0) { return 0 - ERR_BUFFER_TOO_SMALL; }
     return _ze_op;
+}
+
+# Public: compress src -> a .zst frame at the default level (6). Returns the frame
+# byte length, or a negative error.
+fn zstd_compress(src, src_len, dst, dst_cap) {
+    zstd_set_level(6);
+    return _ze_encode(src, src_len, dst, dst_cap);
+}
+
+# Public: compress at an explicit level (1=fast/greedy .. 6=default .. 9=best/deepest
+# search). Ratio-for-throughput knob; the output is a valid frame at every level.
+fn zstd_compress_level(src, src_len, dst, dst_cap, level): i64 {
+    zstd_set_level(level);
+    return _ze_encode(src, src_len, dst, dst_cap);
 }
 
 # --- tar.cyr ---

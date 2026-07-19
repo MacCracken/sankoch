@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   34-byte crash repro.
 
 ### Added
+- **zstd encoder: compression-level knob** (2.5.6) — `zstd_compress_level(src, src_len,
+  dst, dst_cap, level)` exposes a 1..9 match-finder effort dial (`zstd_set_level` maps it
+  to hash-chain search depth 8→512 and lazy on/off, mirroring the DEFLATE convention);
+  `zstd_compress` is now level 6 (unchanged default), and the generic
+  `compress_level(FORMAT_ZSTD, …, level)` path forwards the level instead of ignoring it.
+  Output is a valid frame at every level (reference `zstd -d` decodes all); ratio is
+  monotonic in the level (e.g. `src/zstd.cyr`: level 1 → 26,568 B, level 6 → 23,908 B,
+  level 9 → 23,803 B), trading search depth for encode speed. New `test_zc_level_knob`
+  (round-trips every level; asserts level 9 ≤ level 1) and zstd SIZE lines + an encode
+  throughput block in `tests/bcyr/sankoch.bcyr`.
 - **zstd encoder: lazy match parse** (2.5.6) — the LZ77 match finder now uses the
   classic one-step lazy heuristic: at each position it takes the longest match, but if
   the *next* position has a strictly longer one it defers, emitting the current byte as

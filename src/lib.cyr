@@ -138,10 +138,9 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
         return _bz2_compress_inner(src, src_len, dst, dst_cap, level);
     }
     if (format == FORMAT_ZSTD) {
-        # zstd encode (2.5.5) — store mode (Raw/RLE blocks) at this bite;
-        # level not yet used (the compressed path will map it). zstd_compress
-        # is lock-free and self-contained (matches the decoder).
-        return zstd_compress(src, src_len, dst, dst_cap);
+        # zstd encode — LZ77+FSE sequences / Huffman literals / store, with a
+        # 1..9 match-finder level (2.5.6). Lock-free and self-contained.
+        return zstd_compress_level(src, src_len, dst, dst_cap, level);
     }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
