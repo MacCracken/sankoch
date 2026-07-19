@@ -24,12 +24,13 @@ zstd is a **full codec** — decode (`zstd_decompress` / `FORMAT_ZSTD`,
 v2.5.0+) and encode (`zstd_compress` / `compress(FORMAT_ZSTD, …)`, v2.5.5+):
 a sovereign RFC-8878 implementation (own bit reader / FSE / Huffman, no
 runtime/mutex — the smallest self-contained profile). The encoder does LZ77
-(hash-chain matcher + one-step lazy parse) + FSE-coded sequences with
-repeat-offset codes + length-limited Huffman literals (FSE-compressed weights
-for wide alphabets); its output decodes byte-identical via reference `zstd -d`
-v1.5.7. With a 1..9 level knob (`zstd_compress_level`, default 6), it **beats
-`zstd -1`** on source / binary / repetitive data, trailing only on UTF-8-heavy
-text (v2.5.6). The decoder is hardened against hostile input (v2.5.6, fuzzed).
+(hash-chain matcher + lazy parse + repcode-aware matching) + FSE-coded
+sequences (repeat-offset codes + per-block adaptive FSE tables) +
+length-limited Huffman literals (FSE-compressed weights for wide alphabets);
+its output decodes byte-identical via reference `zstd -d` v1.5.7. With a 1..9
+level knob (`zstd_compress_level`, default 6), it now **beats `zstd -3`** —
+zstd's default level — by 4–11 % on real code / text / binary (v2.5.7). The
+decoder is hardened against hostile input (v2.5.6, fuzzed).
 
 bzip2 is a **full codec** — decode (`bzip2_decompress` / `FORMAT_BZIP2`,
 v2.4.2+) and encode (`bzip2_compress` / `compress(FORMAT_BZIP2, …)`,

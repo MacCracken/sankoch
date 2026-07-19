@@ -53,12 +53,18 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   re-checked the 2.3.3–2.3.7 paths (LZ4F block-max + per-block
   checksum, gzip FHCRC + concatenated streaming, FDICT dict-scratch
   match-copy, alloc-fail propagation).
+- `docs/audit/2026-07-18-zstd-decoder-hardening.md` — 2.5.6 zstd decoder
+  hardening. An adversarial multi-agent audit of the decode path against
+  hostile `.zst` input surfaced **36 reachable issues** (24 crash, 10
+  memory-corruption, 2 DoS) plus a sibling OOB in `zstd_frame_content_size`
+  — all fixed; new `fuzz/fuzz_zstd.fcyr` decode-survival harness added.
 
 Next periodic audit: the **P(-1) scaffold-hardening closeout** run
 before the next minor cut (none currently scheduled — the codec set is
 complete through 2.5.x). Most recent run:
-`docs/audit/2026-06-16-pre-2.4.0.md` (2.3.8 closeout, zero
-HIGH/MEDIUM/LOW findings). Forward ladder in
+`docs/audit/2026-07-18-zstd-decoder-hardening.md` (2.5.6 zstd decoder
+hardening — 36 reachable OOB / memory-corruption / DoS issues found and
+fixed; decoder now fuzzed). Forward ladder in
 [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Supported Versions

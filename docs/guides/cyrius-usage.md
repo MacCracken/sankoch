@@ -10,7 +10,7 @@ Toolchain pinned in `cyrius.cyml`:
 
 ```toml
 [package]
-cyrius = "6.0.1"
+cyrius = "6.4.67"
 ```
 
 CI reads the pin from the manifest; locally you can install that version
@@ -126,13 +126,13 @@ cyrius vet  src/lib.cyr         # audit include dependencies
 
 Sankoch is stdlib-only, so there is no `cyrius.lock` and no
 `cyrius deps --verify` gate — the stdlib snapshot is implicitly pinned
-by the toolchain version (`cyrius = "6.0.1"` in `cyrius.cyml`). Add
+by the toolchain version (`cyrius = "6.4.67"` in `cyrius.cyml`). Add
 `cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
 ever added under `[deps.*]`.
 
 All four run in CI. `fmt --check` emits the formatted source; CI diffs
 against the committed file and fails on drift. To apply the fix
-in-place (Cyrius 5.5.22+, also available on 6.0.1):
+in-place (Cyrius 5.5.22+, current pin 6.4.67):
 
 ```bash
 cyrfmt --write src/checksum.cyr    # or -w
@@ -145,17 +145,20 @@ Idempotent — re-running on a clean file is a no-op (mtime unchanged).
 ```bash
 cyrius fuzz                          # auto-discovers fuzz/*.fcyr
 # or run one harness at a time:
-cyrius build fuzz/fuzz_lz4.fcyr     build/fuzz_lz4 && ./build/fuzz_lz4
+cyrius build fuzz/fuzz_lz4.fcyr     build/fuzz_lz4     && ./build/fuzz_lz4
 cyrius build fuzz/fuzz_deflate.fcyr build/fuzz_deflate && ./build/fuzz_deflate
+cyrius build fuzz/fuzz_xz.fcyr      build/fuzz_xz      && ./build/fuzz_xz
+cyrius build fuzz/fuzz_bzip2.fcyr   build/fuzz_bzip2   && ./build/fuzz_bzip2
+cyrius build fuzz/fuzz_zstd.fcyr    build/fuzz_zstd    && ./build/fuzz_zstd
 ```
 
-Round-trip fuzzing at varying sizes + malformed-input survival.
-`fuzz_lz4` runs 500 round-trip + 200 malformed iterations; `fuzz_deflate`
-runs 240 + 100 for DEFLATE itself, 160 each for zlib/gzip wrappers,
-plus 204 streaming iterations across all four streaming encoders
-(DEFLATE / zlib / gzip / LZ4F). Both harnesses run in CI per
-`.github/workflows/ci.yml` — a non-zero exit (assert fires or crash)
-fails the build.
+Round-trip fuzzing at varying sizes + malformed-input survival. Five
+auto-discovered harnesses — `fuzz_lz4`, `fuzz_deflate`, `fuzz_xz`,
+`fuzz_bzip2`, `fuzz_zstd` — cover round-trip and malformed/corruption input
+across every codec plus the streaming and ratio-cap paths. All run in CI per
+`.github/workflows/ci.yml` — a non-zero exit (assert fires or crash) fails the
+build. Current per-harness iteration counts live in
+[`../development/state.md`](../development/state.md#fuzz-totals).
 
 ## Release flow
 
@@ -176,7 +179,7 @@ The release workflow: runs CI → verifies `VERSION == tag` → builds
 with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates
 bundle → archives src tarball + `dist/sankoch.cyr` + SHA256SUMS →
 creates a GitHub Release. No `cyrius.lock` is shipped — sankoch is
-stdlib-only (zero git deps), so the stdlib pin via `cyrius = "6.0.1"`
+stdlib-only (zero git deps), so the stdlib pin via `cyrius = "6.4.67"`
 in `cyrius.cyml` is the lockfile.
 
 ## Gotchas

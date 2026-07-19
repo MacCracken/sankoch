@@ -18,7 +18,7 @@
 
 ## Goal
 
-Own lossless compression. One library provides LZ4, DEFLATE, zlib, and gzip de/compression for everything downstream — ark packages, AGNOS initrd, git object reads, shravan/tarang container formats. Zero external dependencies, zero C FFI, zero shell-outs to `gzip`.
+Own lossless compression. One library provides LZ4, LZ4F, DEFLATE, zlib, gzip, xz, bzip2, and zstd de/compression — plus a shared tar cursor — for everything downstream: ark packages, AGNOS initrd, git object reads, shravan/tarang container formats. Zero external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
@@ -69,16 +69,19 @@ src/
   gzip.cyr         — gzip wrapper + concatenated batch + gzip_enc_* + gzip_dec_*
   xz.cyr           — .xz de/compress: container + LZMA2 + LZMA range coder, optimal-parse encoder (xz_decompress / xz_compress)
   bzip2.cyr        — .bz2 de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (bzip2_decompress / bzip2_compress)
+  zstd.cyr         — RFC-8878 zstd de/compress: FSE/Huffman + repcode-aware + adaptive-FSE-table encoder (zstd_decompress / zstd_compress / zstd_compress_level)
+  tar.cyr          — shared tar cursor; tar_open_auto dispatches to gzip/xz/bzip2/zstd
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
+  runtime.cyr      — shared runtime seam: API lock (_sankoch_lock/_unlock) + alloc seam
 programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules
-tests/tcyr/        — test suites: 15 codec×direction files + _harness.tcyr (shared) + git_object.tcyr
+tests/tcyr/        — codec×direction suites + cross-cutting suites (checksum, detect_error, ratio_cap, stream, git_object) + _harness.tcyr (shared); counts in state.md
 tests/bcyr/        — benchmarks (sankoch.bcyr)
 fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd — auto-discovered via fuzz/*.fcyr, all wired into CI)
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
   sankoch-core.cyr — kernel-safe profile; ships as lib/sankoch-core.cyr alongside
-cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] modules)
+cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] + per-codec profiles: zlib/gzip/xz/bzip2/zstd/tar)
 ```
 
 Modules tagged `[core]` are members of `[lib.core]` — the kernel-safe profile consumed by the AGNOS initrd loader. They contain no `alloc()`, no syscalls, and no mutex usage.
@@ -91,7 +94,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 
 - **Correctness is the optimum sovereignty** — wrong compression silently corrupts data. Every DEFLATE round-trip must match a known-good zlib output byte-for-byte.
 - **Own the stack** — zero external dependencies; every byte in this tree.
-- **Modular by profile — every lossless codec lives here.** The per-codec distlib profiles (`cyrius distlib <codec>`) let a consumer pull only the closure it needs, so adding a compression format never bloats consumers that don't use it. sankoch is therefore the home for *all* lossless-compression codecs (Zstandard included — decode shipped 2.5.0, encode on the ladder) — no "it deserves its own crate" carve-outs.
+- **Modular by profile — every lossless codec lives here.** The per-codec distlib profiles (`cyrius distlib <codec>`) let a consumer pull only the closure it needs, so adding a compression format never bloats consumers that don't use it. sankoch is therefore the home for *all* lossless-compression codecs (Zstandard included — decode shipped 2.5.0, encode shipped 2.5.5, competitive across 2.5.6–2.5.7) — no "it deserves its own crate" carve-outs.
 - **Numbers don't lie** — never claim a performance improvement without before/after benchmark numbers.
 - **Test after EVERY change**, not after the feature is done.
 - **ONE change at a time** — never bundle unrelated changes.

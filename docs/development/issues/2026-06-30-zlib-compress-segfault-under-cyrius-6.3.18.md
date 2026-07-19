@@ -15,6 +15,10 @@ The whole suite now passes 0-failed on cycc 6.3.18; the `cyrius.cyml` pin moved 
 
 ## Context
 
+> Historical pre-fix diagnostics. The pin has since moved 6.2.44 → 6.3.18 → **6.4.67**;
+> the root cause was a test-harness `var chunks[4]` undersize, fixed 2026-06-30 (see
+> **Status** above). Present-tense claims below reflect the state at time of the crash.
+
 - sankoch's `cyrius.cyml` still pins **6.2.44**; the crash shows under **6.3.18** (toolchain
   drift warning printed). The other 19 test suites — including `bzip2_compress` (151060),
   `deflate_compress` (355460), `zlib_decompress` (1337), `gzip_compress` (80130) — all pass

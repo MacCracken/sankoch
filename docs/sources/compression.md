@@ -12,6 +12,9 @@ Every algorithm in sankoch traces to a published specification or paper.
 | LZ4 Block Format | LZ4 Block Compression Format Description | lz4.cyr | https://github.com/lz4/lz4/blob/dev/doc/lz4_Block_format.md |
 | LZ4 Frame Format | LZ4 Frame Format Description (with content checksum + multi-block) | lz4.cyr | https://github.com/lz4/lz4/blob/dev/doc/lz4_Frame_format.md |
 | xxHash32 Spec | xxHash32 reference specification (stripe accumulators, primes) | checksum.cyr | https://github.com/Cyan4973/xxHash/blob/dev/doc/xxhash_spec.md |
+| RFC 8878 | Zstandard Compression and the 'application/zstd' Media Type | zstd.cyr | https://www.rfc-editor.org/rfc/rfc8878 |
+| .xz File Format | The .xz File Format Specification + LZMA/LZMA2 (Tukaani) | xz.cyr | https://tukaani.org/xz/xz-file-format.txt |
+| bzip2 Format | bzip2/libbzip2 file format (BWT + MTF/RLE2 + Huffman) | bzip2.cyr | https://sourceware.org/bzip2/manual/manual.html |
 
 ## Foundational Papers
 
@@ -20,7 +23,7 @@ Every algorithm in sankoch traces to a published specification or paper.
 | A Universal Algorithm for Sequential Data Compression | Ziv, Lempel | 1977 | LZ77 — foundation of DEFLATE and LZ4 |
 | Compression of Individual Sequences via Variable-Rate Coding | Ziv, Lempel | 1978 | LZ78 — background context |
 | A Method for the Construction of Minimum-Redundancy Codes | Huffman | 1952 | Huffman coding — used in DEFLATE |
-| Asymmetric Numeral Systems | Duda | 2009 | tANS — future Zstandard work (arXiv:1311.2540) |
+| Asymmetric Numeral Systems | Duda | 2009 | tANS/FSE — the entropy stage of Zstandard (zstd.cyr): decode shipped 2.5.0, encode 2.5.5 (arXiv:1311.2540) |
 
 ## Reference Implementations
 
