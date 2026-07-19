@@ -341,9 +341,34 @@ fn test_zc_malformed_survive() {
     return 0;
 }
 
+# Repeat-offset codes (2.5.6). Records of a varying 5-byte prefix + an 11-byte
+# constant tail: the tail recurs at a fixed offset every 16 bytes, so hundreds of
+# short matches share one offset. Each after the first is emitted as Offset_Value 1
+# (offset code 0, zero extra bits) rather than a literal offset — a silent regression
+# to literal offsets would inflate the offset stream and break the ratio bound.
+fn test_zc_repeat_offsets() {
+    var n = 16000;
+    var src = alloc(n);
+    var st = 99;
+    var i = 0;
+    while (i < n) {
+        if ((i % 16) < 5) {
+            st = st * 6364136223846793005 + 1442695040888963407;
+            store8(src + i, 65 + ((st >> 40) % 26));    # varying prefix -> literals
+        } else {
+            store8(src + i, 100 + (i % 16));            # constant tail -> match at offset 16
+        }
+        i = i + 1;
+    }
+    var clen = _z_rt(src, n, "zstd_encode repeat-offset recurring matches");
+    assert(clen * 2 < n, "zstd_encode repeat offsets compress recurring-offset data");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zc_malformed_survive();
+    test_zc_repeat_offsets();
     test_zc_seq_matches();
     test_zc_seq_mixed();
     test_zc_empty();

@@ -9346,19 +9346,65 @@ fn _ze_try_huff_block(src, n) {
 # Self-contained greedy hash-chain matcher (the [lib.zstd] profile can't pull
 # in lz77.cyr). Produces zstd sequences (literal_length, match_length, offset)
 # into _zs_ll / _zs_ml / _zs_off, with the concatenated literals in _zs_lit.
-# Offsets are emitted as literal offsets (offset_value = offset + 3); the
-# repeat-offset codes are a later optimization.
+# The match finder records the true byte offset; _ze_encode_sequences then maps
+# each to an Offset_Value — a repeat code when it matches a recent offset, else
+# offset + 3 (see _ze_offval).
 var _zs_ll = 0; var _zs_ml = 0; var _zs_off = 0;   # i64 sequence arrays
+var _zs_ofv = 0;                                   # per-seq emitted Offset_Value (repeat or offset+3)
 var _zs_lit = 0; var _zs_litlen = 0;               # concatenated literals
 var _zs_nseq = 0;
 var _ze_head = 0;   # hash head table (1 << ZE_HLOG)
 var _ze_prev = 0;   # chain: prev occurrence, indexed by pos & (WINDOW-1)
+
+# Encoder recent offsets — mirror the decoder's _z_ro1/2/3. Initialized to {1,4,8}
+# at frame start and advanced (only) by committed sequence blocks, so encode and
+# decode stay in lockstep across a multi-block frame.
+var _ze_ro1 = 1; var _ze_ro2 = 4; var _ze_ro3 = 8;
+
+# Decide the Offset_Value to emit for a match of byte `offset` preceded by `llen`
+# literals, and advance _ze_ro1/2/3 exactly as the decoder's _z_resolve_offset
+# does for that value. Prefers a repeat code (Offset_Value 1/2/3 -> offset code
+# 0/1/1, cheap) when `offset` equals a recent offset; else a literal offset+3.
+fn _ze_offval(offset, llen) {
+    var offval = 0;
+    if (llen != 0) {
+        if (offset == _ze_ro1) { offval = 1; }
+        elif (offset == _ze_ro2) { offval = 2; }
+        elif (offset == _ze_ro3) { offval = 3; }
+        else { offval = offset + 3; }
+    } else {
+        # llen == 0 shifts the repeat indices by one (decoder: idx = offval + 1)
+        if (offset == _ze_ro2) { offval = 1; }
+        elif (offset == _ze_ro3) { offval = 2; }
+        elif (offset == _ze_ro1 - 1) { offval = 3; }
+        else { offval = offset + 3; }
+    }
+    # advance recent offsets identically to _z_resolve_offset(offval, llen)
+    if (offval > 3) {
+        var o = offval - 3;
+        _ze_ro3 = _ze_ro2; _ze_ro2 = _ze_ro1; _ze_ro1 = o;
+    } else {
+        var idx = offval;
+        if (llen == 0) { idx = idx + 1; }
+        if (idx != 1) {
+            var no = 0;
+            if (idx == 2) { no = _ze_ro2; }
+            elif (idx == 3) { no = _ze_ro3; }
+            else { no = _ze_ro1 - 1; }
+            if (idx > 2) { _ze_ro3 = _ze_ro2; }
+            _ze_ro2 = _ze_ro1;
+            _ze_ro1 = no;
+        }
+    }
+    return offval;
+}
 
 fn _ze_lz_alloc() {
     if (_ze_head != 0) { return 0; }
     # A block is <= 131072 bytes, so at most ~43700 sequences (>= 3-byte match
     # each). Size the arrays for the worst case + slack.
     _zs_ll = alloc(45000 * 8); _zs_ml = alloc(45000 * 8); _zs_off = alloc(45000 * 8);
+    _zs_ofv = alloc(45000 * 8);
     _zs_lit = alloc(131072 + 16);
     _ze_head = alloc((1 << 16) * 8);     # 65536 hash buckets
     _ze_prev = alloc(131072 * 8);        # per-position chain
@@ -9695,11 +9741,19 @@ fn _ze_encode_sequences() {
     else { var v = ns - 0x7F00; _ze_put(255); _ze_put(v & 255); _ze_put((v >> 8) & 255); }
     _ze_put(0);   # Symbol_Compression_Modes: LL / OF / ML all Predefined (0)
 
+    # Forward pass: pick each sequence's Offset_Value (repeat-code aware) in stream
+    # order, advancing _ze_ro1/2/3 — the decoder resolves them in the same order.
+    var f = 0;
+    while (f < ns) {
+        store64(_zs_ofv + f * 8, _ze_offval(load64(_zs_off + f * 8), load64(_zs_ll + f * 8)));
+        f = f + 1;
+    }
+
     _zew_reset();
     var li = ns - 1;
     var llL = load64(_zs_ll + li * 8);
     var mlL = load64(_zs_ml + li * 8);
-    var ovL = load64(_zs_off + li * 8) + 3;
+    var ovL = load64(_zs_ofv + li * 8);
     var llcL = _ze_ll_code(llL);
     var mlcL = _ze_ml_code(mlL);
     var ofcL = _z_flog2(ovL);
@@ -9713,7 +9767,7 @@ fn _ze_encode_sequences() {
     while (i >= 0) {
         var ll = load64(_zs_ll + i * 8);
         var ml = load64(_zs_ml + i * 8);
-        var ov = load64(_zs_off + i * 8) + 3;
+        var ov = load64(_zs_ofv + i * 8);
         var llc = _ze_ll_code(ll);
         var mlc = _ze_ml_code(ml);
         var ofc = _z_flog2(ov);
@@ -9740,6 +9794,9 @@ fn _ze_try_seq_block(src, n) {
     var ns = _ze_lz_parse(src, n);
     if (ns < 1) { return 0 - 1; }   # no matches -> Huffman/raw path
     var litlen = _zs_litlen;
+    # snapshot recent offsets — restored if this block is discarded, so only a
+    # committed sequence block advances them (matching the decoder's per-frame state).
+    var sro1 = _ze_ro1; var sro2 = _ze_ro2; var sro3 = _ze_ro3;
     var save_out = _ze_out; var save_op = _ze_op; var save_cap = _ze_cap; var save_err = _ze_err;
     _ze_out = _ze_tmp; _ze_op = 0; _ze_cap = 133120; _ze_err = 0;
     # Literals section: Huffman when it applies + beats raw (2.5.5 bite 3b-3),
@@ -9761,8 +9818,8 @@ fn _ze_try_seq_block(src, n) {
     var terr = _ze_err;
     var content = _ze_op;
     _ze_out = save_out; _ze_op = save_op; _ze_cap = save_cap; _ze_err = save_err;
-    if (terr != 0) { return 0 - 1; }
-    if (content >= n) { return 0 - 1; }
+    if (terr != 0) { _ze_ro1 = sro1; _ze_ro2 = sro2; _ze_ro3 = sro3; return 0 - 1; }
+    if (content >= n) { _ze_ro1 = sro1; _ze_ro2 = sro2; _ze_ro3 = sro3; return 0 - 1; }
     return content;
 }
 
@@ -9772,6 +9829,7 @@ fn _ze_try_seq_block(src, n) {
 fn zstd_compress(src, src_len, dst, dst_cap) {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _ze_out = dst; _ze_op = 0; _ze_cap = dst_cap; _ze_err = 0;
+    _ze_ro1 = 1; _ze_ro2 = 4; _ze_ro3 = 8;   # recent offsets reset per frame
     _ze_frame_header(src_len);
 
     var BLKMAX = 131072;   # Block_Maximum_Size (128 KiB)

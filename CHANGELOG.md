@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   34-byte crash repro.
 
 ### Added
+- **zstd encoder: repeat-offset codes** (2.5.6) — the sequence encoder now maps a
+  match offset that equals a recent offset to an `Offset_Value` of 1/2/3 (offset code
+  0/1/1, zero-to-one extra bits) instead of a literal `offset + 3` (offset code up to
+  ~17). A forward pass over the sequences (`_ze_offval`) mirrors the decoder's
+  `_z_resolve_offset` recent-offset state machine — including the `literals_length == 0`
+  index shift — so encode and decode stay in lockstep; the encoder's `_ze_ro1/2/3` reset
+  to `{1,4,8}` per frame and are snapshotted/rolled back so only a *committed* sequence
+  block advances them across a multi-block frame. Reference `zstd -d` (v1.5.7) decodes
+  every output byte-identically. Never enlarges a stream (repeat codes cost ≤ literal
+  offsets); on periodic/recurring-offset data it now **beats `zstd -1`** (e.g. a period-16
+  pattern: 34 B vs zstd -1's 38 B). New `test_zc_repeat_offsets` regression case.
 - **zstd encoder: FSE-compressed literal weights** (2.5.6) — the Huffman literals
   block now handles wide alphabets. When the max literal symbol value exceeds 128
   the direct weight table (header byte `127 + nw`, `nw ≤ 128`) can't represent the
