@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.5.6] — 2026-07-18 — zstd encoder competitiveness + decoder hardening
+### Added
+- **zstd encoder: repcode-aware match finding** (2.5.7) — the LZ77 match finder now
+  keeps a parser-local copy of the three recent offsets (`_ze_pr0/1/2`, replayed in
+  sequence order to mirror `_ze_offval` / the decoder's `_z_resolve_offset`) and, at
+  each position, prefers a competitive match at a recent offset — a repeat code costs
+  ~0 offset bits vs up to ~16 for a literal offset. The model only steers match
+  *selection*; `_ze_encode_sequences` still derives every `Offset_Value` independently,
+  so a divergence costs ratio, never correctness. Reference `zstd -d` decodes every
+  output byte-identically. On repeat-offset-heavy data ~52 % of sequences now encode as
+  repeats (up from opportunistic-only), shrinking e.g. the 16 KB repeat-offset fixture
+  5,217 → 5,146 B; never enlarges a stream. (The larger remaining structured-data gap —
+  csv/tabular still 2–3× `zstd -1` — is the *sequence FSE tables*, still Predefined; an
+  adaptive/`FSE_Compressed` sequence-table encoder is the next 2.5.7 item.)
 
 Closes the encoder-competitiveness gap opened at 2.5.5 and hardens the decoder against
 hostile input. The encoder now **beats `zstd -1`** on source, binary, repetitive, and

@@ -1335,9 +1335,73 @@ fn _ze_insert(src, pos, n) {
     return 0;
 }
 
-# One-step lazy LZ parse: take the longest match at each position, but if the NEXT
-# position has a strictly longer match, defer — emit this byte as a literal and take
-# the better match instead (the classic zlib/zstd lazy heuristic). Every consumed
+# Parser-local recent-offset model (2.5.7). A *copy* of the encoder's recent
+# offsets, replayed in sequence order so the match finder can prefer a match at a
+# recent offset. It only steers match *selection* — `_ze_encode_sequences` still
+# derives every Offset_Value independently via `_ze_offval`, so a divergence here
+# costs ratio, never correctness.
+var _ze_pr0 = 1; var _ze_pr1 = 4; var _ze_pr2 = 8;
+var _ze_replen = 0; var _ze_repoff = 0;
+
+# The Offset_Value `_ze_offval` would assign to (offset, llen) against the current
+# parser model — WITHOUT mutating it. <= 3 means a cheap repeat code.
+fn _ze_pr_offval_peek(offset, llen) {
+    if (llen != 0) {
+        if (offset == _ze_pr0) { return 1; }
+        if (offset == _ze_pr1) { return 2; }
+        if (offset == _ze_pr2) { return 3; }
+    } else {
+        if (offset == _ze_pr1) { return 1; }
+        if (offset == _ze_pr2) { return 2; }
+        if (offset == _ze_pr0 - 1) { return 3; }
+    }
+    return offset + 3;
+}
+
+# Advance the parser model for an emitted (offset, llen) — mirrors `_ze_offval`
+# (which is the decoder's `_z_resolve_offset`) exactly.
+fn _ze_pr_update(offset, llen) {
+    var offval = _ze_pr_offval_peek(offset, llen);
+    if (offval > 3) {
+        _ze_pr2 = _ze_pr1; _ze_pr1 = _ze_pr0; _ze_pr0 = offset;
+    } else {
+        var idx = offval;
+        if (llen == 0) { idx = idx + 1; }
+        if (idx != 1) {
+            var no = 0;
+            if (idx == 2) { no = _ze_pr1; } elif (idx == 3) { no = _ze_pr2; } else { no = _ze_pr0 - 1; }
+            if (idx > 2) { _ze_pr2 = _ze_pr1; }
+            _ze_pr1 = _ze_pr0;
+            _ze_pr0 = no;
+        }
+    }
+    return 0;
+}
+
+# Longest match at `pos` reachable via one of the 3 recent offsets that maps to a
+# repeat code for this `llen`. Result in _ze_replen / _ze_repoff (0 if none).
+fn _ze_rep_search(src, pos, n, llen) {
+    var lim = n - pos;
+    var best = 0; var boff = 0;
+    var k = 0;
+    while (k < 3) {
+        var ro = _ze_pr0;
+        if (k == 1) { ro = _ze_pr1; } elif (k == 2) { ro = _ze_pr2; }
+        if (ro >= 1 && ro <= pos && _ze_pr_offval_peek(ro, llen) <= 3) {
+            var l = 0;
+            while (l < lim && load8(src + pos - ro + l) == load8(src + pos + l)) { l = l + 1; }
+            if (l > best) { best = l; boff = ro; }
+        }
+        k = k + 1;
+    }
+    _ze_replen = best; _ze_repoff = boff;
+    return best;
+}
+
+# One-step lazy LZ parse with repcode-aware match finding (2.5.7): at each position
+# take the longest match, but PREFER a competitive match at a recent offset (its
+# offset code is ~0-1 bits vs up to ~16 for a literal offset), and if the NEXT
+# position has a strictly longer regular match, defer (classic lazy). Every consumed
 # position is inserted into the hash exactly once. MINMATCH 3, offset >= 1.
 fn _ze_lz_parse(src, n) {
     _ze_lz_alloc();
@@ -1348,14 +1412,22 @@ fn _ze_lz_parse(src, n) {
     var litstart = 0;
     var pos = 0;
     var chain_max = _ze_chain;
+    _ze_pr0 = _ze_ro1; _ze_pr1 = _ze_ro2; _ze_pr2 = _ze_ro3;   # seed from the frame model
     while (pos + 4 <= n) {
         _ze_find(src, pos, n, chain_max);
         var blen = _ze_bestlen; var boff = _ze_bestoff;
+        # repcode-aware: a match at a recent offset is nearly free to encode, so take
+        # it unless a regular match is more than a couple of bytes longer.
+        _ze_rep_search(src, pos, n, pos - litstart);
+        var use_rep = 0;
+        if (_ze_replen >= 3 && _ze_replen + 2 >= blen) {
+            blen = _ze_replen; boff = _ze_repoff; use_rep = 1;
+        }
         _ze_insert(src, pos, n);
         if (blen >= 3) {
-            # lazy lookahead (when enabled), unless the match is already "nice" (long
-            # enough that a 1-byte-later match rarely beats it — saves the second search).
-            if (_ze_lazy == 1 && blen < 128 && pos + 5 <= n) {
+            # lazy lookahead — but not when a repcode already won (it's the cheap pick),
+            # and skip once a match is "nice" (long enough a 1-byte-later one rarely beats it).
+            if (use_rep == 0 && _ze_lazy == 1 && blen < 128 && pos + 5 <= n) {
                 _ze_find(src, pos + 1, n, chain_max);   # lazy: pos is now in the chain
                 if (_ze_bestlen > blen) {
                     _ze_insert(src, pos + 1, n);        # defer -> pos+1 is the match position
@@ -1370,6 +1442,7 @@ fn _ze_lz_parse(src, n) {
             store64(_zs_ml + nseq * 8, blen);
             store64(_zs_off + nseq * 8, boff);
             nseq = nseq + 1;
+            _ze_pr_update(boff, ll);          # advance the parser model in sequence order
             # insert the covered positions into the hash
             var q = pos + 1;
             var pend = pos + blen;
