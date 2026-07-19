@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   34-byte crash repro.
 
 ### Added
+- **zstd encoder: lazy match parse** (2.5.6) — the LZ77 match finder now uses the
+  classic one-step lazy heuristic: at each position it takes the longest match, but if
+  the *next* position has a strictly longer one it defers, emitting the current byte as
+  a literal and taking the better match. The search/insert loops are split into
+  `_ze_find` / `_ze_insert` so the lookahead doesn't perturb the hash chain, and every
+  consumed position is inserted exactly once; a "nice length" cutoff (128) skips the
+  second search once a match is already long, keeping throughput up on long-match runs.
+  Reference `zstd -d` decodes every output byte-identically. On source/binary this now
+  **beats `zstd -1`** (`src/deflate.cyr` −2 %, `src/zstd.cyr` −1 %, `/bin/bash` ~tied),
+  and narrows text (CHANGELOG.md +10 %→+7 %). Ratio-for-throughput: encode is ~2× the
+  greedy cost on low-redundancy input (a compression-level knob to trade this is next on
+  the 2.5.6 ladder).
 - **zstd encoder: repeat-offset codes** (2.5.6) — the sequence encoder now maps a
   match offset that equals a recent offset to an `Offset_Value` of 1/2/3 (offset code
   0/1/1, zero-to-one extra bits) instead of a literal `offset + 3` (offset code up to

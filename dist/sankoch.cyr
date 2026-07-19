@@ -11030,6 +11030,50 @@ fn _ze_hash4(src, pos) {
 # Returns the sequence count; sets _zs_litlen (concatenated literals) and the
 # trailing-literal count is (n - covered) captured as _zs_lastlit.
 var _zs_lastll = 0;
+
+# Longest match for src[pos..n) over the hash chain — result in _ze_bestlen /
+# _ze_bestoff (0 if none). Does NOT insert `pos` (caller controls insertion so the
+# lazy lookahead doesn't perturb the chain). Same quick-reject scan as before.
+var _ze_bestlen = 0; var _ze_bestoff = 0;
+fn _ze_find(src, pos, n, chain_max) {
+    var hv = _ze_hash4(src, pos);
+    var cand = load64(_ze_head + hv * 8);
+    var best_len = 0; var best_off = 0;
+    var depth = 0;
+    var lim = n - pos;
+    while (cand >= 0 && depth < chain_max) {
+        var off = pos - cand;
+        if (off <= 0) { cand = 0 - 1; }
+        else {
+            # Quick reject: a candidate can only beat best_len if it matches at
+            # index best_len — skip the full scan otherwise (keeps the chain cheap).
+            if (best_len == 0 || (best_len < lim
+            && load8(src + cand + best_len) == load8(src + pos + best_len))) {
+                var l = 0;
+                while (l < lim && load8(src + cand + l) == load8(src + pos + l)) { l = l + 1; }
+                if (l > best_len) { best_len = l; best_off = off; }
+            }
+            cand = load64(_ze_prev + (cand & 131071) * 8);
+        }
+        depth = depth + 1;
+    }
+    _ze_bestlen = best_len; _ze_bestoff = best_off;
+    return best_len;
+}
+
+# Insert `pos` into the hash chain (needs 4 bytes of following context).
+fn _ze_insert(src, pos, n) {
+    if (pos + 4 > n) { return 0; }
+    var hv = _ze_hash4(src, pos);
+    store64(_ze_prev + (pos & 131071) * 8, load64(_ze_head + hv * 8));
+    store64(_ze_head + hv * 8, pos);
+    return 0;
+}
+
+# One-step lazy LZ parse: take the longest match at each position, but if the NEXT
+# position has a strictly longer match, defer — emit this byte as a literal and take
+# the better match instead (the classic zlib/zstd lazy heuristic). Every consumed
+# position is inserted into the hash exactly once. MINMATCH 3, offset >= 1.
 fn _ze_lz_parse(src, n) {
     _ze_lz_alloc();
     var h = 0;
@@ -11040,48 +11084,32 @@ fn _ze_lz_parse(src, n) {
     var pos = 0;
     var chain_max = 128;
     while (pos + 4 <= n) {
-        var hv = _ze_hash4(src, pos);
-        var cand = load64(_ze_head + hv * 8);
-        var best_len = 0; var best_off = 0;
-        var depth = 0;
-        var lim = n - pos;
-        while (cand >= 0 && depth < chain_max) {
-            var off = pos - cand;
-            if (off <= 0) { cand = 0 - 1; }
-            else {
-                # Quick reject: a candidate can only beat best_len if it matches
-                # at index best_len — skip the full scan otherwise (lets the
-                # deeper chain stay affordable). Same longest match recorded.
-                if (best_len == 0 || (best_len < lim
-                && load8(src + cand + best_len) == load8(src + pos + best_len))) {
-                    var l = 0;
-                    while (l < lim && load8(src + cand + l) == load8(src + pos + l)) { l = l + 1; }
-                    if (l > best_len) { best_len = l; best_off = off; }
+        _ze_find(src, pos, n, chain_max);
+        var blen = _ze_bestlen; var boff = _ze_bestoff;
+        _ze_insert(src, pos, n);
+        if (blen >= 3) {
+            # lazy lookahead, unless the match is already "nice" (long enough that a
+            # 1-byte-later match rarely beats it — saves the second search on runs).
+            if (blen < 128 && pos + 5 <= n) {
+                _ze_find(src, pos + 1, n, chain_max);   # lazy: pos is now in the chain
+                if (_ze_bestlen > blen) {
+                    _ze_insert(src, pos + 1, n);        # defer -> pos+1 is the match position
+                    pos = pos + 1;
+                    blen = _ze_bestlen; boff = _ze_bestoff;
                 }
-                cand = load64(_ze_prev + (cand & 131071) * 8);
             }
-            depth = depth + 1;
-        }
-        store64(_ze_prev + (pos & 131071) * 8, load64(_ze_head + hv * 8));
-        store64(_ze_head + hv * 8, pos);
-        if (best_len >= 3) {
             var ll = pos - litstart;
             var k = 0;
             while (k < ll) { store8(_zs_lit + lp, load8(src + litstart + k)); lp = lp + 1; k = k + 1; }
             store64(_zs_ll + nseq * 8, ll);
-            store64(_zs_ml + nseq * 8, best_len);
-            store64(_zs_off + nseq * 8, best_off);
+            store64(_zs_ml + nseq * 8, blen);
+            store64(_zs_off + nseq * 8, boff);
             nseq = nseq + 1;
-            # insert the covered positions into the hash (greedy skip)
+            # insert the covered positions into the hash
             var q = pos + 1;
-            var pend = pos + best_len;
-            while (q < pend && q + 4 <= n) {
-                var hv2 = _ze_hash4(src, q);
-                store64(_ze_prev + (q & 131071) * 8, load64(_ze_head + hv2 * 8));
-                store64(_ze_head + hv2 * 8, q);
-                q = q + 1;
-            }
-            pos = pos + best_len;
+            var pend = pos + blen;
+            while (q < pend) { _ze_insert(src, q, n); q = q + 1; }
+            pos = pos + blen;
             litstart = pos;
         } else {
             pos = pos + 1;
