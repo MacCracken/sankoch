@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.6) | **Last Updated**: 2026-07-18
+> **Status**: Stable (v2.5.7) | **Last Updated**: 2026-07-18
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
@@ -8,12 +8,12 @@ limitations, and the longer-horizon Future bucket. **Every codec now
 de+compresses** — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 / **zstd**
 (the sovereign zstd encoder completed the last codec at 2.5.5) — plus a
 shared tar cursor and ratio-capped decompression across the DEFLATE family
-+ xz + bzip2. zstd-encode competitiveness landed at 2.5.6 (the encoder now
-beats `zstd -1` on most data; decoder hardened against hostile input). The
-scheduled ladder below finishes the last parse-quality gap
-(2.5.7 — repcode-aware matching) and opens a full-feature ZIP archive
-container arc (2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the
-rest across 2.6.1+).
++ xz + bzip2. zstd-encode competitiveness landed across 2.5.6–2.5.7 — the
+encoder now **beats `zstd -3` (the default level)** on real code/text/binary,
+and the decoder is hardened against hostile input. The forward ladder is an
+optional optimal-parse polish (2.5.8) and the full-feature ZIP archive
+container arc (2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the rest
+across 2.6.1+).
 
 ---
 
@@ -57,18 +57,24 @@ rest across 2.6.1+).
 > repetitive / incompressible data, trailing only on UTF-8-heavy text (+7.5 %).
 > Reference `zstd -d` v1.5.7 was the correctness bar throughout.
 
-### 2.5.7 — zstd repcode-aware match finding
+> **2.5.7 — zstd encoder parse quality — ✅ shipped 2026-07-18**
+> (see CHANGELOG + [`docs/benchmarks/2026-07-18-2.5.7-parse-quality.md`](../benchmarks/2026-07-18-2.5.7-parse-quality.md)).
+>
+> Two bites: **repcode-aware match finding** (bias the matcher toward recent offsets)
+> and **adaptive FSE sequence tables** (per-block RLE / FSE_Compressed / Predefined
+> selection for LL/OF/ML, fitted to the block histogram — the dominant win). The
+> encoder now **beats `zstd -1` by 6–16 % and `zstd -3` (the default) by 4–11 %** on
+> real code / text / binary; structured/tabular data went from +106 % to −6 % vs
+> `zstd -1`. Reference `zstd -d` v1.5.7 was the correctness bar throughout.
 
-The remaining gap to `zstd -1` on UTF-8-heavy text (+7.5 %) and on tabular / record
-data (a synthetic 132 K record set is still ~+100 %) is **parse quality**: the match
-finder is greedy+lazy but *offset-blind*. zstd -1 prefers a match at a **recent
-offset** (repcode) even when a slightly longer match exists elsewhere, because a
-repcode costs ~0 offset bits. Make the match finder repcode-aware — at each position
-also probe the three recent offsets (which the encoder already tracks in
-`_ze_ro1/2/3`) and bias selection toward them — so the opportunistic repeat coding
-shipped at 2.5.6 becomes a first-class search target. Reference `zstd -d` remains the
-correctness bar. (Optional follow-on: a small optimal/2-pass parse for the last few
-percent.)
+### 2.5.8 — zstd optimal / 2-pass parse (optional)
+
+The last residue vs `zstd -1` is on *very regular record* data (synthetic csv +45 %,
+log lines +104 % — though tiny in absolute terms): zstd's optimal parse finds longer
+cross-record matches than a greedy+lazy+repcode hash chain. A small optimal / 2-pass
+parse (price each candidate under the current FSE tables, pick the globally cheaper
+path) would close it. Niche relative to the code/text/binary wins already shipped —
+schedule only if a consumer needs the last few percent on structured data.
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.7] — 2026-07-18 — zstd encoder: repcode matching + adaptive FSE sequence tables
+
+Two parse-quality items close the remaining gap to `zstd -1`/`-3`. **Repcode-aware match
+finding** biases the LZ77 matcher toward recent offsets (a repeat code costs ~0 offset
+bits). **Adaptive FSE sequence tables** replace the always-Predefined LL/OF/ML tables with
+per-block RLE / FSE_Compressed / Predefined selection fitted to the actual histogram — the
+dominant win. Together the encoder now **beats `zstd -1` by 9–16 % and `zstd -3` (the
+default level) by 3–11 %** on real code / text / binary, and collapses structured/tabular
+data from **+106 % → −5 %** vs `zstd -1`. Reference `zstd -d` v1.5.7 decodes every output
+byte-identically (108/108 files × sizes + a 13-case smoke, across RLE/FSE/Predefined mode
+mixes). The niche csv/log gap (very regular records) remains for a future optimal parse.
+
 ### Added
 - **zstd encoder: adaptive FSE sequence tables** (2.5.7) — the sequences section no
   longer always uses the Predefined LL/OF/ML FSE tables. Per block, each symbol stream
@@ -35,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5,217 → 5,146 B; never enlarges a stream. (The larger remaining structured-data gap —
   csv/tabular still 2–3× `zstd -1` — is the *sequence FSE tables*, still Predefined; an
   adaptive/`FSE_Compressed` sequence-table encoder is the next 2.5.7 item.)
+
+## [2.5.6] — 2026-07-18 — zstd encoder competitiveness + decoder hardening
 
 Closes the encoder-competitiveness gap opened at 2.5.5 and hardens the decoder against
 hostile input. The encoder now **beats `zstd -1`** on source, binary, repetitive, and
