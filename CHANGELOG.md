@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **zstd encoder: adaptive FSE sequence tables** (2.5.7) — the sequences section no
+  longer always uses the Predefined LL/OF/ML FSE tables. Per block, each symbol stream
+  is now planned independently: **RLE mode** when the stream is a single code (1-byte
+  description, 0 bitstream cost), **FSE_Compressed mode** with a table built from the
+  block's actual histogram (`_ze_fse_normalize` + `_ze_fse_write_ncount`, reusing the
+  literal-weight machinery) when it beats Predefined *including* its table description
+  (exact size weighed via `_ze_ncount_size`), else **Predefined**. The interleaved
+  backward bitstream flushes each state with its table's own accuracy log. This is the
+  dominant competitiveness win: on real code/text/binary the encoder now **beats
+  `zstd -1` by 9–16 % and `zstd -3` (the default) by 3–11 %** — `src/deflate.cyr`
+  26,839 → 23,037 B (−16 % vs -1), CHANGELOG.md 65,410 → 55,524 (−9 %), `/bin/bash`
+  162,690 → 145,272 (−11 %); structured/tabular data collapses from **+106 % → −5 %**
+  vs `zstd -1`. Reference `zstd -d` (v1.5.7) decodes every output byte-identically
+  (108/108 files × sizes + the 13-case smoke, incl. RLE/FSE/Predefined mode mixes). New
+  `test_zc_adaptive_fse` case + a `hstruct` reference-interop case in the encode smoke.
 - **zstd encoder: repcode-aware match finding** (2.5.7) — the LZ77 match finder now
   keeps a parser-local copy of the three recent offsets (`_ze_pr0/1/2`, replayed in
   sequence order to mirror `_ze_offval` / the decoder's `_z_resolve_offset`) and, at

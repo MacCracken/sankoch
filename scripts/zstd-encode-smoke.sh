@@ -33,9 +33,13 @@ awk 'BEGIN{a=1;b=1;for(s=0;s<14;s++){for(i=0;i<a;i++)printf "%c",65+s;t=a+b;a=b;
 # direct weight table can't fit, forcing FSE-compressed literal weights), 75% in
 # 0..7 (skew -> Huffman literals win). Exercises the 2.5.6 FSE-weight encode path.
 awk 'BEGIN{for(i=0;i<40000;i++){if(i%4==0)printf "%c",128+(i%128);else printf "%c",i%8}}' > "$WORK/hwide.bin"
+# Structured records: mostly-constant rows with a few varying fields -> hundreds of
+# sequences with skewed LL/ML/OF distributions -> adaptive FSE_Compressed sequence
+# tables (2.5.7). Exercises the FSE-table description + RLE-mode wire format.
+awk 'BEGIN{for(i=0;i<4000;i++)printf "row%05d | const-field | %03d\n", i, i%7}' > "$WORK/hstruct.bin"
 
 rc=0; total=0; pass=0
-for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide; do
+for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide hstruct; do
     src="$WORK/$f.bin"
     [ -f "$src" ] || continue
     total=$((total + 1))
@@ -52,5 +56,5 @@ done
 
 echo ""
 echo "  $pass/$total cases: sankoch-encoded frame decoded byte-identical by reference zstd -d"
-[ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store + Huffman literals + LZ77/FSE sequences)" || echo "zstd-encode-smoke: FAIL"
+[ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store + Huffman literals + LZ77 + Predefined/RLE/adaptive-FSE sequences)" || echo "zstd-encode-smoke: FAIL"
 exit $rc

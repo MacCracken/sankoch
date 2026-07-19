@@ -408,11 +408,38 @@ fn test_zc_level_knob() {
     return 0;
 }
 
+# Adaptive FSE sequence tables (2.5.7). Structured records — 6 varying digits + 34
+# constant bytes per 40-byte record — produce hundreds of sequences with sharply
+# skewed LL/ML/OF distributions. The Predefined tables code these generically; the
+# adaptive FSE_Compressed tables fit the actual histogram and compress ~2× tighter.
+# A regression to Predefined-only would blow past the ratio bound. Reference-`zstd -d`
+# interop for the FSE-table wire format is in scripts/zstd-encode-smoke.sh.
+fn test_zc_adaptive_fse() {
+    var n = 40000;
+    var src = alloc(n);
+    var st = 12345;
+    var i = 0;
+    while (i < n) {
+        var col = i % 40;
+        if (col < 6) {
+            st = st * 6364136223846793005 + 1442695040888963407;
+            store8(src + i, 48 + ((st >> 40) % 10));      # varying digits
+        } else {
+            store8(src + i, 65 + col);                    # constant record body
+        }
+        i = i + 1;
+    }
+    var clen = _z_rt(src, n, "zstd_encode adaptive FSE sequence tables");
+    assert(clen * 8 < n, "zstd_encode adaptive FSE tables compress structured data");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zc_malformed_survive();
     test_zc_repeat_offsets();
     test_zc_level_knob();
+    test_zc_adaptive_fse();
     test_zc_seq_matches();
     test_zc_seq_mixed();
     test_zc_empty();

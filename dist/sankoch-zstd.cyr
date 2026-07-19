@@ -1259,6 +1259,7 @@ fn _ze_try_huff_block(src, n) {
 # offset + 3 (see _ze_offval).
 var _zs_ll = 0; var _zs_ml = 0; var _zs_off = 0;   # i64 sequence arrays
 var _zs_ofv = 0;                                   # per-seq emitted Offset_Value (repeat or offset+3)
+var _zs_llc = 0; var _zs_ofc = 0; var _zs_mlc = 0; # per-seq LL / OF / ML symbol codes
 var _zs_lit = 0; var _zs_litlen = 0;               # concatenated literals
 var _zs_nseq = 0;
 var _ze_head = 0;   # hash head table (1 << ZE_HLOG)
@@ -1332,6 +1333,7 @@ fn _ze_lz_alloc() {
     # each). Size the arrays for the worst case + slack.
     _zs_ll = alloc(45000 * 8); _zs_ml = alloc(45000 * 8); _zs_off = alloc(45000 * 8);
     _zs_ofv = alloc(45000 * 8);
+    _zs_llc = alloc(45000 * 8); _zs_ofc = alloc(45000 * 8); _zs_mlc = alloc(45000 * 8);
     _zs_lit = alloc(131072 + 16);
     _ze_head = alloc((1 << 16) * 8);     # 65536 hash buckets
     _ze_prev = alloc(131072 * 8);        # per-position chain
@@ -1754,8 +1756,111 @@ fn _ze_ml_code(ml) {
     return c;
 }
 
-# Emit the sequences section (nbSeq + modes byte + FSE bitstream) via _ze_put
-# into the current (temp) output. Predefined tables for all three symbols.
+# ---- adaptive sequence FSE tables (2.5.7) --------------------------------
+# Per-symbol-stream plan (index 0=LL, 1=OF, 2=ML). mode: 0 Predefined, 1 RLE,
+# 2 FSE_Compressed. Lazily allocated. _ze_phist is reused per stream.
+var _ze_pmode = 0; var _ze_pct = 0; var _ze_plog = 0;
+var _ze_pnorm = 0; var _ze_palpha = 0; var _ze_prle = 0;
+var _ze_phist = 0; var _ze_ncbuf = 0;
+
+fn _ze_seq_plan_alloc() {
+    if (_ze_pmode != 0) { return 0; }
+    _ze_pmode = alloc(3 * 8); _ze_pct = alloc(3 * 8); _ze_plog = alloc(3 * 8);
+    _ze_pnorm = alloc(3 * 8); _ze_palpha = alloc(3 * 8); _ze_prle = alloc(3 * 8);
+    _ze_phist = alloc(64 * 8);
+    # a norm array per stream (up to 64 symbols each) + a small NCount-sizing scratch
+    store64(_ze_pnorm + 0, alloc(64 * 8));
+    store64(_ze_pnorm + 8, alloc(64 * 8));
+    store64(_ze_pnorm + 16, alloc(64 * 8));
+    _ze_ncbuf = alloc(512);
+    return 0;
+}
+
+# Exact byte size of the writeNCount for (norm, alpha, log) — writes to a throwaway
+# scratch so the cost decision can weigh the table-description overhead.
+fn _ze_ncount_size(norm, alpha, log) {
+    var so = _ze_out; var sp = _ze_op; var sc = _ze_cap; var se = _ze_err;
+    _ze_out = _ze_ncbuf; _ze_op = 0; _ze_cap = 512; _ze_err = 0;
+    _ze_fse_write_ncount(norm, alpha, log);
+    var sz = _ze_op;
+    _ze_out = so; _ze_op = sp; _ze_cap = sc; _ze_err = se;
+    return sz;
+}
+
+# Estimated bitstream cost (bits) of a stream with histogram hist[] under a table
+# of accuracy `log` whose normalized counts are in dist[] (values: >0 present,
+# 0 absent, -1 "less than one"). Cost per symbol ~ log - floor(log2(count)); a
+# consistent relative metric between the adaptive and predefined tables.
+fn _ze_stream_cost(hist, dist, alpha, log) {
+    var bits = 0;
+    var s = 0;
+    while (s < alpha) {
+        var h = load64(hist + s * 8);
+        if (h > 0) {
+            var d = load64(dist + s * 8);
+            if (d == 0) { return 0 - 1; }        # symbol present but table can't code it
+            var dv = d; if (dv < 0) { dv = 1; }   # "less than one" -> 1 slot -> full log bits
+            bits = bits + h * (log - _z_flog2(dv));
+        }
+        s = s + 1;
+    }
+    return bits;
+}
+
+# Plan symbol stream `which` (codes[0..ns)): histogram, then pick RLE (1 distinct),
+# FSE_Compressed (adaptive table beats predefined by more than its description), or
+# Predefined. Fills the _ze_p* plan slot and returns the chosen mode.
+fn _ze_seq_plan(which, codes, ns, predef_dist, predef_ct, predef_log, maxlog) {
+    var s = 0;
+    while (s < 64) { store64(_ze_phist + s * 8, 0); s = s + 1; }
+    var maxsym = 0; var distinct = 0;
+    var i = 0;
+    while (i < ns) {
+        var c = load64(codes + i * 8);
+        if (load64(_ze_phist + c * 8) == 0) { distinct = distinct + 1; }
+        store64(_ze_phist + c * 8, load64(_ze_phist + c * 8) + 1);
+        if (c > maxsym) { maxsym = c; }
+        i = i + 1;
+    }
+    var alpha = maxsym + 1;
+    store64(_ze_palpha + which * 8, alpha);
+    # RLE — one symbol value throughout
+    if (distinct == 1) {
+        store64(_ze_pmode + which * 8, 1);
+        store64(_ze_prle + which * 8, maxsym);
+        store64(_ze_plog + which * 8, 0);
+        var nm = load64(_ze_pnorm + which * 8);
+        var z = 0; while (z < alpha) { store64(nm + z * 8, 0); z = z + 1; }
+        store64(nm + maxsym * 8, 1);
+        store64(_ze_pct + which * 8, _ze_fse_ctable(nm, alpha, 0));
+        return 1;
+    }
+    # choose an accuracy log ~ log2(ns), big enough to hold all present symbols
+    var log = 6;
+    while (log < maxlog && (1 << (log + 1)) <= ns) { log = log + 1; }
+    while ((1 << log) < distinct) { log = log + 1; }
+    if (log > maxlog) { log = maxlog; }
+    var norm = load64(_ze_pnorm + which * 8);
+    _ze_fse_normalize(_ze_phist, alpha, ns, log, norm);
+    var fse_bits = _ze_stream_cost(_ze_phist, norm, alpha, log);
+    var pred_bits = _ze_stream_cost(_ze_phist, predef_dist, alpha, predef_log);
+    var nc = _ze_ncount_size(norm, alpha, log);
+    # FSE only when it beats predefined *including* its table description
+    if (fse_bits >= 0 && fse_bits + nc * 8 < pred_bits) {
+        store64(_ze_pmode + which * 8, 2);
+        store64(_ze_plog + which * 8, log);
+        store64(_ze_pct + which * 8, _ze_fse_ctable(norm, alpha, log));
+        return 2;
+    }
+    store64(_ze_pmode + which * 8, 0);
+    store64(_ze_plog + which * 8, predef_log);
+    store64(_ze_pct + which * 8, predef_ct);
+    return 0;
+}
+
+# Emit the sequences section (nbSeq + modes byte + optional FSE table descriptions
+# + interleaved FSE bitstream) via _ze_put into the current (temp) output. Chooses
+# Predefined / RLE / FSE_Compressed per stream (2.5.7).
 fn _ze_encode_sequences() {
     if (_ze_ct_ll == 0) {
         _z_init_tables();
@@ -1767,49 +1872,65 @@ fn _ze_encode_sequences() {
     if (ns < 128) { _ze_put(ns); }
     elif (ns < 0x7F00) { _ze_put(128 + (ns >> 8)); _ze_put(ns & 255); }
     else { var v = ns - 0x7F00; _ze_put(255); _ze_put(v & 255); _ze_put((v >> 8) & 255); }
-    _ze_put(0);   # Symbol_Compression_Modes: LL / OF / ML all Predefined (0)
+    # (Symbol_Compression_Modes byte emitted after planning, below.)
 
     # Forward pass: pick each sequence's Offset_Value (repeat-code aware) in stream
-    # order, advancing _ze_ro1/2/3 — the decoder resolves them in the same order.
+    # order, advancing _ze_ro1/2/3 — the decoder resolves them in the same order —
+    # and precompute the LL / OF / ML symbol codes for histogramming + encode.
     var f = 0;
     while (f < ns) {
-        store64(_zs_ofv + f * 8, _ze_offval(load64(_zs_off + f * 8), load64(_zs_ll + f * 8)));
+        var ovf = _ze_offval(load64(_zs_off + f * 8), load64(_zs_ll + f * 8));
+        store64(_zs_ofv + f * 8, ovf);
+        store64(_zs_llc + f * 8, _ze_ll_code(load64(_zs_ll + f * 8)));
+        store64(_zs_ofc + f * 8, _z_flog2(ovf));
+        store64(_zs_mlc + f * 8, _ze_ml_code(load64(_zs_ml + f * 8)));
         f = f + 1;
     }
 
+    # Plan each symbol stream (needs the codes), then emit the modes byte + any
+    # table descriptions in LL / OF / ML order.
+    _ze_seq_plan_alloc();
+    var mll = _ze_seq_plan(0, _zs_llc, ns, &_z_ll_dist, _ze_ct_ll, 6, 9);
+    var mof = _ze_seq_plan(1, _zs_ofc, ns, &_z_of_dist, _ze_ct_of, 5, 8);
+    var mml = _ze_seq_plan(2, _zs_mlc, ns, &_z_ml_dist, _ze_ct_ml, 6, 9);
+    _ze_put((mll << 6) | (mof << 4) | (mml << 2));
+    if (mll == 1) { _ze_put(load64(_ze_prle + 0)); }
+    elif (mll == 2) { _ze_fse_write_ncount(load64(_ze_pnorm + 0), load64(_ze_palpha + 0), load64(_ze_plog + 0)); }
+    if (mof == 1) { _ze_put(load64(_ze_prle + 8)); }
+    elif (mof == 2) { _ze_fse_write_ncount(load64(_ze_pnorm + 8), load64(_ze_palpha + 8), load64(_ze_plog + 8)); }
+    if (mml == 1) { _ze_put(load64(_ze_prle + 16)); }
+    elif (mml == 2) { _ze_fse_write_ncount(load64(_ze_pnorm + 16), load64(_ze_palpha + 16), load64(_ze_plog + 16)); }
+
+    var ctll = load64(_ze_pct + 0); var ctof = load64(_ze_pct + 8); var ctml = load64(_ze_pct + 16);
+    var lgll = load64(_ze_plog + 0); var lgof = load64(_ze_plog + 8); var lgml = load64(_ze_plog + 16);
+
     _zew_reset();
     var li = ns - 1;
-    var llL = load64(_zs_ll + li * 8);
-    var mlL = load64(_zs_ml + li * 8);
-    var ovL = load64(_zs_ofv + li * 8);
-    var llcL = _ze_ll_code(llL);
-    var mlcL = _ze_ml_code(mlL);
-    var ofcL = _z_flog2(ovL);
-    var sLL = _ze_fse_init(_ze_ct_ll, llcL);
-    var sOF = _ze_fse_init(_ze_ct_of, ofcL);
-    var sML = _ze_fse_init(_ze_ct_ml, mlcL);
-    _zew_add(llL - load64(&_z_ll_base + llcL * 8), load64(&_z_ll_bits + llcL * 8));
-    _zew_add(mlL - load64(&_z_ml_base + mlcL * 8), load64(&_z_ml_bits + mlcL * 8));
-    _zew_add(ovL - (1 << ofcL), ofcL);
+    var llcL = load64(_zs_llc + li * 8);
+    var mlcL = load64(_zs_mlc + li * 8);
+    var ofcL = load64(_zs_ofc + li * 8);
+    var sLL = _ze_fse_init(ctll, llcL);
+    var sOF = _ze_fse_init(ctof, ofcL);
+    var sML = _ze_fse_init(ctml, mlcL);
+    _zew_add(load64(_zs_ll + li * 8) - load64(&_z_ll_base + llcL * 8), load64(&_z_ll_bits + llcL * 8));
+    _zew_add(load64(_zs_ml + li * 8) - load64(&_z_ml_base + mlcL * 8), load64(&_z_ml_bits + mlcL * 8));
+    _zew_add(load64(_zs_ofv + li * 8) - (1 << ofcL), ofcL);
     var i = ns - 2;
     while (i >= 0) {
-        var ll = load64(_zs_ll + i * 8);
-        var ml = load64(_zs_ml + i * 8);
-        var ov = load64(_zs_ofv + i * 8);
-        var llc = _ze_ll_code(ll);
-        var mlc = _ze_ml_code(ml);
-        var ofc = _z_flog2(ov);
-        sOF = _ze_fse_encode(_ze_ct_of, sOF, ofc);
-        sML = _ze_fse_encode(_ze_ct_ml, sML, mlc);
-        sLL = _ze_fse_encode(_ze_ct_ll, sLL, llc);
-        _zew_add(ll - load64(&_z_ll_base + llc * 8), load64(&_z_ll_bits + llc * 8));
-        _zew_add(ml - load64(&_z_ml_base + mlc * 8), load64(&_z_ml_bits + mlc * 8));
-        _zew_add(ov - (1 << ofc), ofc);
+        var llc = load64(_zs_llc + i * 8);
+        var mlc = load64(_zs_mlc + i * 8);
+        var ofc = load64(_zs_ofc + i * 8);
+        sOF = _ze_fse_encode(ctof, sOF, ofc);
+        sML = _ze_fse_encode(ctml, sML, mlc);
+        sLL = _ze_fse_encode(ctll, sLL, llc);
+        _zew_add(load64(_zs_ll + i * 8) - load64(&_z_ll_base + llc * 8), load64(&_z_ll_bits + llc * 8));
+        _zew_add(load64(_zs_ml + i * 8) - load64(&_z_ml_base + mlc * 8), load64(&_z_ml_bits + mlc * 8));
+        _zew_add(load64(_zs_ofv + i * 8) - (1 << ofc), ofc);
         i = i - 1;
     }
-    _zew_add(sML, 6);   # flush ML (log 6)
-    _zew_add(sOF, 5);   # flush OF (log 5)
-    _zew_add(sLL, 6);   # flush LL (log 6)
+    _zew_add(sML, lgml);   # flush ML (its accuracy log)
+    _zew_add(sOF, lgof);   # flush OF
+    _zew_add(sLL, lgll);   # flush LL
     _zew_close();
     return 0;
 }
