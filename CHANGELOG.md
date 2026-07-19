@@ -7,6 +7,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.8] — 2026-07-19 — zstd encoder: priced parse (the last parse-quality slot)
+
+The 2.5.8 slot was scheduled as an optimal / 2-pass parse. Diagnosis found a cheaper
+answer: the residue was not missing search depth, it was the parser comparing raw match
+**lengths** where it should have compared encoded **cost**. Replacing the two hardcoded
+length comparisons in `_ze_lz_parse` with one integer bit-price function — plus giving the
+lookahead the same repcode candidates the current position already had — closes more of
+the gap than a full dynamic-programming parse did in a measured side-by-side, at a
+fraction of the cost (~100 lines and **zero new allocation**, against ~400 lines and
+~224 KiB of DP arrays for 251,733 B vs this release's 251,333 B).
+
+Corpus **278,970 → 251,333 B (−9.9 %)** across seven fixtures, and **every fixture in an
+eleven-fixture corpus is at or below its 2.5.7 size — no regression anywhere**, including
+incompressible and already-optimal inputs. Reference `zstd -d` v1.5.7 decodes every output
+byte-identically (15/15 encode-smoke cases, 1,150 fuzz iterations).
+
+sankoch's default level now **beats `zstd -3`, zstd's own default, on every fixture**.
+At 2.5.7 it still lost to `-3` on JSON-shaped records (+12 %) and ascending-integer text
+(+34 %); both are now −1.6 % and −45.9 %.
+
+### Added
+- **zstd encoder: priced match selection** (2.5.8) — new `_ze_mvalue(ml, ofv)` returns the
+  approximate encoded *value* of a match in bits (bytes covered × 8, minus the offset cost:
+  ~0 for a repeat code, `log2(ofv) + 4` for a literal offset). It replaces both hardcoded
+  length comparisons: the lazy accept test (`_ze_bestlen > blen`) and the hand-tuned
+  repcode slack (`_ze_replen + 2 >= blen`, now deleted — level 1 keeps its greedy 2.5.7
+  rule). The literal-length and match-length code terms are deliberately omitted; they
+  appear on both sides of every comparison and cancel exactly (adding them is
+  byte-identical across the whole corpus).
+- **zstd encoder: repcode candidates at the lookahead position** (2.5.8) — the one-step
+  lookahead now runs `_ze_rep_search` at `pos+1` as well as `_ze_find`. Previously it could
+  only ever propose a fresh literal offset, which made "spend one literal, then take a
+  cheap repeat" unreachable — the exact move that pays on record-structured data. This is
+  the single largest real-data contributor in the release (−690 B on a 300 KB binary).
+- **zstd encoder: rep0−1 probe** (2.5.8) — `_ze_rep_search` now considers a fourth
+  candidate. At `literals_length == 0` the decoder resolves Offset_Value 3 to `rep0 − 1`
+  (RFC 8878 *Repeat_Offset*), so that offset is also reachable by a repeat code; the
+  encoder was leaving it unused.
+- **zstd encoder: Huffman tree description race** (2.5.8) — for `maxsym <= 128` both the
+  direct-weight and FSE-compressed weight encodings are legal, so the encoder now emits
+  both and keeps the shorter. Previously FSE weights were used only above 128, where the
+  direct header byte would overflow.
+- **`SIZE zstd6_rec_256K` bench line + `fill_records`** (2.5.8) — a parse-quality canary.
+  The three existing `zstd6_text_*` lines use a periodic filler that is one long match at
+  any level, so they did not move by a single byte across either the 2.5.7 or the 2.5.8
+  parse rewrite. The new line uses records whose body recurs at an offset that *drifts* by
+  one per record: 7,846 → 5,278 B (−32.7 %) across this release. Informational, like the
+  other encoder ratio lines.
+- **Two regression tests** in `tests/tcyr/zstd_compress.tcyr` (2.5.8) —
+  `test_zc_lazy_beats_greedy` asserts the lazy levels never lose to greedy level 1 on
+  ascending-integer text (2.5.7 fails it: level 2 was 35,710 B against level 1's 21,337 B),
+  and `test_zc_record_parse` bounds the ratio on drifting-offset records. Two new
+  reference-interop fixtures (`hjsonrec`, `hasc`) in `scripts/zstd-encode-smoke.sh`.
+
+### Fixed
+- **zstd encoder: the lazy parse could make output dramatically worse** (2.5.8) — on
+  regular data such as ascending decimal integers, merely enabling the one-step lookahead
+  (level 1 → level 2) inflated output by **67 %** (21,337 → 35,710 B), and the repeat-code
+  share of the sequence stream collapsed from 90 % to 42 %. Cause: the accept test compared
+  raw lengths, so a one-byte-longer match at a fresh 16-bit offset outranked a repeat code
+  and broke the repcode run that let the offset stream encode as an RLE table. The level
+  ladder was non-monotonic in several places as a result. Now level 2 is 13,896 B on the
+  same input — 35 % *better* than level 1, as it should be.
+- **zstd encoder: a repeat code could be traded for a drifting far offset** (2.5.8) — when
+  a repcode won at the current position the lookahead was skipped entirely. It now still
+  looks, but a candidate at `pos+1` may only displace the repcode if it is *also* a repeat
+  code. Trading a repeat for a fresh far offset is what cost real data; repeat → better
+  repeat is free.
+
+### Measured
+Frame bytes at the default level. Every output decoded byte-identically by reference
+`zstd -d` v1.5.7.
+
+| fixture | raw | 2.5.7 | 2.5.8 | delta | vs `zstd -1` | vs `zstd -3` |
+|---------|----:|------:|------:|------:|-------------:|-------------:|
+| json records | 214,550 | 15,620 | 13,691 | **−12.4 %** | +32.8 % | −1.6 % |
+| csv rows | 231,570 | 25,200 | 23,110 | **−8.3 %** | +1.1 % | −9.5 % |
+| ascending ints | 108,894 | 35,825 | 14,424 | **−59.7 %** | −68.8 % | −45.9 % |
+| log lines | 592,070 | 29,424 | 28,232 | **−4.1 %** | −12.5 % | −36.7 % |
+| tabular records | 116,000 | 4,592 | 4,585 | −0.2 % | −10.9 % | −11.0 % |
+| `src/deflate.cyr` | 101,425 | 23,037 | 22,955 | −0.4 % | −16.4 % | −11.3 % |
+| `src/zstd.cyr` | 85,289 | 22,787 | 22,692 | −0.4 % | −15.3 % | −10.0 % |
+| `CHANGELOG.md` | 157,199 | 56,360 | 56,152 | −0.4 % | −9.8 % | −3.9 % |
+| `/bin/bash` (300 K) | 300,000 | 145,272 | 144,336 | −0.6 % | −11.6 % | −4.8 % |
+| repetitive | 50,040 | 62 | 62 | — | −6.0 % | −6.0 % |
+| random | 40,000 | 40,010 | 40,010 | — | +0.0 % | +0.0 % |
+
+Encode cost 1.1–1.7× (one extra `_ze_rep_search` per lookahead). No new allocation. The
+wire-format SIZE gate is unmoved: all 46 pre-existing `SIZE` lines are byte-identical.
+
+### Deferred
+- **zstd optimal / 2-pass parse** — still the right move for real data specifically (a
+  verified DP probe reached −3.6 % on source/binary against this release's −0.5 %), but it
+  costs ~400 lines, ~224 KiB of DP arrays and 4–74× encode time, so it does not belong in a
+  point release. Re-scoped on the roadmap as a standalone arc.
+- Deeper levels remain slightly non-monotonic on some inputs (csv is best at level 6, not
+  9; the spread is under 2 %). That is inherent to greedy+lazy parsing and needs the DP to
+  fix properly; the gross 2.5.7 inversion is gone and now has a test.
+
 ## [2.5.7] — 2026-07-18 — zstd encoder: repcode matching + adaptive FSE sequence tables
 
 Two parse-quality items close the remaining gap to `zstd -1`/`-3`. **Repcode-aware match

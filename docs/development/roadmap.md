@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.7) | **Last Updated**: 2026-07-18
+> **Status**: Stable (v2.5.8) | **Last Updated**: 2026-07-19
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
@@ -8,12 +8,12 @@ limitations, and the longer-horizon Future bucket. **Every codec now
 de+compresses** — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 / **zstd**
 (the sovereign zstd encoder completed the last codec at 2.5.5) — plus a
 shared tar cursor and ratio-capped decompression across the DEFLATE family
-+ xz + bzip2. zstd-encode competitiveness landed across 2.5.6–2.5.7 — the
-encoder now **beats `zstd -3` (the default level)** on real code/text/binary,
-and the decoder is hardened against hostile input. The forward ladder is an
-optional optimal-parse polish (2.5.8) and the full-feature ZIP archive
-container arc (2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the rest
-across 2.6.1+).
++ xz + bzip2. zstd-encode competitiveness landed across 2.5.6–2.5.8 — the
+encoder now **beats `zstd -3` (zstd's own default level) on every fixture in
+the benchmark corpus**, and the decoder is hardened against hostile input. The
+forward ladder is the full-feature ZIP archive container arc (2.6.x — agnosai's
+`.agpkg` need first at 2.6.0, then the rest across 2.6.1+), with the zstd
+optimal/2-pass parse deferred to its own unscheduled arc.
 
 ---
 
@@ -67,14 +67,44 @@ across 2.6.1+).
 > real code / text / binary; structured/tabular data went from +106 % to −6 % vs
 > `zstd -1`. Reference `zstd -d` v1.5.7 was the correctness bar throughout.
 
-### 2.5.8 — zstd optimal / 2-pass parse (optional)
+> **2.5.8 — zstd encoder priced parse — ✅ shipped 2026-07-19**
+> (see CHANGELOG + [`docs/benchmarks/2026-07-19-2.5.8-priced-parse.md`](../benchmarks/2026-07-19-2.5.8-priced-parse.md)).
+>
+> The slot was scheduled as an optimal / 2-pass parse. Diagnosis found the residue was not
+> missing search depth but the parser comparing raw match **lengths** where it should have
+> compared encoded **cost**. Six bites: the **priced lazy accept test** (`_ze_mvalue`, 65 %
+> of the release), **repcode candidates at the lookahead position** (the largest real-data
+> contributor), deleting the hand-tuned `+2` rep slack, the **rep0−1 probe** (RFC 8878
+> parity), a **Huffman tree-description race**, and a **rep-locked lookahead**. Corpus
+> **278,970 → 251,333 B (−9.9 %)** with **no regression on any of eleven fixtures**;
+> ~100 lines and **zero new allocation**. Also fixed a 2.5.7 defect where merely enabling
+> the lazy lookahead inflated ascending-integer text by **67 %** — now covered by
+> `test_zc_lazy_beats_greedy`. Reference `zstd -d` v1.5.7 was the correctness bar throughout.
 
-The last residue vs `zstd -1` is on *very regular record* data (synthetic csv +45 %,
-log lines +104 % — though tiny in absolute terms): zstd's optimal parse finds longer
-cross-record matches than a greedy+lazy+repcode hash chain. A small optimal / 2-pass
-parse (price each candidate under the current FSE tables, pick the globally cheaper
-path) would close it. Niche relative to the code/text/binary wins already shipped —
-schedule only if a consumer needs the last few percent on structured data.
+## ⏸ Deferred — zstd optimal / 2-pass parse
+
+Was the 2.5.8 slot. It was **built and measured** against the priced parse that shipped
+instead, rather than deferred on speculation:
+
+| metric | 2.5.7 | 2.5.8 (shipped) | verified DP probe |
+|--------|------:|----------------:|------------------:|
+| 7-fixture corpus | 278,970 | **251,333** | 251,733 |
+| deflate + bash | 168,309 | 167,291 | **164,055** |
+| encode cost | 1.0× | 1.1–1.4× | 4–74× |
+| new allocation | — | 0 bytes | ~224 KiB |
+| source added | — | ~100 lines | ~400 lines |
+
+The DP is **worse on total corpus size** than what shipped, at 3–60× the cost. It is
+genuinely better on real source/binary specifically (−3.6 % against 2.5.8's −0.5 %), which
+is why it stays on the ladder — as its own arc, not a point release. The design is fully
+specified (stretch-DP over a match ladder from the hash chain, integer 1/256-bit prices,
+per-DP-node recent-offset triple, 2-pass statistics refit; the `with1literal` rescue must
+land *before* the per-node rep triple or the corpus regresses). Schedule if a consumer
+needs that last few percent on source/binary.
+
+A smaller known limitation rides along: deeper levels are still slightly non-monotonic on
+some inputs (csv is best at level 6, not 9; spread under 2 %). That is inherent to
+greedy+lazy parsing and is what the DP would fix properly.
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 
@@ -194,7 +224,7 @@ at 2.5.5.)
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.5.0** — the tree grew from 16 to 19 modules: `runtime.cyr`
+> Current as of **2.5.8** — the tree grew from 16 to 19 modules: `runtime.cyr`
 > (the lock + alloc seam, extracted from `lib.cyr` at 2.4.9) plus `zstd.cyr`
 > (sovereign RFC-8878 decoder) and `tar.cyr` (POSIX ustar/v7 cursor) at 2.5.0.
 
@@ -214,21 +244,21 @@ at 2.5.5.)
 | gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 1819 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
 | bzip2.cyr        | 1316 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
-| zstd.cyr         | 1462 | `.zst` de+compress (RFC 8878): decoder (2.5.0) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream); self-contained bit reader / FSE / Huffman, no runtime | full |
+| zstd.cyr         | 2058 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
 | tar.cyr          |  513 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + path-traversal guards (2.5.0) | full |
 | stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
-| lib.cyr          |  239 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **12248** | | |
+| lib.cyr          |  246 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
+| **Total**        | **12845** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: **234 distinct test functions** (224 across the 18 split
+Tests: **267 distinct test functions** (257 across the 20 split
 codec×direction suites + 10 in git_object.tcyr) producing
-**4,483,834 assertions** total (4,137,251 + 346,583). Most comes from
+**4,484,022 assertions** total (4,137,439 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -236,18 +266,17 @@ coverage *density*, not coverage *breadth*. See
 [`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
-Fuzz: 3,929 iterations across 4 files (`fuzz_lz4` 700, `fuzz_deflate`
-1,629 — incl. batch ratio-cap 240 + malformed 100 + streaming ratio-cap
-240 + streaming malformed 100, `fuzz_xz` 800 — 300 random + 200
-corruption + 300 encode→decode, `fuzz_bzip2` 800 — 300 random + 200
-corruption + 300 encode→decode).
+Fuzz: 5,279 iterations across 5 files (`fuzz_lz4` 700, `fuzz_deflate`
+1,629, `fuzz_xz` 900, `fuzz_bzip2` 900, `fuzz_zstd` 1,150 — 400 random
++ 600 encode→decode round-trip + 150 corruption). Per-file breakdown in
+[`state.md` § Fuzz totals](state.md#fuzz-totals).
 
-Distlib: `dist/sankoch.cyr` at 11,394 lines (full) +
-`dist/sankoch-core.cyr` at 331 lines (kernel-safe), plus six lean
+Distlib: `dist/sankoch.cyr` at 12,827 lines (full) +
+`dist/sankoch-core.cyr` at 317 lines (kernel-safe), plus six lean
 single-purpose profiles from the 2.4.9 → 2.5.1 reorg —
-`sankoch-zlib.cyr` (4,924), `sankoch-gzip.cyr` (5,077),
-`sankoch-xz.cyr` (2,697), `sankoch-bzip2.cyr` (2,014),
-`sankoch-zstd.cyr` (782), `sankoch-tar.cyr` (9,308). Eight profiles
+`sankoch-zlib.cyr` (4,889), `sankoch-gzip.cyr` (5,042),
+`sankoch-xz.cyr` (2,755), `sankoch-bzip2.cyr` (2,071),
+`sankoch-zstd.cyr` (2,100), `sankoch-tar.cyr` (10,748). Eight profiles
 total; per-bundle roles in [`state.md` § Dist bundles](state.md#dist-bundles).
 
 ## Dependencies
@@ -255,7 +284,7 @@ total; per-bundle roles in [`state.md` § Dist bundles](state.md#dist-bundles).
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; pin is 6.4.66).
+ship with Cyrius ≥ 6.0.1; pin is 6.4.67).
 
 ## Key References
 
@@ -272,4 +301,9 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.66).
 
 ---
 
-*Last Updated: 2026-07-18 (2.5.5 sovereign zstd encoder shipped — every codec now de+compresses. Remaining ladder 2.5.6 zstd-encode competitiveness [FSE literal weights, repeat offsets, lazy parse, level knob] → 2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0. Deferred + Future unchanged.)*
+*Last Updated: 2026-07-19 (2.5.8 zstd encoder priced parse shipped — `_ze_mvalue`
+bit-cost match selection replaces raw length compares; corpus −9.9 %, no regression on
+any of eleven fixtures, beats `zstd -3` on every fixture. The scheduled optimal/2-pass
+DP was built, measured against it, and moved to its own deferred arc. Remaining ladder:
+2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0.
+Other Deferred + Future entries unchanged.)*

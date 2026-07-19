@@ -434,8 +434,96 @@ fn test_zc_adaptive_fse() {
     return 0;
 }
 
+# ---- 2.5.8 priced-parse regression fixtures --------------------------------
+# Shared scratch for _zt_dec (one lazy alloc — the harness heap is 4 MB and these
+# builders run thousands of iterations).
+var _zt_dbuf = 0;
+
+# Append `v` as decimal digits at dst+off (zero-padded to width `w`; natural width
+# when w == 0). Returns the new offset.
+fn _zt_dec(dst, off, v, w) {
+    if (_zt_dbuf == 0) { _zt_dbuf = alloc(32); }
+    var k = 0;
+    var x = v;
+    if (x == 0) { store8(_zt_dbuf, 48); k = 1; }
+    while (x > 0) { store8(_zt_dbuf + k, 48 + x % 10); k = k + 1; x = x / 10; }
+    while (k < w) { store8(_zt_dbuf + k, 48); k = k + 1; }
+    var j = k - 1;
+    while (j >= 0) { store8(dst + off, load8(_zt_dbuf + j)); off = off + 1; j = j - 1; }
+    return off;
+}
+
+# Append `n` bytes of a deterministic printable constant run (the invariant part of
+# a record, e.g. the `,"name":"item-` between two varying fields).
+fn _zt_const(dst, off, p, n) {
+    var k = 0;
+    while (k < n) {
+        store8(dst + off, 32 + ((p + k) * 7) % 90);
+        off = off + 1;
+        k = k + 1;
+    }
+    return off;
+}
+
+# Record-structured data: constant field separators around a MONOTONICALLY DRIFTING
+# counter plus two cycling fields, spanning more than one 128 KiB block. This is the
+# shape the 2.5.7 encoder handled worst. Its greedy-longest parse matched the record
+# body at an offset that grew by exactly one per record, so the offset never equalled
+# a recent offset and every record paid a full ~16-bit literal offset. The 2.5.8
+# priced parse (`_ze_mvalue`) spends one extra literal instead and lands on a repeat
+# code, which costs ~0 offset bits (16.47x here, against 2.5.7's 16.05x).
+#
+# The bound below is deliberately slack — it catches a gross parse regression, not the
+# 2.5.7 defect specifically. `test_zc_lazy_beats_greedy` is the sharp tripwire for that.
+fn test_zc_record_parse() {
+    var cap = 262144;
+    var src = alloc(cap);
+    var off = 0;
+    var i = 0;
+    while (i < 3000 && off + 96 < cap) {
+        off = _zt_const(src, off, 0, 10);
+        off = _zt_dec(src, off, i, 0);          # drifting counter -> a far, +1 offset
+        off = _zt_const(src, off, 10, 22);
+        off = _zt_dec(src, off, i % 733, 4);    # cycling field
+        off = _zt_const(src, off, 32, 10);
+        off = _zt_dec(src, off, i % 90, 0);
+        off = _zt_const(src, off, 42, 18);
+        i = i + 1;
+    }
+    var c = _z_rt(src, off, "zstd_encode record-structured data round-trips");
+    assert(c * 15 < off, "zstd_encode prices record-structured data past 15x");
+    return 0;
+}
+
+# Ascending decimal integers — the pathological input for a LENGTH-based lazy accept
+# test. At 2.5.7 merely turning the lookahead on (level 1 -> level 2) made this input
+# ~67 % BIGGER, because a one-byte-longer match at a fresh 16-bit offset outranked a
+# repeat code and broke the repcode run that let the offset stream encode as RLE. The
+# priced accept test makes the deeper levels monotone here, so both assertions below
+# are regression tripwires for that defect: 2.5.7 fails both.
+fn test_zc_lazy_beats_greedy() {
+    var cap = 120000;
+    var src = alloc(cap);
+    var off = 0;
+    var i = 1;
+    while (i < 20000 && off + 8 < cap) {
+        off = _zt_dec(src, off, i, 0);
+        store8(src + off, 32);
+        off = off + 1;
+        i = i + 1;
+    }
+    var c1 = _z_rt_lvl(src, off, 1, "zstd_encode ascending integers level 1");
+    var c2 = _z_rt_lvl(src, off, 2, "zstd_encode ascending integers level 2");
+    var c6 = _z_rt_lvl(src, off, 6, "zstd_encode ascending integers level 6");
+    assert(c2 <= c1, "zstd_encode lazy parse never loses to greedy on regular data");
+    assert(c6 <= c1, "zstd_encode default level never loses to greedy on regular data");
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_zc_record_parse();
+    test_zc_lazy_beats_greedy();
     test_zc_malformed_survive();
     test_zc_repeat_offsets();
     test_zc_level_knob();

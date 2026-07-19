@@ -40,6 +40,38 @@ fn fill_text(buf, len) {
     return 0;
 }
 
+# Record-structured filler (2.5.8): a constant record body around a decimal counter
+# that increments once per record. The body therefore recurs at an offset that DRIFTS
+# by one per record, so it never equals a recent offset — the case a greedy-longest
+# LZ parse encodes worst (it pays a full literal offset every record instead of
+# spending one literal to reach a repeat code). Deterministic, no allocation.
+fn fill_records(buf, len) {
+    var i = 0;
+    var rec = 0;
+    while (i < len) {
+        # constant prefix
+        var k = 0;
+        while (k < 10 && i < len) { store8(buf + i, 32 + (k * 7) % 90); i = i + 1; k = k + 1; }
+        # drifting decimal counter, most-significant digit first
+        var div = 10000;
+        var started = 0;
+        while (div > 0 && i < len) {
+            var d = (rec / div) % 10;
+            if (d != 0 || started == 1 || div == 1) {
+                store8(buf + i, 48 + d);
+                i = i + 1;
+                started = 1;
+            }
+            div = div / 10;
+        }
+        # constant suffix
+        k = 0;
+        while (k < 34 && i < len) { store8(buf + i, 32 + ((k + 10) * 7) % 90); i = i + 1; k = k + 1; }
+        rec = rec + 1;
+    }
+    return 0;
+}
+
 fn fill_random(buf, len) {
     _bseed(42);
     var i = 0;
@@ -595,6 +627,17 @@ fn main() {
     size_line("zstd6_text_64K",  65536,  zstd_compress_level(lsrc, 65536, lc, 270336, 6));
     fill_text(lsrc, 262144);
     size_line("zstd6_text_256K", 262144, zstd_compress_level(lsrc, 262144, lc, 270336, 6));
+
+    # ---- zstd record-structured ratio (2.5.8) ----
+    # The three lines above use fill_text, which is one long match at any level, so
+    # they are blind to parse quality — they did not move by a byte across the 2.5.7
+    # and 2.5.8 parse rewrites. This line is the parse-quality canary: records whose
+    # body recurs at an offset that DRIFTS by one per record, which is the shape a
+    # greedy-longest parse handles worst. Informational (like the other encoder ratio
+    # lines, zstd output is not bit-reproducible across encoder versions), but a parse
+    # regression shows up here and nowhere else in `bench`.
+    fill_records(lsrc, 262144);
+    size_line("zstd6_rec_256K", 262144, zstd_compress_level(lsrc, 262144, lc, 270336, 6));
 
     # ---- LZ4F block-max sweep sizes (v2.3.3) ----
     # Same 256K text input at each BD block-max ID. Output shrinks as the

@@ -37,9 +37,18 @@ awk 'BEGIN{for(i=0;i<40000;i++){if(i%4==0)printf "%c",128+(i%128);else printf "%
 # sequences with skewed LL/ML/OF distributions -> adaptive FSE_Compressed sequence
 # tables (2.5.7). Exercises the FSE-table description + RLE-mode wire format.
 awk 'BEGIN{for(i=0;i<4000;i++)printf "row%05d | const-field | %03d\n", i, i%7}' > "$WORK/hstruct.bin"
+# JSON-shaped records with a MONOTONICALLY DRIFTING id field (2.5.8). The record body
+# recurs at an offset that grows by one per record, so a greedy-longest parse pays a
+# full literal offset every record; the priced parse spends a literal and takes a
+# repeat code instead. Multi-block, and the shape the 2.5.8 parse targets.
+awk 'BEGIN{for(i=0;i<3000;i++)printf "{\"id\":%d,\"name\":\"item-%04d\",\"tags\":[\"a\",\"b\"],\"price\":%d.%02d,\"ok\":true}\n",i,i%733,i%90,i%100}' > "$WORK/hjsonrec.bin"
+# Ascending decimal integers — the input where 2.5.7's length-based lazy accept test
+# inverted the level ladder (level 2 was 67 % larger than level 1). Exercises the
+# repcode-heavy offset stream the priced parse now produces.
+awk 'BEGIN{for(i=1;i<20000;i++)printf "%d ", i}' > "$WORK/hasc.bin"
 
 rc=0; total=0; pass=0
-for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide hstruct; do
+for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide hstruct hjsonrec hasc; do
     src="$WORK/$f.bin"
     [ -f "$src" ] || continue
     total=$((total + 1))
