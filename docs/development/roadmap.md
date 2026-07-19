@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.5) | **Last Updated**: 2026-07-18
+> **Status**: Stable (v2.5.6) | **Last Updated**: 2026-07-18
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
@@ -8,10 +8,12 @@ limitations, and the longer-horizon Future bucket. **Every codec now
 de+compresses** — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 / **zstd**
 (the sovereign zstd encoder completed the last codec at 2.5.5) — plus a
 shared tar cursor and ratio-capped decompression across the DEFLATE family
-+ xz + bzip2. The scheduled ladder below finishes zstd-encode
-competitiveness (2.5.6) and opens a full-feature ZIP archive container arc
-(2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the rest across
-2.6.1+).
++ xz + bzip2. zstd-encode competitiveness landed at 2.5.6 (the encoder now
+beats `zstd -1` on most data; decoder hardened against hostile input). The
+scheduled ladder below finishes the last parse-quality gap
+(2.5.7 — repcode-aware matching) and opens a full-feature ZIP archive
+container arc (2.6.x — agnosai's `.agpkg` need first at 2.6.0, then the
+rest across 2.6.1+).
 
 ---
 
@@ -43,21 +45,30 @@ competitiveness (2.5.6) and opens a full-feature ZIP archive container arc
 > maxsym > 128; a null-scratch SIGSEGV) — each a case where sankoch's own decoder
 > was lenient enough to round-trip an invalid stream.
 
-### 2.5.6 — zstd encode competitiveness
+> **2.5.6 — zstd encode competitiveness + decoder hardening — ✅ shipped 2026-07-18**
+> (see CHANGELOG + [`docs/benchmarks/2026-07-18-2.5.6-zstd-competitiveness.md`](../benchmarks/2026-07-18-2.5.6-zstd-competitiveness.md)
+> + [`docs/audit/2026-07-18-zstd-decoder-hardening.md`](../audit/2026-07-18-zstd-decoder-hardening.md)).
+>
+> Shipped as five bites: **FSE-compressed literal weights** (wide/UTF-8/binary
+> literals now Huffman-compress), **zstd decoder hardening** (36 verified OOB/DoS
+> paths closed; new `fuzz/fuzz_zstd.fcyr`), **repeat-offset codes**, a **one-step
+> lazy parse**, and a **1..9 compression-level knob** (`zstd_compress_level`) + a
+> `bench` ratio line. The encoder now **beats `zstd -1`** on source / binary /
+> repetitive / incompressible data, trailing only on UTF-8-heavy text (+7.5 %).
+> Reference `zstd -d` v1.5.7 was the correctness bar throughout.
 
-Close the gap to `zstd -1` parity. The biggest item is **FSE-compressed literal
-weights**: wide / UTF-8 / binary alphabets (maxsym > 128) currently store
-literals raw because the direct weight table's header byte (`127 + maxsym`)
-overflows a byte; FSE weights (a simple normalize + `writeNCount` [inverting the
-decoder's `readNCount`] + a 2-state FSE encode, reusing the 2.5.5 FSE machinery
-— ~150 lines of bit-exact code) let them Huffman-compress. Then **repeat-offset
-codes** (offset_value 1/2/3 when a match reuses a recent offset — the recent-
-offset model the decoder's `_z_resolve_offset` already tracks), a **lazy /
-2-pass parse** (better match choice than greedy), a **compression-level knob**
-(chain depth / nice-length), an informational `bench` ratio line, and **CI
-wiring** of `scripts/zstd-encode-smoke.sh`. Reference `zstd -d` remains the
-correctness bar throughout. (Bite 4a — the depth-128 match finder — already
-shipped in 2.5.5.)
+### 2.5.7 — zstd repcode-aware match finding
+
+The remaining gap to `zstd -1` on UTF-8-heavy text (+7.5 %) and on tabular / record
+data (a synthetic 132 K record set is still ~+100 %) is **parse quality**: the match
+finder is greedy+lazy but *offset-blind*. zstd -1 prefers a match at a **recent
+offset** (repcode) even when a slightly longer match exists elsewhere, because a
+repcode costs ~0 offset bits. Make the match finder repcode-aware — at each position
+also probe the three recent offsets (which the encoder already tracks in
+`_ze_ro1/2/3`) and bias selection toward them — so the opportunistic repeat coding
+shipped at 2.5.6 becomes a first-class search target. Reference `zstd -d` remains the
+correctness bar. (Optional follow-on: a small optimal/2-pass parse for the last few
+percent.)
 
 ### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
 

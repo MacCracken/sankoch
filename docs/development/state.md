@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-07-18 (v2.5.5 cut — **sovereign zstd encoder** `zstd_compress`, completing the zstd codec [decode shipped 2.5.0]: LZ77 + FSE sequences + Huffman literals, reference-`zstd -d`-validated; ~2-17 % behind `zstd -1`, FSE literal weights + repeat offsets deferred to 2.5.6) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-07-18 (v2.5.6 cut — **zstd encoder competitiveness + decoder hardening**: FSE literal weights + repeat offsets + lazy parse + 1..9 level knob [now *beats* `zstd -1` on source/binary/repetitive], decoder closed against 36 verified OOB/DoS paths + `fuzz_zstd.fcyr`; repcode-aware matching deferred to 2.5.7) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.5.5` — single source of truth (2.5.5 = **sovereign zstd encoder** `zstd_compress` [LZ77 + FSE sequences + Huffman literals; completes the codec, decode shipped 2.5.0]; 2.5.4 = xz / bzip2 encoder throughput [output byte-identical]; 2.5.3 = xz / bzip2 ratio cap; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
-- **`cyrius.cyml [package].cyrius`**: `6.4.67` — toolchain pin (bumped from 6.4.66 as in-flight 2.5.6 work; 2.5.5 shipped on 6.4.66. `cyrius deps` re-resolved, all gates green + distlib byte-identical on 6.4.67)
-- **Tag**: `2.5.5` (bare semver, no `v` prefix)
+- **`VERSION`**: `2.5.6` — single source of truth (2.5.6 = **zstd encoder competitiveness + decoder hardening** [FSE literal weights + repeat-offset codes + lazy parse + 1..9 level knob; decoder closed against 36 verified OOB/DoS paths + new `fuzz_zstd.fcyr`; encoder now beats `zstd -1` on source/binary/repetitive]; 2.5.5 = **sovereign zstd encoder** `zstd_compress` [LZ77 + FSE sequences + Huffman literals; completes the codec, decode shipped 2.5.0]; 2.5.4 = xz / bzip2 encoder throughput [output byte-identical]; 2.5.3 = xz / bzip2 ratio cap; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
+- **`cyrius.cyml [package].cyrius`**: `6.4.67` — toolchain pin (bumped from 6.4.66 during the 2.5.6 arc; 2.5.5 shipped on 6.4.66. `cyrius deps` re-resolved, all gates green)
+- **Tag**: `2.5.6` (bare semver, no `v` prefix)
 - **Released**: 2026-07-18
 
 ## Distribution
@@ -28,7 +28,7 @@ type: state
 
 ## Source
 
-- **Source**: **12,248 lines** across 19 domain modules (`src/*.cyr`). The 2.5.5 zstd encoder grew `zstd.cyr` **729 → 1,462** (+733 — frame/block framing + length-limited canonical Huffman + single/4-stream literal bitstreams + a self-contained LZ77 hash-chain match finder + the FSE encoding tables and 3-state interleaved backward sequence encoder). Largest modules: `deflate.cyr` **2,540**, `xz.cyr` **1,819**, `zstd.cyr` **1,462**, `bzip2.cyr` **1,316**, `lz4.cyr` **935**, `huffman.cyr` **683**, `gzip.cyr` **638**, `tar.cyr` **513**; `runtime.cyr` **73**, `lib.cyr` **239**, `types.cyr` **42**.
+- **Source**: **12,583 lines** across 19 domain modules (`src/*.cyr`). The 2.5.6 arc grew `zstd.cyr` **1,462 → 1,798** (+336 — FSE-compressed literal weights [encode], the decoder-hardening bounds/validation guards, repeat-offset `_ze_offval`, the lazy-parse `_ze_find`/`_ze_insert` split, and the `zstd_set_level` / `zstd_compress_level` knob). Largest modules: `deflate.cyr` **2,540**, `xz.cyr` **1,819**, `zstd.cyr` **1,798**, `bzip2.cyr` **1,316**, `lz4.cyr` **935**, `huffman.cyr` **683**, `gzip.cyr` **638**, `tar.cyr` **513**; `runtime.cyr` **73**, `lib.cyr` **244**, `types.cyr` **42**.
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
@@ -40,18 +40,19 @@ cross-cutting helpers).
 
 | Suite group                                   | Functions | Assertions |
 |-----------------------------------------------|----------:|-----------:|
-| `tests/tcyr/*.tcyr` (19 split suites)         |       250 |  4,137,381 |
+| `tests/tcyr/*.tcyr` (19 split suites)         |       254 |  4,137,402 |
 | `tests/tcyr/git_object.tcyr`                  |        10 |    346,583 |
-| **Total**                                     |   **260** | **4,483,964** |
+| **Total**                                     |   **264** | **4,483,985** |
 
 Split suites: `checksum`, `lz4_{compress,decompress}`,
 `lz4f_{compress,decompress}`, `deflate_{compress,decompress}`,
 `zlib_{compress,decompress}`, `gzip_{compress,decompress}`,
 `xz_{compress,decompress}`, `bzip2_{compress,decompress}`,
-**`zstd_compress`** (2.5.5 — 16 encode round-trips: store / RLE / single-
-& 4-stream Huffman / length-limiter / LZ77+FSE sequences / wide-alphabet
-fallback; zstd *decode* is validated by `scripts/zstd-smoke.sh` vs reference
-`zstd`, not a tcyr suite), `stream`, `detect_error`, **`ratio_cap`** (2.4.5
+**`zstd_compress`** (2.5.5 store / RLE / Huffman / LZ77+FSE + 2.5.6 FSE literal
+weights / repeat offsets / level knob / **malformed-input decode-survival** [the
+34-byte raw-overflow repro + truncations]; zstd reference-`zstd -d` interop is
+`scripts/zstd-encode-smoke.sh`, and decode robustness is fuzzed by
+`fuzz/fuzz_zstd.fcyr`), `stream`, `detect_error`, **`ratio_cap`** (2.4.5
 batch + 2.4.6 streaming + 2.5.3 xz/bzip2 — 26 tests, 98 assertions). Run one
 with `cyrius test tests/tcyr/<name>.tcyr`, or all with bare `cyrius test`.
 
@@ -59,46 +60,48 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 ## Fuzz totals
 
-- **4,129 iterations** across 23 harness functions in 4 files:
+- **5,279 iterations** across 26 harness functions in 5 files:
   - `fuzz/fuzz_lz4.fcyr`: 700 (round-trip 500 + malformed 200)
   - `fuzz/fuzz_deflate.fcyr`: 1,629 (deflate batch 340 + zlib 160 + gzip 160 + 4 streaming variants 204 + tree-shape 55 + skewed-freq 30 + ratio-cap 240 + ratio-cap malformed 100 + **streaming ratio-cap 240 + streaming malformed 100**)
   - `fuzz/fuzz_xz.fcyr`: 900 (random-input 300 + corruption 200 + encode→decode round-trip 300 + **ratio-cap 100**)
   - `fuzz/fuzz_bzip2.fcyr`: 900 (random-input 300 + corruption 200 + encode→decode round-trip 300 + **ratio-cap 100**)
+  - `fuzz/fuzz_zstd.fcyr`: 1,150 (2.5.6 — decode-survival on random input 400 + encode→decode round-trip across 5 distributions 600 + corruption of valid streams 150; found the decoder-hardening SIGSEGVs)
 
 ## Dist bundles
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 12,291 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd de/compress (encode 2.5.5) + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
-| `dist/sankoch-core.cyr`      |   331 | **[lib.core]** kernel-safe LZ4 batch decompress only (types + xxhash32 + lz4_decode); no alloc / syscalls / mutex (AGNOS initrd) |
-| `dist/sankoch-zlib.cyr`      | 4,924 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
-| `dist/sankoch-gzip.cyr`      | 5,077 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
-| `dist/sankoch-xz.cyr`        | 2,778 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-bzip2.cyr`     | 2,091 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-zstd.cyr`      | 1,515 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd **de + compress** (decode 2.5.0; sovereign `zstd_compress` LZ77+FSE+Huffman encoder 2.5.5), fully self-contained (own bit reader / FSE / Huffman, no runtime/mutex). agnova `base-system.tar.zst` + takumi zstd tarballs; the ZIP method-93 write path (2.6.x) |
-| `dist/sankoch-tar.cyr`       | 10,199 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
+| `dist/sankoch.cyr`           | 12,565 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd de/compress (encode 2.5.5, competitive 2.5.6) + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
+| `dist/sankoch-core.cyr`      |   317 | **[lib.core]** kernel-safe LZ4 batch decompress only (types + xxhash32 + lz4_decode); no alloc / syscalls / mutex (AGNOS initrd) |
+| `dist/sankoch-zlib.cyr`      | 4,889 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
+| `dist/sankoch-gzip.cyr`      | 5,042 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
+| `dist/sankoch-xz.cyr`        | 2,755 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-bzip2.cyr`     | 2,071 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-zstd.cyr`      | 1,840 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd **de + compress** (decode 2.5.0, hardened 2.5.6; sovereign `zstd_compress` LZ77+FSE+Huffman encoder 2.5.5, competitive 2.5.6 with a 1..9 `zstd_compress_level`), fully self-contained (own bit reader / FSE / Huffman, no runtime/mutex). agnova `base-system.tar.zst` + takumi zstd tarballs; the ZIP method-93 write path (2.6.x) |
+| `dist/sankoch-tar.cyr`       | 10,488 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
 
 All zero deps. Regenerated at every release via `cyrius distlib` (full) plus the seven named profiles — `cyrius distlib core` / `zlib` / `gzip` / `xz` / `bzip2` / `zstd` / `tar` (eight bundles total). CI gates on drift across all eight.
 
 ## In-flight slots
 
-**Ladder committed; 2.5.5 shipped (2026-07-18), 2.5.6 next.** 2.5.5 landed
-the **sovereign zstd encoder** `zstd_compress` (LZ77 + FSE sequences +
-Huffman literals; completes the codec, decode shipped 2.5.0),
-reference-`zstd -d`-validated — ~2-17 % behind `zstd -1`, and it *beats*
-`zstd -1` on highly repetitive / incompressible data (ratios in
-[`docs/benchmarks/2026-07-18-2.5.5-zstd-encode.md`](../benchmarks/2026-07-18-2.5.5-zstd-encode.md)).
+**Ladder committed; 2.5.6 shipped (2026-07-18), 2.5.7 next.** 2.5.6 closed the
+encoder-competitiveness gap and hardened the decoder: **FSE-compressed literal
+weights**, **decoder hardening** (36 verified OOB/DoS paths + `fuzz_zstd.fcyr`),
+**repeat-offset codes**, a **one-step lazy parse**, and a **1..9 level knob**
+(`zstd_compress_level`). The encoder now *beats* `zstd -1` on source / binary /
+repetitive / incompressible data, trailing only on UTF-8-heavy text (+7.5 %) —
+ratios in
+[`docs/benchmarks/2026-07-18-2.5.6-zstd-competitiveness.md`](../benchmarks/2026-07-18-2.5.6-zstd-competitiveness.md),
+audit in
+[`docs/audit/2026-07-18-zstd-decoder-hardening.md`](../audit/2026-07-18-zstd-decoder-hardening.md).
 Remaining forward ladder in
 [`roadmap.md`](roadmap.md#-scheduled--the-committed-next-release-ladder):
 
-- **2.5.6 — zstd encode competitiveness + toolchain refresh.** Toolchain pin
-  6.4.66 → 6.4.67 (done, in-flight — distlib byte-identical, all gates green).
-  FSE-compressed literal weights
-  (wide/UTF-8/binary alphabets, maxsym > 128 — the biggest remaining gap,
-  currently raw literals), repeat-offset codes, a lazy/2-pass parse, a level
-  knob, a `bench` ratio line, and CI wiring of the encode-smoke. Closes the
-  gap to `zstd -1` parity. (Bite 4a — depth-128 match finder — already
-  landed in 2.5.5.)
+- **2.5.7 — zstd repcode-aware match finding.** The last parse-quality gap: the
+  match finder is greedy+lazy but offset-blind. Bias match selection toward the
+  three recent offsets (already tracked in `_ze_ro1/2/3`) so a repcode is a
+  first-class search target, closing the UTF-8-text (+7.5 %) and tabular
+  (~+100 %) gaps to `zstd -1`. Reference `zstd -d` stays the correctness bar.
 - **2.6.x — ZIP archive container arc** (`zip.cyr` alongside `tar.cyr`),
   full-feature but **agnosai-first**:
   - **2.6.0** — agnosai `.agpkg` core: store + DEFLATE, read **and**
@@ -134,8 +137,8 @@ encode shipped 2.5.5).
 ## CI / release gates
 
 - **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (25 deps, 0 untrusted, 0 missing).
-- **Tests**: all tcyr suites green (19 split codec×direction suites incl. `zstd_compress` + `ratio_cap` + `git_object`, auto-discovered by the CI Test loop); all 21 fuzz harness functions green.
-- **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The **xz and bzip2 encoders** (2.4.1 / 2.4.3) are **deliberately excluded** from this gate — they ship informational ratio lines in `bench` instead, as does the 2.4.5 ratio-cap section.
+- **Tests**: all tcyr suites green (19 split codec×direction suites incl. `zstd_compress` + `ratio_cap` + `git_object`, auto-discovered by the CI Test loop); all fuzz harnesses green (5 files — lz4 / deflate / xz / bzip2 / zstd, auto-discovered via `fuzz/*.fcyr`).
+- **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; pre-existing lines unchanged.) The **xz and bzip2 encoders** (2.4.1 / 2.4.3) and the **zstd encoder** (`SIZE zstd6_*`, 2.5.6) are **deliberately excluded** from this gate — their output is not bit-reproducible across encoder versions, so they ship informational ratio lines in `bench` instead, as does the 2.4.5 ratio-cap section.
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
 - **aarch64 cross-build**: hard gate in both ci.yml and release.yml; `cyrius build --aarch64 src/lib.cyr` must succeed and produce a valid ARM aarch64 ELF. Workflows expect `cycc_aarch64` in the Cyrius bundle (renamed from `cc5_aarch64` at Cyrius 6.0).
@@ -148,6 +151,7 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.5.6  | 2026-07-18 | **zstd encoder competitiveness + decoder hardening** — FSE literal weights + repeat offsets + lazy parse + 1..9 level knob (now *beats* `zstd -1` on source/binary/repetitive); decoder closed against 36 verified OOB/DoS paths + new `fuzz_zstd.fcyr` |
 | 2.5.5  | 2026-07-18 | **Sovereign zstd encoder** `zstd_compress` (LZ77 + FSE sequences + Huffman literals) — completes the zstd codec; reference-`zstd -d`-validated, ~2-17 % behind `zstd -1` |
 | 2.5.4  | 2026-07-18 | xz / bzip2 encoder throughput — output-byte-identical speedups (xz optimal-parse ~5× text / ~2.5× repetitive; bzip2 ~5% random) |
 | 2.5.3  | 2026-07-18 | xz / bzip2 ratio cap (`*_decompress_with_ratio_cap`; `ERR_RATIO_LIMIT`) — DEFLATE-family zip-bomb defense extended to the last two batch decoders; closes INFO-F |

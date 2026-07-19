@@ -1415,8 +1415,8 @@ fn _ze_lz_reconstruct(out) {
 # Build FSE *encoding* tables + encode the LL/OF/ML sequences as 3 interleaved
 # states, backward, in Predefined mode. The operation order is the decoder's
 # read order reversed (init LL/OF/ML; per-seq OF/ML/LL state + LL/ML/OF extra;
-# flush ML/OF/LL) — see _z_decode_sequences. Literals here are Raw (the
-# Huffman-literal + sequences combination is a later step).
+# flush ML/OF/LL) — see _z_decode_sequences. The caller (_ze_try_seq_block) emits
+# the literals section (Huffman when it wins, else Raw) ahead of these sequences.
 var _ze_ct_ll = 0; var _ze_ct_of = 0; var _ze_ct_ml = 0;   # cached predefined encode tables
 
 # FSE encode table {stateTable, deltaNbBits[], deltaFindState[], log} from a

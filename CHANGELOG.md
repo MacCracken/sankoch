@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.6] — 2026-07-18 — zstd encoder competitiveness + decoder hardening
+
+Closes the encoder-competitiveness gap opened at 2.5.5 and hardens the decoder against
+hostile input. The encoder now **beats `zstd -1`** on source, binary, repetitive, and
+incompressible data (FSE-compressed literal weights + repeat-offset codes + one-step lazy
+parse + a 1..9 compression-level knob), trailing only on UTF-8-heavy text (+7.5 %, down
+from +17 %). The decoder — fuzzed for the first time — is closed against **36 verified
+out-of-bounds / DoS paths**. Every encoder output decodes byte-identical by reference
+`zstd -d` v1.5.7; a 1,148-input malformed corpus that crashed/hung the decoder 25 + 133
+times now runs 0 / 0. Repcode-aware matching (the remaining UTF-8-text / tabular gap) is
+deferred to 2.5.7.
+
 ### Security
 - **zstd decoder hardening against malformed input** (2.5.6) — the RFC-8878 decoder
   (`zstd_decompress`, shipped 2.5.0) trusted attacker-controlled length/size fields on

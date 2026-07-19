@@ -100,8 +100,10 @@ fn compress(format, src, src_len, dst, dst_cap): i64 {
     return compress_level(format, src, src_len, dst, dst_cap, 6);
 }
 
-# Compress with explicit level (1=fast, 6=default, 9=best).
-# Level only affects DEFLATE-based formats. LZ4 ignores the level.
+# Compress with explicit level (1=fast, 6=default, 9=best). Honored by the
+# DEFLATE-based formats (deflate/zlib/gzip), bzip2 (block size 100..900 KB), and
+# zstd (match-finder depth + lazy). LZ4 / LZ4F and xz ignore it (accepted for
+# API uniformity).
 fn compress_level(format, src, src_len, dst, dst_cap, level): i64 {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
