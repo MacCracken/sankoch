@@ -1,0 +1,163 @@
+# sankoch — zstd encode/decode fuzz harness (2.5.6)
+#
+# The sovereign zstd encoder (LZ77 + FSE sequences + Huffman literals, incl.
+# the 2.5.6 FSE-compressed literal-weight path) must always produce a stream
+# our own decoder reproduces byte-for-byte, and the decoder must never crash on
+# hostile input.
+#   1. Random bytes (some carrying the zstd magic) -> error, not a fault.
+#   2. Encode -> decode round-trip across distributions. Mode 3 forces the
+#      FSE-weight path: a skewed FULL-range alphabet (maxsym > 128, so the
+#      direct weight table can't fit) that still compresses.
+#   3. A valid encoded stream with random byte flips -> decode survives.
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_fill(buf, len) {
+    var i = 0;
+    while (i < len) {
+        store8(buf + i, _fuzz_next());
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Fill src[0..len) for a distribution `mode`. Returns nothing.
+#   0 random full-range (incompressible -> Raw literals)
+#   1 periodic (long matches -> LZ77/FSE sequences)
+#   2 skewed narrow 0..7 (maxsym < 128 -> direct Huffman weights)
+#   3 skewed WIDE: 25% in 128..255, 75% in 0..7 (maxsym > 128 -> FSE weights)
+#   4 text-like ASCII (narrow, compressible)
+fn _zf_gen(src, len, mode, seed) {
+    var i = 0;
+    while (i < len) {
+        var b = 0;
+        if (mode == 0) {
+            b = _fuzz_next();
+        } elif (mode == 1) {
+            b = 97 + (i % (2 + (seed & 7)));
+        } elif (mode == 2) {
+            b = _fuzz_next() & 7;
+        } elif (mode == 3) {
+            if ((_fuzz_next() & 3) == 0) {
+                b = 128 + (_fuzz_next() & 127);
+            } else {
+                b = _fuzz_next() & 7;
+            }
+        } else {
+            b = 32 + (_fuzz_next() % 64);
+        }
+        store8(src + i, b);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Strategy 1: random bytes (optionally zstd-magic prefixed) -> survive decode.
+fn fuzz_z_random(seed, data_len, magic) {
+    _fuzz_seed(seed);
+    var src[1024];
+    var capped = data_len;
+    if (capped > 1024) { capped = 1024; }
+    _fuzz_fill(&src, capped);
+    if (magic != 0 && capped >= 4) {
+        store8(&src + 0, 40); store8(&src + 1, 181);
+        store8(&src + 2, 47); store8(&src + 3, 253);
+    }
+    var dst[8192];
+    var dlen = zstd_decompress(&src, capped, &dst, 8192);
+    return 0;
+}
+
+# Strategy 2: encode -> decode round-trip. Encoder output must always decode
+# back byte-for-byte through our own decoder.
+fn fuzz_z_roundtrip(seed, data_len, mode) {
+    _fuzz_seed(seed);
+    var src[6144];
+    var capped = data_len;
+    if (capped > 6144) { capped = 6144; }
+    _zf_gen(&src, capped, mode, seed);
+
+    var comp[16384];
+    var clen = zstd_compress(&src, capped, &comp, 16384);
+    assert(clen > 0 || capped == 0, "fuzz_zstd compress produced a stream");
+    if (clen < 0) { return 0; }
+
+    var dec[6144];
+    var dlen = zstd_decompress(&comp, clen, &dec, 6144);
+    assert(dlen == capped, "fuzz_zstd roundtrip length");
+    var i = 0;
+    while (i < capped) {
+        assert(load8(&dec + i) == load8(&src + i), "fuzz_zstd roundtrip content");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Strategy 3: valid encoded stream with random byte flips -> decode survives.
+fn fuzz_z_corrupt(seed, mode) {
+    _fuzz_seed(seed);
+    var src[2048];
+    _zf_gen(&src, 2048, mode, seed);
+    var comp[8192];
+    var clen = zstd_compress(&src, 2048, &comp, 8192);
+    if (clen < 4) { return 0; }
+    var flips = 1 + (_fuzz_next() & 7);
+    var k = 0;
+    while (k < flips) {
+        var off = (_fuzz_next() | ((_fuzz_next() & 7) << 8)) % clen;
+        store8(&comp + off, _fuzz_next());
+        k = k + 1;
+    }
+    var dst[6144];
+    var dlen = zstd_decompress(&comp, clen, &dst, 6144);
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    var seed = 1;
+    while (seed <= 200) {
+        fuzz_z_random(seed * 2654435761, (seed * 13) % 1024, 0);
+        fuzz_z_random(seed * 40503, (seed * 17) % 1024, 1);
+        seed = seed + 1;
+    }
+    println("fuzz_zstd: 400 random-input tests passed");
+
+    seed = 1;
+    while (seed <= 120) {
+        var sz = (seed * 47) % 6144;
+        fuzz_z_roundtrip(seed * 2246822519, sz, 0);
+        fuzz_z_roundtrip(seed * 3266489917, sz, 1);
+        fuzz_z_roundtrip(seed * 668265263, sz, 2);
+        fuzz_z_roundtrip(seed * 374761393, sz, 3);
+        fuzz_z_roundtrip(seed * 2891336453, sz, 4);
+        seed = seed + 1;
+    }
+    println("fuzz_zstd: 600 encode round-trip tests passed");
+
+    seed = 1;
+    while (seed <= 150) {
+        fuzz_z_corrupt(seed * 7919, seed % 5);
+        seed = seed + 1;
+    }
+    println("fuzz_zstd: 150 corruption tests passed");
+
+    return 0;
+}
+
+var exit_code = main();
+syscall(60, exit_code);

@@ -9916,13 +9916,24 @@ fn _z_br_bits(br, n) {
 fn _z_br_done(br) { if (load64(br + 24) > load64(br + 32)) { return 1; } return 0; }
 
 # ============================ forward LE bit reader (readNCount) ============================
-# reader = alloc(24): [0] base, [8] byte pos, [16] bit pos (0..7, LSB first)
-fn _z_flr_init(base) { var r = alloc(24); store64(r + 0, base); store64(r + 8, 0); store64(r + 16, 0); return r; }
+# reader = alloc(40): [0] base, [8] byte pos, [16] bit pos (0..7, LSB first),
+#                     [24] limit (one-past-last readable byte), [32] overflow flag.
+# Bits requested past `limit` read as 0 (spec's zero-padding) and set the overflow
+# flag so readNCount can reject a truncated table description.
+fn _z_flr_init(base, limit) {
+    var r = alloc(40);
+    store64(r + 0, base); store64(r + 8, 0); store64(r + 16, 0);
+    store64(r + 24, limit); store64(r + 32, 0);
+    return r;
+}
 fn _z_flr_bits(r, n) {
     var base = load64(r + 0); var bp = load64(r + 8); var bi = load64(r + 16);
+    var limit = load64(r + 24);
     var v = 0; var k = 0;
     while (k < n) {
-        var bit = (load8(base + bp) >> bi) & 1;
+        var bit = 0;
+        if (base + bp < limit) { bit = (load8(base + bp) >> bi) & 1; }
+        else { store64(r + 32, 1); }
         v = v | (bit << k);
         bi = bi + 1;
         if (bi == 8) { bi = 0; bp = bp + 1; }
@@ -9931,6 +9942,7 @@ fn _z_flr_bits(r, n) {
     store64(r + 8, bp); store64(r + 16, bi);
     return v;
 }
+fn _z_flr_over(r) { return load64(r + 32); }
 fn _z_flr_bytes(r) {
     var bp = load64(r + 8); var bi = load64(r + 16);
     if (bi > 0) { return bp + 1; }
@@ -10039,6 +10051,7 @@ fn _z_huff_build(weight, nsym, maxbits) {
 # Parse the Huffman_Tree_Description at `p` (headerByte then weights). Returns bytes consumed, and
 # builds the global Huffman table. `end` bounds the buffer.
 fn _z_huff_tree(p, end) {
+    if (p >= end) { return 0 - 60; }
     var weight = alloc(256 * 8);
     var hb = load8(p) & 0xFF;
     var nsym = 0;                 # number of transmitted weights
@@ -10046,6 +10059,7 @@ fn _z_huff_tree(p, end) {
     if (hb >= 128) {
         # direct weights: (hb-127) weights, 4 bits each, 2/byte
         var nw = hb - 127;
+        if (p + 1 + ((nw + 1) / 2) > end) { return 0 - 60; }
         var i = 0;
         while (i < nw) {
             var byte = load8(p + 1 + (i / 2)) & 0xFF;
@@ -10058,10 +10072,12 @@ fn _z_huff_tree(p, end) {
         consumed = 1 + ((nw + 1) / 2);
     } else {
         # FSE-compressed weights: hb bytes of FSE bitstream, 2 interleaved states, Accuracy_Log<=6
+        if (p + 1 + hb > end) { return 0 - 60; }
         var log_out = alloc(8);
         var nsym_out = alloc(8);
         var wdist = alloc(256 * 8);
-        var nc = _z_fse_readNCount(p + 1, 255, wdist, log_out, nsym_out);
+        var nc = _z_fse_readNCount(p + 1, 255, wdist, log_out, nsym_out, p + 1 + hb, 6);
+        if (nc < 0) { return 0 - 60; }
         var wlog = load64(log_out);
         var wnum = load64(nsym_out);
         var wt = _z_fse_from_dist(wdist, wnum, wlog);
@@ -10099,12 +10115,15 @@ fn _z_huff_tree(p, end) {
     var i2 = 0;
     while (i2 < nsym) {
         var wv2 = load64(weight + i2 * 8);
+        if (wv2 > 11) { return 0 - 61; }              # weight > HUF_TABLELOG_MAX -> reject
         if (wv2 > 0) { sum = sum + (1 << (wv2 - 1)); }
         i2 = i2 + 1;
     }
+    if (sum == 0) { return 0 - 61; }                  # no positive weight -> degenerate
     var nextpow = 1;
     while (nextpow <= sum) { nextpow = nextpow << 1; }
     var maxbits = _z_flog2(nextpow);
+    if (maxbits < 1 || maxbits > 11) { return 0 - 61; }   # bounds _z_huff table (2048 = 1<<11)
     var leftover = nextpow - sum;
     store64(weight + nsym * 8, _z_flog2(leftover) + 1);   # implicit last symbol's weight
     nsym = nsym + 1;
@@ -10115,9 +10134,14 @@ fn _z_huff_tree(p, end) {
 # ============================ readNCount ============================
 # Read a normalized distribution from src into dist[] (i64, -1 for less-than-1). Sets *log_out and
 # *nsym_out. Returns bytes consumed.
-fn _z_fse_readNCount(src, maxSym, dist, log_out, nsym_out) {
-    var r = _z_flr_init(src);
+# `limit` bounds forward reads (one-past-last readable byte); `maxLog` is the per-table
+# spec cap on Accuracy_Log (weights 6, LL/ML 9, OF 8). Returns bytes consumed, or a
+# negative error on a malformed / truncated / out-of-spec table description, so the
+# distribution handed to _z_fse_build is always valid (sums to exactly 1<<log).
+fn _z_fse_readNCount(src, maxSym, dist, log_out, nsym_out, limit, maxLog) {
+    var r = _z_flr_init(src, limit);
     var log = _z_flr_bits(r, 4) + 5;
+    if (log > maxLog) { return 0 - 1; }            # out-of-spec accuracy log (DoS: huge table)
     store64(log_out, log);
     var tsize = 1 << log;
     var remaining = tsize + 1;
@@ -10135,10 +10159,11 @@ fn _z_fse_readNCount(src, maxSym, dist, log_out, nsym_out) {
                 var rr = 0;
                 while (rr < rep) { charnum = charnum + 1; rr = rr + 1; }   # extra zero-symbols
                 if (rep < 3) { done0 = 1; }
+                if (charnum > maxSym) { done0 = 1; }   # bail (checked below); bits past limit read 0
             }
             previous0 = 0;
         }
-        if (charnum > maxSym) { store64(nsym_out, charnum); return _z_flr_bytes(r); }
+        if (charnum > maxSym) { return 0 - 1; }        # ran out of symbols -> malformed
         var max = (2 * threshold - 1) - remaining;
         var count = 0;
         var low = _z_flr_bits(r, nbBits - 1);
@@ -10157,6 +10182,8 @@ fn _z_fse_readNCount(src, maxSym, dist, log_out, nsym_out) {
         if (count == 0) { previous0 = 1; }
         while (remaining < threshold) { nbBits = nbBits - 1; threshold = threshold >> 1; }
     }
+    if (_z_flr_over(r) == 1) { return 0 - 1; }          # read past the section -> truncated
+    if (remaining != 1) { return 0 - 1; }               # distribution must sum to exactly 1<<log
     store64(nsym_out, charnum);
     return _z_flr_bytes(r);
 }
@@ -10165,6 +10192,7 @@ fn _z_fse_readNCount(src, maxSym, dist, log_out, nsym_out) {
 # Decode the literals section at `p` (bounded by end). Fills _z_lit / _z_litlen. Returns bytes
 # consumed from p, or -1.
 fn _z_decode_literals(p, end) {
+    if (p >= end) { return 0 - 40; }
     var h0 = load8(p) & 0xFF;
     var ltype = h0 & 3;
     var sizefmt = (h0 >> 2) & 3;
@@ -10172,15 +10200,23 @@ fn _z_decode_literals(p, end) {
         # Raw / RLE
         var regen = 0; var hdr = 0;
         if (sizefmt == 0 || sizefmt == 2) { regen = h0 >> 3; hdr = 1; }
-        elif (sizefmt == 1) { regen = (h0 >> 4) | ((load8(p + 1) & 0xFF) << 4); hdr = 2; }
-        else { regen = (h0 >> 4) | ((load8(p + 1) & 0xFF) << 4) | ((load8(p + 2) & 0xFF) << 12); hdr = 3; }
+        elif (sizefmt == 1) {
+            if (p + 2 > end) { return 0 - 47; }
+            regen = (h0 >> 4) | ((load8(p + 1) & 0xFF) << 4); hdr = 2;
+        } else {
+            if (p + 3 > end) { return 0 - 47; }
+            regen = (h0 >> 4) | ((load8(p + 1) & 0xFF) << 4) | ((load8(p + 2) & 0xFF) << 12); hdr = 3;
+        }
+        if (regen > (1 << 18)) { return 0 - 47; }         # bound the 256 KiB _z_lit scratch
         if (_z_lit == 0) { _z_lit = alloc(1 << 18); }
         if (ltype == 0) {
+            if (p + hdr + regen > end) { return 0 - 47; }  # raw literals fully in-bounds
             var i = 0;
             while (i < regen) { store8(_z_lit + i, load8(p + hdr + i) & 0xFF); i = i + 1; }
             _z_litlen = regen;
             return hdr + regen;
         } else {
+            if (p + hdr + 1 > end) { return 0 - 47; }       # RLE fill byte in-bounds
             var b = load8(p + hdr) & 0xFF;
             var i2 = 0;
             while (i2 < regen) { store8(_z_lit + i2, b); i2 = i2 + 1; }
@@ -10191,15 +10227,19 @@ fn _z_decode_literals(p, end) {
     # Compressed (2) / Treeless (3)
     var regen2 = 0; var comp = 0; var hdr2 = 0; var streams = 4;
     if (sizefmt == 0) {
+        if (p + 3 > end) { return 0 - 47; }
         var v = _z_rd_le(p, 3);
         regen2 = (v >> 4) & 0x3FF; comp = (v >> 14) & 0x3FF; hdr2 = 3; streams = 1;
     } elif (sizefmt == 1) {
+        if (p + 3 > end) { return 0 - 47; }
         var v1 = _z_rd_le(p, 3);
         regen2 = (v1 >> 4) & 0x3FF; comp = (v1 >> 14) & 0x3FF; hdr2 = 3;
     } elif (sizefmt == 2) {
+        if (p + 4 > end) { return 0 - 47; }
         var v2 = _z_rd_le(p, 4);
         regen2 = (v2 >> 4) & 0x3FFF; comp = (v2 >> 18) & 0x3FFF; hdr2 = 4;
     } else {
+        if (p + 5 > end) { return 0 - 47; }
         var v3 = _z_rd_le(p, 5);
         regen2 = (v3 >> 4) & 0x3FFFF; comp = (v3 >> 22) & 0x3FFFF; hdr2 = 5;
     }
@@ -10213,12 +10253,15 @@ fn _z_decode_literals(p, end) {
     }
     var total_streams = comp - tree_bytes;
     if (_z_huff_ready == 0) { return 0 - 41; }
+    if (total_streams < 1 || streams_start + total_streams > end) { return 0 - 42; }
     if (streams == 1) {
         if (_z_huff_decode_stream(streams_start, total_streams, _z_lit, regen2) != 0) { return 0 - 42; }
     } else {
+        if (streams_start + 6 > end) { return 0 - 43; }    # 6-byte jump table present
         var s1 = (load8(streams_start) & 0xFF) | ((load8(streams_start + 1) & 0xFF) << 8);
         var s2 = (load8(streams_start + 2) & 0xFF) | ((load8(streams_start + 3) & 0xFF) << 8);
         var s3 = (load8(streams_start + 4) & 0xFF) | ((load8(streams_start + 5) & 0xFF) << 8);
+        if (6 + s1 + s2 + s3 > total_streams) { return 0 - 43; }   # -> s4 >= 0, all streams fit
         var s4 = total_streams - 6 - s1 - s2 - s3;
         var each = (regen2 + 3) / 4;
         var last = regen2 - 3 * each;
@@ -10269,18 +10312,26 @@ fn _z_huff_decode_stream(start, len, out, n) {
 # Decode + execute the sequences section at `p` (bounded by end). Literals in _z_lit/_z_litlen are
 # consumed as we go; matches copy from the output history. Returns 0 / -1.
 fn _z_decode_sequences(p, end) {
+    if (p >= end) { return 0 - 52; }
     var b0 = load8(p) & 0xFF;
     var nseq = 0; var off = 0;
     if (b0 == 0) {
         # no sequences: dump all literals
+        if (_z_outpos + _z_litlen > _z_outcap) { return 0 - 52; }
         var i = 0;
         while (i < _z_litlen) { store8(_z_out + _z_outpos + i, load8(_z_lit + i)); i = i + 1; }
         _z_outpos = _z_outpos + _z_litlen;
         return 0;
     }
     if (b0 < 128) { nseq = b0; off = 1; }
-    elif (b0 < 255) { nseq = ((b0 - 128) << 8) + (load8(p + 1) & 0xFF); off = 2; }
-    else { nseq = (load8(p + 1) & 0xFF) + ((load8(p + 2) & 0xFF) << 8) + 0x7F00; off = 3; }
+    elif (b0 < 255) {
+        if (p + 1 >= end) { return 0 - 52; }
+        nseq = ((b0 - 128) << 8) + (load8(p + 1) & 0xFF); off = 2;
+    } else {
+        if (p + 2 >= end) { return 0 - 52; }
+        nseq = (load8(p + 1) & 0xFF) + ((load8(p + 2) & 0xFF) << 8) + 0x7F00; off = 3;
+    }
+    if (p + off >= end) { return 0 - 52; }
     var modes = load8(p + off) & 0xFF;
     off = off + 1;
     var llmode = (modes >> 6) & 3;
@@ -10289,9 +10340,13 @@ fn _z_decode_sequences(p, end) {
 
     # build/select the 3 FSE tables (or RLE constant). rle symbol stored as 0-(sym+1) sentinel? use
     # a table with log 0. For simplicity build a 1-entry table for RLE.
-    var llt = _z_seq_table(llmode, &_z_ll_dist, 36, 6, p + off, 0); off = off + _z_seq_adv;
-    var oft = _z_seq_table(ofmode, &_z_of_dist, 29, 5, p + off, 1); off = off + _z_seq_adv;
-    var mlt = _z_seq_table(mlmode, &_z_ml_dist, 53, 6, p + off, 2); off = off + _z_seq_adv;
+    var llt = _z_seq_table(llmode, &_z_ll_dist, 36, 6, p + off, 0, end); off = off + _z_seq_adv;
+    if (llt == 0) { return 0 - 53; }
+    var oft = _z_seq_table(ofmode, &_z_of_dist, 29, 5, p + off, 1, end); off = off + _z_seq_adv;
+    if (oft == 0) { return 0 - 53; }
+    var mlt = _z_seq_table(mlmode, &_z_ml_dist, 53, 6, p + off, 2, end); off = off + _z_seq_adv;
+    if (mlt == 0) { return 0 - 53; }
+    if (p + off > end) { return 0 - 53; }
 
     # bitstream: from (p+off) to end
     var blen = end - (p + off);
@@ -10315,6 +10370,8 @@ fn _z_decode_sequences(p, end) {
         var llcode = load64(ll_sym + lls * 8);
         var mlcode = load64(ml_sym + mls * 8);
         var ofcode = load64(of_sym + ofs * 8);
+        # reject corrupt table symbols before they index base/bits arrays or drive shifts
+        if (llcode >= 36 || mlcode >= 53 || ofcode > 31) { return 0 - 52; }
 
         var offval = (1 << ofcode) + _z_br_bits(br, ofcode);
         var mlen = load64(&_z_ml_base + mlcode * 8) + _z_br_bits(br, load64(&_z_ml_bits + mlcode * 8));
@@ -10322,6 +10379,8 @@ fn _z_decode_sequences(p, end) {
 
         var offset = _z_resolve_offset(offval, llen);
         if (offset <= 0) { return 0 - 51; }
+        if (litptr + llen > _z_litlen) { return 0 - 52; }           # literals must not overrun _z_lit
+        if (_z_outpos + llen + mlen > _z_outcap) { return 0 - 52; } # output must fit dst
 
         # execute: copy llen literals, then mlen match bytes from `offset` back
         var j = 0;
@@ -10329,7 +10388,9 @@ fn _z_decode_sequences(p, end) {
             store8(_z_out + _z_outpos, load8(_z_lit + litptr));
             _z_outpos = _z_outpos + 1; litptr = litptr + 1; j = j + 1;
         }
+        # the match starts after the just-copied literals; it must not read before dst
         var mbase = _z_outpos - offset;
+        if (mbase < 0) { return 0 - 51; }
         var m = 0;
         while (m < mlen) {
             store8(_z_out + _z_outpos, load8(_z_out + mbase + m));
@@ -10344,6 +10405,7 @@ fn _z_decode_sequences(p, end) {
         seq = seq + 1;
     }
     # trailing literals
+    if (_z_outpos + (_z_litlen - litptr) > _z_outcap) { return 0 - 52; }
     var t = litptr;
     while (t < _z_litlen) { store8(_z_out + _z_outpos, load8(_z_lit + t)); _z_outpos = _z_outpos + 1; t = t + 1; }
     return 0;
@@ -10352,27 +10414,31 @@ fn _z_decode_sequences(p, end) {
 var _z_seq_adv = 0;   # bytes consumed by the last _z_seq_table call
 # Build/select an FSE table for a sequence symbol per mode. base=predefined dist, log=predefined
 # accuracy. which: 0=LL,1=OF,2=ML (for repeat-mode persistence). Sets _z_seq_adv.
-fn _z_seq_table(mode, pdist, numSym, plog, p, which) {
+fn _z_seq_table(mode, pdist, numSym, plog, p, which, end) {
     _z_seq_adv = 0;
     if (mode == 0) {                      # Predefined
         return _z_fse_from_dist(pdist, numSym, plog);
     }
     if (mode == 1) {                      # RLE — single symbol, log 0 table
+        if (p >= end) { return 0; }
         var sym = load8(p) & 0xFF;
+        if (sym >= numSym) { return 0; }  # RLE symbol out of range
         _z_seq_adv = 1;
         var t = _z_fse_alloc(0);
         store64(load64(t + 0), sym); store64(load64(t + 8), 0); store64(load64(t + 16), 0);
         return t;
     }
     if (mode == 2) {                      # FSE_Compressed
+        var maxlog = 9; if (which == 1) { maxlog = 8; }   # LL/ML accuracy <=9, OF <=8
         var log_out = alloc(8); var nsym_out = alloc(8); var d = alloc(300 * 8);
-        var nc = _z_fse_readNCount(p, numSym - 1, d, log_out, nsym_out);
+        var nc = _z_fse_readNCount(p, numSym - 1, d, log_out, nsym_out, end, maxlog);
+        if (nc < 0) { return 0; }
         _z_seq_adv = nc;
         var t2 = _z_fse_from_dist(d, load64(nsym_out), load64(log_out));
         if (which == 0) { _z_fse_ll = t2; } elif (which == 1) { _z_fse_of = t2; } else { _z_fse_ml = t2; }
         return t2;
     }
-    # Repeat — reuse previous
+    # Repeat — reuse previous (0 if none built yet -> caller errors)
     if (which == 0) { return _z_fse_ll; } elif (which == 1) { return _z_fse_of; }
     return _z_fse_ml;
 }
@@ -10408,13 +10474,16 @@ fn zstd_decompress(src, src_len, dst, dst_cap) {
     _z_huff_ready = 0; _z_lit = 0; _z_litlen = 0;
     _z_fse_ll = 0; _z_fse_of = 0; _z_fse_ml = 0;
 
+    var end = src + src_len;
     var p = src + 4;
+    if (p >= end) { return 0 - 1; }                       # frame header descriptor byte present
     var fhd = load8(p) & 0xFF;
     p = p + 1;
     var fcs_flag = (fhd >> 6) & 3;
     var single = (fhd >> 5) & 1;
     var checksum = (fhd >> 2) & 1;
     var did_flag = fhd & 3;
+    if (checksum == 1) { end = end - 4; }                 # trailing content checksum not block data
     if (single == 0) { p = p + 1; }                       # window descriptor
     var did_size = 0;
     if (did_flag == 1) { did_size = 1; } elif (did_flag == 2) { did_size = 2; } elif (did_flag == 3) { did_size = 4; }
@@ -10425,27 +10494,32 @@ fn zstd_decompress(src, src_len, dst, dst_cap) {
     elif (fcs_flag == 2) { fcs_size = 4; }
     else { fcs_size = 8; }
     p = p + fcs_size;
+    if (p > end) { return 0 - 1; }                        # frame header fits within the frame
 
-    var end = src + src_len;
-    if (checksum == 1) { end = end - 4; }
     var last = 0;
     while (last == 0) {
+        if (p + 3 > end) { return 0 - 1; }                # 3-byte block header present
         var h = (load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8) | ((load8(p + 2) & 0xFF) << 16);
         p = p + 3;
         last = h & 1;
         var btype = (h >> 1) & 3;
         var bsize = (h >> 3) & 0x1FFFFF;
         if (btype == 0) {
+            if (p + bsize > end) { return 0 - 1; }         # raw source in-bounds
+            if (_z_outpos + bsize > _z_outcap) { return 0 - 1; }   # raw dest fits
             var i = 0;
             while (i < bsize) { store8(_z_out + _z_outpos + i, load8(p + i) & 0xFF); i = i + 1; }
             _z_outpos = _z_outpos + bsize;
             p = p + bsize;
         } elif (btype == 1) {
+            if (p + 1 > end) { return 0 - 1; }             # RLE fill byte in-bounds
+            if (_z_outpos + bsize > _z_outcap) { return 0 - 1; }   # RLE dest fits
             var bb = load8(p) & 0xFF;
             var i2 = 0;
             while (i2 < bsize) { store8(_z_out + _z_outpos, bb); _z_outpos = _z_outpos + 1; i2 = i2 + 1; }
             p = p + 1;
         } elif (btype == 2) {
+            if (p + bsize > end) { return 0 - 1; }         # compressed block fits the frame
             var bend = p + bsize;
             var lc = _z_decode_literals(p, bend);
             if (lc < 0) { return lc; }
@@ -10466,6 +10540,7 @@ fn zstd_frame_content_size(src, src_len) {
     if (src_len < 5) { return 0 - 1; }
     if ((load8(src) & 0xFF) != 0x28 || (load8(src + 1) & 0xFF) != 0xB5
     || (load8(src + 2) & 0xFF) != 0x2F || (load8(src + 3) & 0xFF) != 0xFD) { return 0 - 1; }
+    var end = src + src_len;
     var fhd = load8(src + 4) & 0xFF;
     var fcs_flag = (fhd >> 6) & 3;
     var single = (fhd >> 5) & 1;
@@ -10474,11 +10549,15 @@ fn zstd_frame_content_size(src, src_len) {
     if (single == 0) { p = p + 1; }
     if (did_flag == 1) { p = p + 1; } elif (did_flag == 2) { p = p + 2; } elif (did_flag == 3) { p = p + 4; }
     if (fcs_flag == 0) {
-        if (single == 1) { return load8(p) & 0xFF; }
+        if (single == 1) { if (p + 1 > end) { return 0 - 1; } return load8(p) & 0xFF; }
         return 0 - 1;
     }
-    if (fcs_flag == 1) { return ((load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8)) + 256; }
-    if (fcs_flag == 2) { return _z_rd_le(p, 4); }
+    if (fcs_flag == 1) {
+        if (p + 2 > end) { return 0 - 1; }
+        return ((load8(p) & 0xFF) | ((load8(p + 1) & 0xFF) << 8)) + 256;
+    }
+    if (fcs_flag == 2) { if (p + 4 > end) { return 0 - 1; } return _z_rd_le(p, 4); }
+    if (p + 8 > end) { return 0 - 1; }
     return _z_rd_le(p, 8);
 }
 

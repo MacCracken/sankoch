@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **zstd decoder hardening against malformed input** (2.5.6) — the RFC-8878 decoder
+  (`zstd_decompress`, shipped 2.5.0) trusted attacker-controlled length/size fields on
+  the decode path and could be driven to read out of bounds, write past `dst_cap`, or
+  spin/allocate unboundedly on a hostile `.zst`. An adversarial audit of every decoder
+  section (verified independently) found **36 reachable issues** — 24 crashes,
+  10 memory-corruption writes, 2 DoS. Root causes and fixes:
+  - **Missing frame `end` bound.** The frame-header advance, 3-byte block header, and
+    each block's `bsize` are now checked against `end = src + src_len` (minus a trailing
+    content-checksum), so a truncated or oversized block can't push reads past the buffer.
+  - **No output-capacity check until after a block was written.** Raw/RLE block copies,
+    the no-sequence literal dump, per-sequence literal+match copies, and trailing
+    literals now pre-check `_z_outpos + n ≤ _z_outcap`.
+  - **Scratch overflows.** Raw/RLE literal `regenerated_size` (up to 20 bits) is bounded
+    to the 256 KiB `_z_lit`; Huffman `Max_Number_of_Bits` and per-weight values are
+    capped at 11 so the 2048-entry decode table can't overflow on build or lookup.
+  - **Unbounded FSE.** `readNCount` now takes a read `limit` (bits past it read as 0, per
+    spec padding) and a per-table `Accuracy_Log` cap (weights ≤6, LL/ML ≤9, OF ≤8), and
+    rejects a distribution that doesn't sum to exactly `1<<log`, a symbol overshoot, or a
+    truncated table — killing the 24 MB-alloc / 1 M-iteration DoS and the state-index and
+    infinite-loop paths.
+  - **Sequence execution.** Offset codes, LL/ML/OF symbols, match offsets
+    (`mbase ≥ 0`), and the literal cursor are all range-checked before use.
+  - Also fixed the same class of OOB read in `zstd_frame_content_size` (reachable from
+    `tar.cyr` on a hostile archive).
+
+  A 1,148-input malformed corpus went from **25 SIGSEGV + 133 hangs → 0/0**; a second
+  1,784-input corpus of *valid* streams with byte-flips into the Huffman/FSE/sequence
+  decoders is also clean. Reference `zstd -19` output (incl. a 1.2 MB binary) still
+  decodes byte-identically and every round-trip test is unchanged. New
+  `fuzz/fuzz_zstd.fcyr` (decode-survival + round-trip across 5 distributions +
+  corruption) and a `test_zc_malformed_survive` regression case pinning the exact
+  34-byte crash repro.
+
 ### Added
 - **zstd encoder: FSE-compressed literal weights** (2.5.6) — the Huffman literals
   block now handles wide alphabets. When the max literal symbol value exceeds 128

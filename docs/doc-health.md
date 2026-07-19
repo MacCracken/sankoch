@@ -118,6 +118,7 @@ Periodic audit reports; per-audit timestamped (don't refresh in place — supers
 | `2026-05-01-pre-2.3.0.md` | 2026-05-01 | 🔵 Dated artifact (P(-1) closeout for the 2.2.x line) |
 | `2026-05-23-pre-2.3.0-redux.md` | 2026-05-23 | 🔵 Dated artifact (P(-1) closeout at 2.2.7 — pre-2.3.0 streaming-decomp arc) |
 | `2026-06-16-pre-2.4.0.md` | 2026-06-16 | 🔵 Dated artifact (2.3.8 P(-1) closeout — zero findings; re-checked the 2.3.3–2.3.7 paths) |
+| `2026-07-18-zstd-decoder-hardening.md` | 2026-07-18 | 🔵 Dated artifact (2.5.6 — 36 zstd-decoder OOB/DoS findings fixed; malformed corpus 25 SIGSEGV + 133 hang → 0/0) |
 
 Next periodic audit: **2.3.4 P(-1) closeout** for the 2.3.x line per [`development/roadmap.md`](development/roadmap.md).
 
