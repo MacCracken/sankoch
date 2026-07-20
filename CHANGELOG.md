@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.4] — 2026-07-20 — P(-1) hardening: first security audit of the ZIP surface
+
+The scaffold-hardening pass (P(-1)) turned its first-ever adversarial audit on the ZIP
+container built across 2.6.0–2.6.3 — the pre-2.6.0 pass could not have covered it because
+none of that code existed yet. Full dossier: [`docs/audit/2026-07-20-zip-container.md`](docs/audit/2026-07-20-zip-container.md)
+(0 HIGH · 3 MEDIUM · 1 LOW confirmed; one HIGH symlink claim rebased to LOW because the ZIP
+surface is memory-only and performs zero filesystem operations, so the tar-style on-disk
+traversal has no reachable analogue). Every finding was reproduced by execution and every
+fix carries a verified patch. No behavioural change for any well-formed archive.
+
+### Fixed — reader (attacker-controlled input)
+- **i64 additive-overflow defeated four Zip64 bounds checks** (`_zip_le64` fields near 2⁶³).
+  A guard written `field + const > len` wraps two's-complement to a negative i64 and falls
+  through to a dereference at `buf + field` — proven to SIGSEGV from `zip_open` /
+  `zip_extract` with 42/81/98/117-byte crafted archives. All four sites (Zip64 EOCD locator
+  offset, EOCD `cd_off + cd_size`, member local-header offset, and `data + csize` in
+  `_zip_prepare`) rewritten to the overflow-safe subtraction form
+  (`x > len || len - x < n`). Algebraically identical for every legitimate value — no
+  well-formed archive is newly rejected. `_zip_prepare` is the single choke point, so the
+  fix closes STORE/DEFLATE **and** the method-12/93/95 decoders at once.
+
+### Fixed — streaming writer
+- **Abandoned DEFLATE stream leaked `_sankoch_mtx` → library-wide deadlock.** A streamed
+  DEFLATE member abandoned before `deflate_enc_finish` (via `zip_writer_finish` on an open
+  member, or a sticky `ERR_BUFFER_TOO_SMALL` short-circuiting `zip_enc_end`) never hit the
+  sole unlock site, deadlocking the next `deflate_compress` process-wide (host builds; AGNOS
+  locks are no-ops). New `_zip_abandon` funnels every abandon path through
+  `deflate_enc_finish` to release the lock — a no-op for STORE and guarded against
+  double-unlock.
+- **`zip_add` / `zip_add_any` while a stream is open produced a silently corrupt archive.**
+  The batch-add path reused the stale write cursor and emitted an overlapped local header
+  returned with success codes (`unzip -t`: "overlapped components"). Both entry points now
+  reject a mid-stream add with `ERR_INVALID_INPUT`.
+
+### Fixed — writer (consumer input)
+- **Member name > 65535 bytes silently truncated** the u16 name-length field into an
+  unreadable archive. All three writer entry points now reject `nlen > 0xFFFF`
+  (`ERR_INVALID_INPUT`); a 65535-byte name still round-trips.
+
+### Added
+- **`fuzz/fuzz_zip.fcyr`** — the previously-missing ZIP fuzz harness (six strategies:
+  random, truncation prefix-sweep, corruption, hostile-field **incl. Zip64 injection**,
+  writer round-trip, streaming round-trip). Auto-discovered by `cyrius fuzz` (raises the
+  harness count 5 → 6) and wired into CI. Reliably SIGSEGV'd the pre-fix Zip64 path and
+  goes green post-fix, so it doubles as the overflow-class regression gate.
+- **`tests/tcyr/zip.tcyr`** grew to 206 assertions — deterministic hostile-archive
+  regressions for the i64-overflow class (byte-built 42/98-byte archives), the streaming
+  deadlock (finish-with-open + oversized-write paths), mid-stream add rejection,
+  cross-entry symlink escape, and the long-name refusal.
+
 ## [2.6.3] — 2026-07-19 — ZIP: streaming write + per-entry metadata (the ZIP arc completes)
 
 Final bite of the 2.6.x arc. ZIP gains **per-entry Unix metadata** (mode, mtime, symlinks)

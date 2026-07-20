@@ -522,16 +522,216 @@ fn test_zip_streaming_guards() {
     # nested begin
     assert(zip_enc_begin(w, "b.txt", ZIP_STORE, 0, 0) == 0 - ERR_INVALID_INPUT,
     "stream: nested begin refused");
-    # finishing with a member still open would emit a header with no descriptor
+    # Finishing with a member still open is refused AND abandons that member — releasing
+    # its encoder lock (for DEFLATE) so the refusal can never deadlock the library (2.6.4).
+    # The half-written member is dropped; a following zip_enc_end sees nothing open.
     assert(zip_writer_finish(w) == 0 - ERR_INVALID_INPUT, "stream: finish with member open refused");
-    assert(zip_enc_end(w) == 0, "stream: end closes it");
-    assert(zip_writer_finish(w) > 0, "stream: finish now succeeds");
+    assert(zip_enc_end(w) == 0 - ERR_INVALID_INPUT, "stream: the open member was abandoned by finish");
+    assert(zip_writer_finish(w) > 0, "stream: finish now succeeds (empty archive)");
     # unsafe names and unsupported methods are refused at begin
     var w2 = zip_writer_init(alloc(4096), 4096);
     assert(zip_enc_begin(w2, "../evil", ZIP_STORE, 0, 0) == 0 - ERR_UNSAFE_PATH,
     "stream: begin rejects unsafe name");
     assert(zip_enc_begin(w2, "x.txt", ZIP_BZIP2, 0, 0) == 0 - ERR_UNSUPPORTED_FORMAT,
     "stream: begin rejects a non-streamable method");
+    return 0;
+}
+
+# Security (2.6.4): a member written THROUGH a symlink another member declares must be
+# refused — the cross-entry escape that per-entry name checks cannot see, and the exact
+# class the 2.5.9 audit found in the tar cursor. 2.6.3 gave ZIP symlinks, reopening it;
+# bsdtar and unzip both refuse this, and now so does sankoch.
+fn test_zip_symlink_chain_escape() {
+    var arc = alloc(8192);
+    var w = zip_writer_init(arc, 8192);
+    var up = alloc(4);
+    store8(up + 0, 46); store8(up + 1, 46); store8(up + 2, 0);       # ".."
+    # esc -> ..   (a symlink whose target escapes the extraction root)
+    assert(zip_add_meta(w, "esc", up, 2, ZIP_STORE, 0xA1FF, 0) == 0, "slip: add symlink");
+    var body = alloc(8);
+    _zt_fill(body, 5, 65);
+    # a plain file written THROUGH esc/
+    assert(zip_add(w, "esc/pwned.txt", body, 5, ZIP_STORE) == 0, "slip: add member under symlink");
+    var total = zip_writer_finish(w);
+    assert(total > 0, "slip: finish");
+
+    var z = zip_open(arc, total);
+    assert(z != 0, "slip: reopen");
+    var out = alloc(64);
+    var ei = zip_find(z, "esc");
+    var pi = zip_find(z, "esc/pwned.txt");
+    # the symlink itself is a legitimate member; extracting it is fine
+    assert(zip_extract(z, ei, out, 64) == 2, "slip: the symlink member extracts");
+    # but a member written THROUGH it must be refused
+    assert(zip_extract_any(z, pi, out, 64) == 0 - ERR_UNSAFE_PATH,
+    "slip: member through an escaping symlink is refused");
+    assert(zip_extract(z, pi, out, 64) == 0 - ERR_UNSAFE_PATH,
+    "slip: refused on the lean path too");
+    return 0;
+}
+
+# A member written ONTO an existing symlink path (open resolves the final component) is
+# also refused; a benign symlink with no member under it stays extractable.
+fn test_zip_symlink_onto_and_benign() {
+    var arc = alloc(8192);
+    var w = zip_writer_init(arc, 8192);
+    var t = alloc(8);
+    store8(t + 0, 46); store8(t + 1, 46); store8(t + 2, 0);          # ".."
+    assert(zip_add_meta(w, "s", t, 2, ZIP_STORE, 0xA1FF, 0) == 0, "onto: add escaping symlink s");
+    var d = alloc(8);
+    _zt_fill(d, 4, 65);
+    assert(zip_add(w, "s", d, 4, ZIP_STORE) == 0, "onto: add a file also named s");
+    # a benign in-root symlink with nothing written through it
+    var bt = alloc(8);
+    store8(bt + 0, 100); store8(bt + 1, 0);                          # "d"
+    assert(zip_add_meta(w, "link", bt, 1, ZIP_STORE, 0xA1FF, 0) == 0, "onto: benign symlink");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    var out = alloc(64);
+    # the file member sharing the escaping symlink's path is refused
+    var refused = 0;
+    var i = 0;
+    while (i < zip_count(z)) {
+        var nm = zip_entry_name(z, i);
+        if (strlen(nm) == 1) {
+            if (load8(nm) == 115) {                                  # 's'
+                if (zip_entry_is_symlink(z, i) == 0) {
+                    if (zip_extract_any(z, i, out, 64) == 0 - ERR_UNSAFE_PATH) { refused = 1; }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    assert(refused == 1, "onto: a file onto an escaping symlink path is refused");
+    # the benign symlink still extracts
+    assert(zip_extract(z, zip_find(z, "link"), out, 64) == 1, "onto: benign symlink still extracts");
+    return 0;
+}
+
+# 2.6.4: a streamed DEFLATE member holds the API lock (deflate_enc_init .. finish). If an
+# error abandons it without releasing, the NEXT sankoch call deadlocks. Force a
+# deflate_enc_write overflow, then do more locked work — completing this test at all is the
+# no-deadlock proof (a leaked lock would hang here forever).
+fn test_zip_stream_no_deadlock() {
+    var src = alloc(64);
+    _zt_fill(src, 40, 65);
+    var dst = alloc(256);
+
+    # Path (a): zip_writer_finish while a DEFLATE member is open. The member holds the API
+    # lock (deflate_enc_init) — finish must abandon it AND release the lock, or the next
+    # locked call hangs forever. Reaching the compress assert at all is the no-deadlock proof.
+    var a1 = alloc(4096);
+    var w1 = zip_writer_init(a1, 4096);
+    assert(zip_enc_begin(w1, "m.bin", ZIP_DEFLATE, 0, 0) == 0, "deadlock-a: begin");
+    assert(zip_writer_finish(w1) == 0 - ERR_INVALID_INPUT, "deadlock-a: finish refuses the open member");
+    assert(deflate_compress(src, 40, dst, 256) > 0, "deadlock-a: a later locked call still works");
+
+    # Path (b): a single oversized streamed write overflows the archive buffer, so
+    # deflate_enc_write errors — the error path must release the lock too.
+    var a2 = alloc(256);
+    var w2 = zip_writer_init(a2, 256);
+    assert(zip_enc_begin(w2, "big.bin", ZIP_DEFLATE, 0, 0) == 0, "deadlock-b: begin");
+    var big = alloc(30016);
+    var st = 5;
+    var i = 0;
+    while (i < 30000) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        store8(big + i, (st >> 40) & 0xFF);      # incompressible: one write overflows 256 B
+        i = i + 1;
+    }
+    assert(zip_enc_write(w2, big, 30000) < 0, "deadlock-b: the oversized write errors");
+    assert(deflate_compress(src, 40, dst, 256) > 0, "deadlock-b: a later locked call still works");
+
+    # A fresh writer still works end to end after both abandonments.
+    var arc3 = alloc(4096);
+    var w3 = zip_writer_init(arc3, 4096);
+    assert(zip_add(w3, "ok.txt", src, 40, ZIP_DEFLATE) == 0, "deadlock: fresh writer add");
+    assert(zip_writer_finish(w3) > 0, "deadlock: fresh writer finish");
+    return 0;
+}
+
+# A batch add while a streamed member is open would clobber the open member's header at the
+# stale write cursor — refuse it (2.6.4).
+fn test_zip_add_while_streaming() {
+    var arc = alloc(8192);
+    var w = zip_writer_init(arc, 8192);
+    var d = alloc(16);
+    _zt_fill(d, 16, 65);
+    assert(zip_enc_begin(w, "s.txt", ZIP_STORE, 0, 0) == 0, "mix: begin");
+    assert(zip_add(w, "p.txt", d, 16, ZIP_STORE) == 0 - ERR_INVALID_INPUT,
+    "mix: zip_add refused while a streamed member is open");
+    assert(zip_add_any(w, "q.txt", d, 16, ZIP_BZIP2) == 0 - ERR_INVALID_INPUT,
+    "mix: zip_add_any refused while a streamed member is open");
+    # Closing the member re-enables batch adds.
+    assert(zip_enc_end(w) == 0, "mix: end");
+    assert(zip_add(w, "p.txt", d, 16, ZIP_STORE) == 0, "mix: zip_add works after end");
+    assert(zip_writer_finish(w) > 0, "mix: finish");
+    return 0;
+}
+
+# A name longer than the u16 name-length field must be refused, not silently truncated
+# into a self-desynced central directory (2.6.4).
+fn test_zip_long_name_refused() {
+    var arc = alloc(131072);
+    var w = zip_writer_init(arc, 131072);
+    var d = alloc(8);
+    _zt_fill(d, 4, 65);
+    var big = alloc(70016);
+    var i = 0;
+    while (i < 70000) { store8(big + i, 97); i = i + 1; }   # 70000 'a's, no NUL/slash
+    store8(big + 70000, 0);
+    assert(zip_add(w, big, d, 4, ZIP_STORE) == 0 - ERR_INVALID_INPUT, "longname: zip_add refused");
+    assert(zip_enc_begin(w, big, ZIP_STORE, 0, 0) == 0 - ERR_INVALID_INPUT, "longname: zip_enc_begin refused");
+    # A 65535-byte name is exactly at the limit and is accepted.
+    store8(big + 65535, 0);
+    assert(zip_add(w, big, d, 4, ZIP_STORE) == 0, "longname: 65535 accepted");
+    return 0;
+}
+
+# 2.6.4: attacker-controlled Zip64 i64 fields must not overflow the additive bounds
+# checks in zip_open — a 42-byte / 98-byte archive drove a wild pointer to a SIGSEGV. Both
+# must be REJECTED, not crash. Built byte-by-byte since the writer never emits these.
+fn _zt_put32(p, v) {
+    store8(p, v & 0xFF); store8(p + 1, (v >> 8) & 0xFF);
+    store8(p + 2, (v >> 16) & 0xFF); store8(p + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+fn _zt_put64_hi(p, lo, hi) {
+    _zt_put32(p, lo); _zt_put32(p + 4, hi);
+    return 0;
+}
+fn test_zip_zip64_overflow_bounds() {
+    # (a) Zip64 locator whose EOCD-offset field = 0x7FFFFFFFFFFFFFE2: z64 + 56 wraps
+    # negative past `> len`. 42 bytes = 20-byte locator + 22-byte EOCD.
+    var a = alloc(64);
+    var i = 0;
+    while (i < 42) { store8(a + i, 0); i = i + 1; }
+    _zt_put32(a + 0, 0x07064b50);                       # locator signature
+    _zt_put64_hi(a + 8, 0xFFFFFFE2, 0x7FFFFFFF);        # z64-EOCD offset = 2^63 - 30
+    _zt_put32(a + 12, 1);                               # total disks
+    _zt_put32(a + 20, 0x06054b50);                      # EOCD signature (comment_len 0 -> ends at 42)
+    assert(zip_open(a, 42) == 0, "overflow: zip64 locator offset near 2^63 is rejected, not crashed");
+
+    # (b) Zip64 EOCD with cd_off near 2^63 so cd_off + cd_size wraps negative. 98 bytes =
+    # 56-byte zip64 EOCD + 20-byte locator + 22-byte EOCD.
+    var b = alloc(128);
+    i = 0;
+    while (i < 98) { store8(b + i, 0); i = i + 1; }
+    _zt_put32(b + 0, 0x06064b50);                       # zip64 EOCD signature
+    _zt_put64_hi(b + 4, 44, 0);                         # size of record - 12
+    store8(b + 12, 45); store8(b + 14, 45);             # version made/needed
+    _zt_put64_hi(b + 24, 1, 0);                         # total entries this disk
+    _zt_put64_hi(b + 32, 1, 0);                         # total entries
+    _zt_put64_hi(b + 40, 100, 0);                       # cd_size
+    _zt_put64_hi(b + 48, 0xFFFFFFF6, 0x7FFFFFFF);       # cd_off = 2^63 - 10
+    _zt_put32(b + 56, 0x07064b50);                      # locator signature
+    _zt_put64_hi(b + 64, 0, 0);                         # locator -> zip64 EOCD at offset 0
+    _zt_put32(b + 72, 1);                               # total disks
+    _zt_put32(b + 76, 0x06054b50);                      # EOCD signature
+    store8(b + 84, 0xFF); store8(b + 85, 0xFF);         # entry count sentinel
+    _zt_put32(b + 88, 0xFFFFFFFF);                      # cd_size sentinel
+    _zt_put32(b + 92, 0xFFFFFFFF);                      # cd_off sentinel
+    assert(zip_open(b, 98) == 0, "overflow: zip64 cd_off near 2^63 is rejected, not crashed");
     return 0;
 }
 
@@ -557,6 +757,12 @@ fn main() {
     test_zip_dos_time();
     test_zip_streaming_write();
     test_zip_streaming_guards();
+    test_zip_symlink_chain_escape();
+    test_zip_symlink_onto_and_benign();
+    test_zip_stream_no_deadlock();
+    test_zip_add_while_streaming();
+    test_zip_long_name_refused();
+    test_zip_zip64_overflow_bounds();
     return assert_summary();
 }
 

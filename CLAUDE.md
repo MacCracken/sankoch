@@ -80,7 +80,7 @@ programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules
 tests/tcyr/        — codec×direction suites + cross-cutting suites (checksum, detect_error, ratio_cap, stream, git_object) + _harness.tcyr (shared); counts in state.md
 tests/bcyr/        — benchmarks (sankoch.bcyr)
-fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd — auto-discovered via fuzz/*.fcyr, all wired into CI)
+fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd, zip — auto-discovered via fuzz/*.fcyr, all wired into CI)
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
   sankoch-core.cyr — kernel-safe profile; ships as lib/sankoch-core.cyr alongside

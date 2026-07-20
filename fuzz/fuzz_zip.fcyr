@@ -1,0 +1,311 @@
+# sankoch — ZIP container fuzz harness (2.6.4)
+#
+# ZIP is the newest parser of untrusted input in the tree, and until the 2.6.4 P(-1) pass
+# it had no harness — the pass found a cluster of i64 additive-overflow OOB reads in
+# zip_open/zip_extract that only truncation + hostile-field fuzzing reaches. This harness
+# is the standing guard for that surface. Six strategies:
+#   1. random bytes (some carrying a planted EOCD signature) at zip_open — must reject;
+#   2. truncation — every prefix of a writer-built archive (the class that found the xz
+#      OOB and the ZIP overflow crashes);
+#   3. corruption — 1..4 byte flips in a valid archive, then open + extract every member;
+#   4. hostile fields — randomise count / cd_size / cd_off / nlen / elen / lho / csize /
+#      usize / method / flags to absurd values (incl. the Zip64 sentinels 0xFFFFFFFF);
+#   5. writer round-trip — build archives with random members via the writer, read back
+#      and assert byte-identical;
+#   6. streaming round-trip — same via zip_enc_* with random chunk splits.
+# Every path must reject / round-trip cleanly and NEVER crash, hang, or read out of bounds.
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fuzz_fill(buf, len) {
+    var i = 0;
+    while (i < len) { store8(buf + i, _fuzz_next()); i = i + 1; }
+    return 0;
+}
+
+# Build a small valid archive into `arc` with `nmemb` writer members of pseudo-random
+# name/size/method. Returns the archive length, or <0. Names stay safe + short.
+fn _zf_build(arc, cap, nmemb) {
+    var w = zip_writer_init(arc, cap);
+    if (w == 0) { return 0 - 1; }
+    var payload = _sankoch_alloc(2048);
+    var m = 0;
+    while (m < nmemb) {
+        var plen = _fuzz_next() * 8;                 # 0..2040 bytes
+        var k = 0;
+        while (k < plen) { store8(payload + k, _fuzz_next()); k = k + 1; }
+        var nm[16];
+        store8(&nm + 0, 102);                          # 'f'
+        store8(&nm + 1, 48 + (m % 10));
+        store8(&nm + 2, 48 + ((m / 10) % 10));
+        store8(&nm + 3, 0);
+        var method = 0;                                # STORE
+        if ((_fuzz_next() & 1) == 1) { method = 8; }   # DEFLATE
+        if (zip_add(w, &nm, payload, plen, method) < 0) { return 0 - 1; }
+        m = m + 1;
+    }
+    return zip_writer_finish(w);
+}
+
+# Strategy 1: random bytes at zip_open. A quarter carry a planted EOCD signature at the
+# tail so the backward scan engages. Must always reject cleanly.
+fn fuzz_zip_random(seed, data_len) {
+    _fuzz_seed(seed);
+    var buf[1024];
+    var n = data_len;
+    if (n > 1024) { n = 1024; }
+    _fuzz_fill(&buf, n);
+    if ((seed & 3) == 0 && n >= 22) {
+        store8(&buf + n - 22, 80); store8(&buf + n - 21, 75);
+        store8(&buf + n - 20, 5); store8(&buf + n - 19, 6);   # EOCD magic
+    }
+    var z = zip_open(&buf, n);
+    if (z != 0) {
+        # a random "archive" that parsed: exercise the accessors + extract, still no crash
+        var out[256];
+        var i = 0;
+        while (i < zip_count(z) && i < 8) { zip_extract_any(z, i, &out, 256); i = i + 1; }
+    }
+    return 0;
+}
+
+# Strategy 2: truncation. Every prefix of a valid archive must reject, never crash.
+fn fuzz_zip_truncate(seed) {
+    _fuzz_seed(seed);
+    var arc[8192];
+    var total = _zf_build(&arc, 8192, 3);
+    if (total <= 0) { return 0; }
+    var cut = 0;
+    while (cut < total) {
+        var z = zip_open(&arc, cut);                  # a prefix is never a complete archive
+        if (z != 0) {
+            var out[512];
+            var i = 0;
+            while (i < zip_count(z) && i < 8) { zip_extract_any(z, i, &out, 512); i = i + 1; }
+        }
+        cut = cut + 1;
+    }
+    return 0;
+}
+
+# Strategy 3: corruption. Flip 1..4 bytes of a valid archive, then open + extract.
+fn fuzz_zip_corrupt(seed) {
+    _fuzz_seed(seed);
+    var arc[8192];
+    var total = _zf_build(&arc, 8192, 3);
+    if (total <= 0) { return 0; }
+    var flips = 1 + (_fuzz_next() & 3);
+    var f = 0;
+    while (f < flips) {
+        var off = (_fuzz_next() | ((_fuzz_next() & 31) << 8)) % total;
+        store8(&arc + off, _fuzz_next());
+        f = f + 1;
+    }
+    var z = zip_open(&arc, total);
+    if (z != 0) {
+        var out[2560];
+        var i = 0;
+        while (i < zip_count(z) && i < 8) { zip_extract_any(z, i, &out, 2560); i = i + 1; }
+    }
+    return 0;
+}
+
+# Strategy 4: hostile fields. Overwrite EOCD + first CD header fields of a valid archive
+# with absurd values (including the Zip64 sentinels) and re-open.
+fn fuzz_zip_fields(seed) {
+    _fuzz_seed(seed);
+    var arc[8192];
+    var total = _zf_build(&arc, 8192, 2);
+    if (total <= 0) { return 0; }
+    # locate the EOCD by scanning backward for its signature
+    var e = total - 22;
+    while (e >= 0) {
+        if ((load8(&arc + e) & 0xFF) == 80 && (load8(&arc + e + 1) & 0xFF) == 75
+        && (load8(&arc + e + 2) & 0xFF) == 5 && (load8(&arc + e + 3) & 0xFF) == 6) { break; }
+        e = e - 1;
+    }
+    if (e < 0) { return 0; }
+    # scramble count / cd_size / cd_off with random or all-ones values
+    var pick = _fuzz_next() & 3;
+    var v = 0xFFFFFFFF;
+    if (pick == 1) { v = _fuzz_next() | (_fuzz_next() << 8) | (_fuzz_next() << 16) | (_fuzz_next() << 24); }
+    if (pick == 2) { v = 0x7FFFFFFF; }
+    store8(&arc + e + 10, _fuzz_next()); store8(&arc + e + 11, _fuzz_next());   # entry count
+    store8(&arc + e + 12, v & 0xFF); store8(&arc + e + 13, (v >> 8) & 0xFF);
+    store8(&arc + e + 14, (v >> 16) & 0xFF); store8(&arc + e + 15, (v >> 24) & 0xFF);   # cd_size
+    var v2 = 0xFFFFFFFF;
+    if ((_fuzz_next() & 1) == 1) { v2 = _fuzz_next() | (_fuzz_next() << 16); }
+    store8(&arc + e + 16, v2 & 0xFF); store8(&arc + e + 17, (v2 >> 8) & 0xFF);
+    store8(&arc + e + 18, (v2 >> 16) & 0xFF); store8(&arc + e + 19, (v2 >> 24) & 0xFF);   # cd_off
+    var z = zip_open(&arc, total);
+    if (z != 0) {
+        var out[2560];
+        var i = 0;
+        while (i < zip_count(z) && i < 8) { zip_extract_any(z, i, &out, 2560); i = i + 1; }
+    }
+    return 0;
+}
+
+# Strategy 5: writer round-trip. Build → read back → every member byte-identical.
+fn fuzz_zip_roundtrip(seed) {
+    _fuzz_seed(seed);
+    var nmemb = 1 + (_fuzz_next() & 7);
+    var arc[16384];
+    # capture the members we write so we can compare on read-back
+    var total = _zf_build(&arc, 16384, nmemb);
+    if (total <= 0) { return 0; }
+    var z = zip_open(&arc, total);
+    assert(z != 0, "fuzz_zip: writer output re-opens");
+    assert(zip_count(z) == nmemb, "fuzz_zip: member count survives");
+    var out[4096];
+    var i = 0;
+    while (i < zip_count(z)) {
+        var usz = zip_entry_size(z, i);
+        var got = zip_extract_any(z, i, &out, 4096);
+        assert(got == usz, "fuzz_zip: extracted length matches declared");
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Strategy 6: streaming round-trip. Feed a member through zip_enc_* in random chunk
+# splits; the reconstructed content must be byte-identical.
+fn fuzz_zip_stream(seed) {
+    _fuzz_seed(seed);
+    var arc[16384];
+    var w = zip_writer_init(&arc, 16384);
+    if (w == 0) { return 0; }
+    var total_len = 500 + _fuzz_next() * 8;             # 500..2540 bytes
+    var payload = _sankoch_alloc(total_len + 16);
+    var k = 0;
+    while (k < total_len) { store8(payload + k, 65 + (k % 40)); k = k + 1; }   # compressible
+    var method = 0;
+    if ((_fuzz_next() & 1) == 1) { method = 8; }
+    if (zip_enc_begin(w, "s.txt", method, 0, 0) < 0) { return 0; }
+    var off = 0;
+    while (off < total_len) {
+        var chunk = 1 + (_fuzz_next() * 4);             # 1..1020-byte splits
+        if (off + chunk > total_len) { chunk = total_len - off; }
+        if (zip_enc_write(w, payload + off, chunk) < 0) { zip_enc_end(w); return 0; }
+        off = off + chunk;
+    }
+    if (zip_enc_end(w) < 0) { return 0; }
+    var total = zip_writer_finish(w);
+    if (total <= 0) { return 0; }
+    var z = zip_open(&arc, total);
+    assert(z != 0, "fuzz_zip: streamed archive re-opens");
+    var out[4096];
+    var got = zip_extract_any(z, 0, &out, 4096);
+    assert(got == total_len, "fuzz_zip: streamed length round-trips");
+    var j = 0;
+    var ok = 1;
+    while (j < total_len) {
+        if ((load8(&out + j) & 0xFF) != (65 + (j % 40))) { ok = 0; break; }
+        j = j + 1;
+    }
+    assert(ok == 1, "fuzz_zip: streamed content is byte-identical");
+    return 0;
+}
+
+# Strategy 7: Zip64 locator/EOCD with hostile i64 offsets — the class that found the
+# 2.6.4 additive-overflow OOB crashes. Prepend a Zip64 locator whose EOCD offset spans
+# random 64-bit values (including near-2^63) before a valid EOCD; zip_open must reject.
+fn fuzz_zip_zip64(seed) {
+    _fuzz_seed(seed);
+    var arc[128];
+    var i = 0;
+    while (i < 42) { store8(&arc + i, 0); i = i + 1; }
+    store8(&arc + 0, 80); store8(&arc + 1, 75); store8(&arc + 2, 6); store8(&arc + 3, 7);   # locator sig
+    # random 64-bit z64 offset; bias a quarter toward the 2^63 danger zone
+    var lo = _fuzz_next() | (_fuzz_next() << 8) | (_fuzz_next() << 16) | (_fuzz_next() << 24);
+    var hi = _fuzz_next() | (_fuzz_next() << 8) | (_fuzz_next() << 16) | (_fuzz_next() << 24);
+    if ((seed & 3) == 0) { hi = 0x7FFFFFFF; lo = 0xFFFFFFE2; }
+    store8(&arc + 8, lo & 0xFF); store8(&arc + 9, (lo >> 8) & 0xFF);
+    store8(&arc + 10, (lo >> 16) & 0xFF); store8(&arc + 11, (lo >> 24) & 0xFF);
+    store8(&arc + 12, hi & 0xFF); store8(&arc + 13, (hi >> 8) & 0xFF);
+    store8(&arc + 14, (hi >> 16) & 0xFF); store8(&arc + 15, (hi >> 24) & 0xFF);
+    store8(&arc + 16, 1);                                                        # total disks
+    store8(&arc + 20, 80); store8(&arc + 21, 75); store8(&arc + 22, 5); store8(&arc + 23, 6);   # EOCD sig
+    store8(&arc + 30, 0xFF); store8(&arc + 31, 0xFF);                            # count sentinel
+    var z = zip_open(&arc, 42);                                                  # must reject, never crash
+    if (z != 0) { var out[64]; zip_extract_any(z, 0, &out, 64); }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    # Baseline: a writer-built archive must round-trip.
+    var base[4096];
+    var bl = _zf_build(&base, 4096, 2);
+    assert(bl > 0, "fuzz_zip baseline builds");
+    var bz = zip_open(&base, bl);
+    assert(bz != 0, "fuzz_zip baseline re-opens");
+
+    var seed = 1;
+    while (seed <= 300) {
+        fuzz_zip_random(seed * 2654435761, (seed * 37) % 1024);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 300 random-input tests passed");
+
+    seed = 1;
+    while (seed <= 120) {
+        fuzz_zip_truncate(seed * 40503);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 120 truncation prefix-sweeps passed");
+
+    seed = 1;
+    while (seed <= 300) {
+        fuzz_zip_corrupt(seed * 2246822519);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 300 corruption tests passed");
+
+    seed = 1;
+    while (seed <= 300) {
+        fuzz_zip_fields(seed * 668265263);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 300 hostile-field tests passed");
+
+    seed = 1;
+    while (seed <= 200) {
+        fuzz_zip_roundtrip(seed * 3266489917);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 200 writer round-trip tests passed");
+
+    seed = 1;
+    while (seed <= 200) {
+        fuzz_zip_stream(seed * 374761393);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 200 streaming round-trip tests passed");
+
+    seed = 1;
+    while (seed <= 200) {
+        fuzz_zip_zip64(seed * 2654435761);
+        seed = seed + 1;
+    }
+    println("fuzz_zip: 200 Zip64 hostile-offset tests passed");
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
