@@ -22,13 +22,13 @@ CYRIUS_NO_WARN_PIN_DRIFT=1 CYRIUS_NO_WARN_SHADOW_LIB=1 sh -c \
 WORK="$(mktemp -d /tmp/sankoch-zip-XXXXXX)"
 IN="/tmp/sankoch-zip-in.zip"
 OUT="/tmp/sankoch-zip-out.zip"
-trap 'rm -rf "$WORK" "$IN" "$OUT" /tmp/sankoch-zip-z64' EXIT
+trap 'rm -rf "$WORK" "$IN" "$OUT" /tmp/sankoch-zip-z64 /tmp/sankoch-zip-stream' EXIT
 
 rc=0
 
 # --- build a spread of reference archives with Python ---------------------------------
 python3 - "$WORK" <<'PY'
-import json, os, sys, zipfile
+import io, json, os, sys, zipfile
 w = sys.argv[1]
 
 # 1. agpkg: exactly agnosai's shape — manifest.json + one JSON per definition, DEFLATE.
@@ -79,6 +79,36 @@ with zipfile.ZipFile(os.path.join(w, "z64extra.zip"), "w", zipfile.ZIP_DEFLATED,
     with z.open("big.txt", "w", force_zip64=True) as f:
         f.write(b"zip64 extended information " * 100)
 
+# 7c. Unix metadata: modes, an mtime, and a symlink (S_IFLNK + target as content) —
+#     tar-parity extraction data that must survive read -> re-pack.
+import stat
+with zipfile.ZipFile(os.path.join(w, "meta.zip"), "w", zipfile.ZIP_DEFLATED) as z:
+    zi = zipfile.ZipInfo("f.txt", date_time=(2021, 6, 15, 12, 34, 56))
+    zi.create_system = 3
+    zi.external_attr = (stat.S_IFREG | 0o754) << 16
+    z.writestr(zi, b"regular file body " * 20)
+    zl = zipfile.ZipInfo("link.txt", date_time=(2021, 6, 15, 12, 34, 56))
+    zl.create_system = 3
+    zl.external_attr = (stat.S_IFLNK | 0o777) << 16
+    z.writestr(zl, b"f.txt")
+    zd = zipfile.ZipInfo("d/", date_time=(2021, 6, 15, 12, 34, 56))
+    zd.create_system = 3
+    zd.external_attr = (stat.S_IFDIR | 0o755) << 16
+    z.writestr(zd, b"")
+
+# 7d. DATA DESCRIPTOR (general-purpose bit 3): a non-seekable sink makes Python emit
+#     local headers with zero sizes and a trailing descriptor.
+class _NoSeek(io.RawIOBase):
+    def __init__(s): s.buf = bytearray()
+    def write(s, b): s.buf += b; return len(b)
+    def writable(s): return True
+    def seekable(s): return False
+_ns = _NoSeek()
+with zipfile.ZipFile(_ns, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("a.txt", b"descriptor member A " * 100)
+    z.writestr("b.txt", b"descriptor member B " * 100)
+open(os.path.join(w, "descriptor.zip"), "wb").write(bytes(_ns.buf))
+
 # 7b. Zip64 EOCD RECORD: more members than the plain EOCD's u16 count can express.
 with zipfile.ZipFile(os.path.join(w, "z64many.zip"), "w", zipfile.ZIP_STORED,
                      allowZip64=True) as z:
@@ -98,7 +128,7 @@ fi
 
 total=0
 pass=0
-for f in agpkg mixed edges random methods z64extra z64many xzm comment; do
+for f in agpkg mixed edges random methods z64extra z64many meta descriptor xzm comment; do
     src="$WORK/$f.zip"
     [ -f "$src" ] || continue
     total=$((total + 1))
@@ -145,6 +175,17 @@ with zipfile.ZipFile(ref) as a, zipfile.ZipFile(got) as b:
         except NotImplementedError:
             continue          # ...or in sankoch's output (e.g. xz/95); bsdtar covered it
         if want != have:
+            sys.exit(1)
+    # 2.6.3: Unix metadata must survive the re-pack when the source carried any.
+    ai = {i.filename: i for i in a.infolist()}
+    bi = {i.filename: i for i in b.infolist()}
+    for n, ia in ai.items():
+        if ia.create_system != 3:
+            continue                     # source had no Unix metadata to preserve
+        ib = bi[n]
+        if (ia.external_attr >> 16) != (ib.external_attr >> 16):
+            sys.exit(1)
+        if ia.date_time != ib.date_time:
             sys.exit(1)
     sys.exit(0)
 PY
@@ -195,10 +236,47 @@ PY
 fi
 rm -f /tmp/sankoch-zip-z64
 
+# --- streaming WRITE: bit-3 local headers + data descriptors must be reference-clean ---
+total=$((total + 1))
+: > /tmp/sankoch-zip-stream
+rm -f "$OUT"
+if ! "$BIN" > "$WORK/streamw.log" 2>&1; then
+    echo "  FAIL stream-write: sankoch exited $?"
+    sed 's/^/      /' "$WORK/streamw.log"
+    rc=1
+else
+    if python3 - "$OUT" <<'PY'
+import struct, sys, zipfile
+p = sys.argv[1]
+d = open(p, "rb").read()
+if not (struct.unpack("<H", d[6:8])[0] & 8): sys.exit(1)          # bit 3 on the first member
+if d.find(struct.pack("<I", 0x08074b50)) < 0: sys.exit(1)          # data-descriptor signature
+with zipfile.ZipFile(p) as z:
+    if z.testzip() is not None: sys.exit(1)
+    ref = bytes((97 + (k % 23)) for k in range(1000))
+    if z.read("s.txt") != ref * 10: sys.exit(1)
+    if z.read("p.txt") != ref: sys.exit(1)
+    if (z.getinfo("s.txt").external_attr >> 16) != 0o100644: sys.exit(1)
+sys.exit(0)
+PY
+    then
+        if ! unzip -t "$OUT" >/dev/null 2>&1; then
+            echo "  FAIL stream-write: unzip -t rejected the streamed archive"
+            rc=1
+        else
+            pass=$((pass + 1))
+        fi
+    else
+        echo "  FAIL stream-write: descriptor/content/metadata check failed"
+        rc=1
+    fi
+fi
+rm -f /tmp/sankoch-zip-stream
+
 echo ""
 echo "  $pass/$total archives: Python-written -> sankoch read -> sankoch written -> unzip -t + zipfile byte-identical"
 if [ "$rc" -eq 0 ]; then
-    echo "zip-smoke: PASS — reference unzip / bsdtar / Python zipfile accept sankoch's ZIP output (methods 0/8/12/93/95 + Zip64, read + write)"
+    echo "zip-smoke: PASS — reference unzip / bsdtar / Python zipfile accept sankoch's ZIP output (methods 0/8/12/93/95, Zip64, metadata, data descriptors; read + write)"
 else
     echo "zip-smoke: FAIL"
 fi

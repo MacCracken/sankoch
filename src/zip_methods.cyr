@@ -86,9 +86,9 @@ fn zip_extract_any(z, i, dst, dst_cap) {
 # Append a member using any method sankoch owns. Store and DEFLATE delegate to `zip_add`.
 # Like `zip_add`, a method that fails to shrink the member falls back to STORE, so a
 # pathological input can never inflate the archive. Returns 0 or a negative ERR_*.
-fn zip_add_any(w, name, data, len, method) {
+fn zip_add_any_meta(w, name, data, len, method, mode, mtime) {
     if (method == ZIP_STORE || method == ZIP_DEFLATE) {
-        return zip_add(w, name, data, len, method);
+        return zip_add_meta(w, name, data, len, method, mode, mtime);
     }
     if (load64(w + 40) != 0) { return load64(w + 40); }
     if (len < 0) { return 0 - ERR_INVALID_INPUT; }
@@ -135,9 +135,14 @@ fn zip_add_any(w, name, data, len, method) {
     elif (stored_method == ZIP_ZSTD || stored_method == ZIP_XZ) { vneed = 63; }
 
     # Header layout (including Zip64) is shared with zip_add — one implementation.
-    _zip_emit_local(dst, hdr, name, nlen, crc, csize, len, stored_method, vneed);
-    var rr = _zip_record(w, name, stored_method, crc, csize, len, hdr);
+    _zip_emit_local(dst, hdr, name, nlen, crc, csize, len, stored_method, vneed, mtime);
+    var rr = _zip_record(w, name, stored_method, crc, csize, len, hdr, mode, mtime);
     if (rr < 0) { return rr; }
     store64(w + 16, body + csize);
     return 0;
+}
+
+# Append with any method and no Unix metadata.
+fn zip_add_any(w, name, data, len, method) {
+    return zip_add_any_meta(w, name, data, len, method, 0, 0);
 }

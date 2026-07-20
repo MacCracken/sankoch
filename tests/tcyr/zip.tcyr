@@ -404,6 +404,137 @@ fn test_zip_name_not_aliased() {
     return 0;
 }
 
+# 2.6.3: per-entry Unix metadata round-trips — mode (with type bits), mtime in Unix
+# seconds, and the symlink convention (S_IFLNK + target as content), matching what
+# bsdtar/Info-ZIP write so a consumer gets tar-parity extraction.
+fn test_zip_metadata() {
+    var arc = alloc(65536);
+    var w = zip_writer_init(arc, 65536);
+    var body = alloc(64);
+    _zt_fill(body, 40, 65);
+    var T = 1623760496;                       # 2021-06-15 12:34:56 UTC
+    assert(zip_add_meta(w, "f.txt", body, 40, ZIP_STORE, 0x81EC, T) == 0, "meta: add file");
+    var tgt = alloc(16);
+    store8(tgt + 0, 102); store8(tgt + 1, 46); store8(tgt + 2, 116);
+    store8(tgt + 3, 120); store8(tgt + 4, 116); store8(tgt + 5, 0);   # "f.txt"
+    assert(zip_add_meta(w, "link.txt", tgt, 5, ZIP_STORE, 0xA1FF, T) == 0, "meta: add symlink");
+    assert(zip_add_meta(w, "d/", body, 0, ZIP_STORE, 0x41ED, T) == 0, "meta: add dir");
+    # A member added without metadata must report none, not a fabricated mode.
+    assert(zip_add(w, "plain.txt", body, 40, ZIP_STORE) == 0, "meta: add plain");
+    var total = zip_writer_finish(w);
+    assert(total > 0, "meta: finish");
+
+    var z = zip_open(arc, total);
+    assert(z != 0, "meta: reopen");
+    var fi = zip_find(z, "f.txt");
+    var li = zip_find(z, "link.txt");
+    var di = zip_find(z, "d/");
+    var pi = zip_find(z, "plain.txt");
+    assert(zip_entry_mode(z, fi) == 0x81EC, "meta: file mode round-trips");
+    assert(zip_entry_mode(z, li) == 0xA1FF, "meta: symlink mode round-trips");
+    assert(zip_entry_mode(z, di) == 0x41ED, "meta: dir mode round-trips");
+    assert(zip_entry_mode(z, pi) == 0, "meta: no metadata reports mode 0");
+    assert(zip_entry_is_symlink(z, li) == 1, "meta: symlink detected");
+    assert(zip_entry_is_symlink(z, fi) == 0, "meta: file is not a symlink");
+    # MS-DOS time has 2-second resolution, so the stamp round-trips to within 2s.
+    var dt = zip_entry_mtime(z, fi) - T;
+    assert(dt >= 0 - 2 && dt <= 2, "meta: mtime round-trips within DOS resolution");
+    assert(zip_entry_mtime(z, pi) == 0, "meta: absent mtime reads as 0");
+    # The symlink's target is its content.
+    var out = alloc(64);
+    assert(zip_extract(z, li, out, 64) == 5, "meta: symlink target length");
+    assert(_zt_eq(out, tgt, 5) == 1, "meta: symlink target content");
+    return 0;
+}
+
+# MS-DOS <-> Unix time conversion must be exact at known points (the helper underpins
+# every mtime the reader and writer exchange).
+fn test_zip_dos_time() {
+    var o[16];
+    # 1980-01-01 00:00:00 is the format's epoch: date 0x21, time 0.
+    _zip_unix_to_dos(315532800, &o);
+    assert(load64(&o + 8) == 0x21, "dos: 1980-01-01 date encodes to 0x21");
+    # Round-trip a known instant.
+    _zip_unix_to_dos(1623760496, &o);
+    var back = _zip_dos_to_unix(load64(&o + 0), load64(&o + 8));
+    assert(back == 1623760496, "dos: 2021-06-15 12:34:56 round-trips exactly");
+    # Pre-epoch and unset clamp to the floor rather than wrapping.
+    _zip_unix_to_dos(0, &o);
+    assert(load64(&o + 0) == 0 && load64(&o + 8) == 0x21, "dos: unset clamps to the 1980 floor");
+    _zip_unix_to_dos(0 - 100000, &o);
+    assert(load64(&o + 8) == 0x21, "dos: pre-1980 clamps to the floor");
+    # The floor stamp reads back as "absent", not as a real 1980 timestamp.
+    assert(_zip_dos_to_unix(0, 0x21) == 0, "dos: floor stamp reads as absent");
+    return 0;
+}
+
+# 2.6.3 streaming write: bit-3 local header + trailing data descriptor, fed in chunks.
+fn test_zip_streaming_write() {
+    var arc = alloc(262144);
+    var w = zip_writer_init(arc, 262144);
+    assert(w != 0, "stream: writer init");
+    var chunk = alloc(1000);
+    _zt_fill(chunk, 1000, 97);
+
+    assert(zip_enc_begin(w, "s.txt", ZIP_DEFLATE, 0x81A4, 1623760496) == 0, "stream: begin");
+    var i = 0;
+    while (i < 10) {
+        assert(zip_enc_write(w, chunk, 1000) == 0, "stream: write chunk");
+        i = i + 1;
+    }
+    assert(zip_enc_end(w) == 0, "stream: end");
+    # A streamed member and a normal one must coexist.
+    assert(zip_add(w, "p.txt", chunk, 1000, ZIP_DEFLATE) == 0, "stream: plain member alongside");
+    var total = zip_writer_finish(w);
+    assert(total > 0, "stream: finish");
+
+    # The local header must carry general-purpose bit 3.
+    assert((_zip_le16(arc + 6) & 8) == 8, "stream: local header sets bit 3");
+
+    var z = zip_open(arc, total);
+    assert(z != 0, "stream: reopen");
+    assert(zip_count(z) == 2, "stream: two members");
+    var si = zip_find(z, "s.txt");
+    assert(zip_entry_size(z, si) == 10000, "stream: streamed size recorded");
+    assert(zip_entry_mode(z, si) == 0x81A4, "stream: metadata survives streaming");
+    var out = alloc(16384);
+    assert(zip_extract(z, si, out, 16384) == 10000, "stream: extract streamed member");
+    var k = 0;
+    var ok = 1;
+    while (k < 10000) {
+        if ((load8(out + k) & 0xFF) != (load8(chunk + (k % 1000)) & 0xFF)) { ok = 0; break; }
+        k = k + 1;
+    }
+    assert(ok == 1, "stream: streamed content is byte-identical");
+    return 0;
+}
+
+# Streaming misuse must be refused, not allowed to emit a corrupt archive.
+fn test_zip_streaming_guards() {
+    var arc = alloc(65536);
+    var w = zip_writer_init(arc, 65536);
+    var d = alloc(16);
+    _zt_fill(d, 16, 65);
+    # write/end before begin
+    assert(zip_enc_write(w, d, 16) == 0 - ERR_INVALID_INPUT, "stream: write before begin");
+    assert(zip_enc_end(w) == 0 - ERR_INVALID_INPUT, "stream: end before begin");
+    assert(zip_enc_begin(w, "a.txt", ZIP_STORE, 0, 0) == 0, "stream: begin ok");
+    # nested begin
+    assert(zip_enc_begin(w, "b.txt", ZIP_STORE, 0, 0) == 0 - ERR_INVALID_INPUT,
+    "stream: nested begin refused");
+    # finishing with a member still open would emit a header with no descriptor
+    assert(zip_writer_finish(w) == 0 - ERR_INVALID_INPUT, "stream: finish with member open refused");
+    assert(zip_enc_end(w) == 0, "stream: end closes it");
+    assert(zip_writer_finish(w) > 0, "stream: finish now succeeds");
+    # unsafe names and unsupported methods are refused at begin
+    var w2 = zip_writer_init(alloc(4096), 4096);
+    assert(zip_enc_begin(w2, "../evil", ZIP_STORE, 0, 0) == 0 - ERR_UNSAFE_PATH,
+    "stream: begin rejects unsafe name");
+    assert(zip_enc_begin(w2, "x.txt", ZIP_BZIP2, 0, 0) == 0 - ERR_UNSUPPORTED_FORMAT,
+    "stream: begin rejects a non-streamable method");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zip_roundtrip();
@@ -422,6 +553,10 @@ fn main() {
     test_zip_method_support();
     test_zip_any_guards();
     test_zip_name_not_aliased();
+    test_zip_metadata();
+    test_zip_dos_time();
+    test_zip_streaming_write();
+    test_zip_streaming_guards();
     return assert_summary();
 }
 

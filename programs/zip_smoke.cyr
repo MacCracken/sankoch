@@ -65,6 +65,29 @@ fn run_z64() {
     return 0;
 }
 
+# Streaming write mode (2.6.3): emit a member through zip_enc_begin/write/end so the
+# bit-3 + data-descriptor path is exercised end-to-end and a reference tool verifies it.
+fn run_stream() {
+    var cap = 1048576;
+    var arc = _sankoch_alloc(cap);
+    if (arc == 0) { ps("stream: alloc failed\n"); return 1; }
+    var w = zip_writer_init(arc, cap);
+    if (w == 0) { ps("stream: writer init failed\n"); return 1; }
+    var chunk = _sankoch_alloc(1000);
+    var i = 0;
+    while (i < 1000) { store8(chunk + i, 97 + (i % 23)); i = i + 1; }
+    if (zip_enc_begin(w, "s.txt", ZIP_DEFLATE, 0x81A4, 1623760496) < 0) { ps("stream: begin\n"); return 2; }
+    i = 0;
+    while (i < 10) { if (zip_enc_write(w, chunk, 1000) < 0) { ps("stream: write\n"); return 3; } i = i + 1; }
+    if (zip_enc_end(w) < 0) { ps("stream: end\n"); return 4; }
+    if (zip_add(w, "p.txt", chunk, 1000, ZIP_DEFLATE) < 0) { ps("stream: plain\n"); return 5; }
+    var total = zip_writer_finish(w);
+    if (total < 0) { ps("stream: finish\n"); return 6; }
+    ps("stream bytes="); print_num(total); ps("\n");
+    write_all("/tmp/sankoch-zip-out.zip", arc, total);
+    return 0;
+}
+
 fn run() {
     var buf = read_all("/tmp/sankoch-zip-in.zip");
     if (buf == 0) { ps("read failed\n"); return 1; }
@@ -102,7 +125,11 @@ fn run() {
         # the round-trip with its methods intact (2.6.1).
         var m = zip_entry_method(z, i);
         if (m != ZIP_STORE && zip_method_supported(m) != 1) { m = ZIP_DEFLATE; }
-        if (zip_add_any(w, name, out, got, m) < 0) { ps("zip_add failed\n"); return 5; }
+        # Carry the member's Unix metadata across the re-pack too (2.6.3), so the
+        # smoke proves mode / mtime / symlink survive read -> write.
+        if (zip_add_any_meta(w, name, out, got, m, zip_entry_mode(z, i), zip_entry_mtime(z, i)) < 0) {
+            ps("zip_add failed\n"); return 5;
+        }
         i = i + 1;
     }
     var total = zip_writer_finish(w);
@@ -116,6 +143,8 @@ fn main() {
     alloc_init();
     var fd = sys_open("/tmp/sankoch-zip-z64", 0, 0);
     if (fd >= 0) { sys_close(fd); return run_z64(); }
+    var fs = sys_open("/tmp/sankoch-zip-stream", 0, 0);
+    if (fs >= 0) { sys_close(fs); return run_stream(); }
     return run();
 }
 var exit_code = main();

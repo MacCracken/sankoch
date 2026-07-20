@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.6.2) | **Last Updated**: 2026-07-19
+> **Status**: Stable (v2.6.3) | **Last Updated**: 2026-07-19
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
@@ -177,16 +177,27 @@ not micro-optimisation. Numbers in
 > it. `test_zip_name_not_aliased` now scribbles the caller's buffer before `finish`;
 > reverting the fix fails it.
 
-### 2.6.x — the rest of the ZIP arc
+> **2.6.3 — ZIP: streaming write + per-entry metadata — ✅ shipped 2026-07-19**
+> (see CHANGELOG).
+>
+> **Per-entry Unix metadata**: `zip_entry_mode` / `zip_entry_mtime` /
+> `zip_entry_is_symlink` and `zip_add_meta` / `zip_add_any_meta`, with MS-DOS <-> Unix time
+> conversion over the proleptic-Gregorian day count (integer only; pre-1980 clamps to the
+> format floor, and that floor reads back as *absent*). Mode is only reported when
+> "version made by" says Unix, so a DOS/NTFS writer's attribute bits are never mistaken
+> for one. Symlinks follow the bsdtar/Info-ZIP convention (S_IFLNK + target as content) —
+> **bsdtar restores a real symlink and mode 0754 from sankoch's output**.
+>
+> **Streaming write**: `zip_enc_begin` / `zip_enc_write` / `zip_enc_end` using
+> general-purpose bit 3 + a trailing data descriptor, mirroring the codec `*_enc_*` shape;
+> DEFLATE streams through `deflate_enc_*`. Misuse (nested begin, write before begin,
+> finishing with a member still open) is refused rather than emitting a corrupt archive.
+> The READ half already worked — the reader takes sizes from the central directory — and
+> now carries a regression fixture.
+>
+> **This completes the 2.6.x ZIP arc.**
 
-Built out to the same completeness the codecs carry. Bites may merge/split per the usual
-sizing rule; the ordering is the commitment, not the exact boundaries. **None of this
-blocks agnosai** — its filing shipped at 2.6.0.
-
-- **2.6.3 — streaming + metadata.** Streaming read + streaming write (data descriptors —
-  bit-3 sizes-after-data) mirroring the codec `*_enc_*` / `*_dec_*` shape, plus per-entry
-  metadata (mtime, mode, symlink) for tar-parity extraction. 2.6.0 writes a fixed
-  1980-01-01 MS-DOS date and no external attributes.
+### ZIP — what is deliberately NOT there
 
 **Non-goals** (like the codec non-goals): **encryption** — ZipCrypto is
 cryptographically broken, and AES-in-ZIP needs a real AES primitive
@@ -282,13 +293,13 @@ at 2.5.5.)
 | xz.cyr           | 1836 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
 | bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
 | zstd.cyr         | 2384 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
-| zip.cyr          |  730 | PKZIP `.zip` container (2.6.0): in-memory reader (EOCD + central directory index, extract-by-index, CRC-32 verified) + writer (local headers + central directory + EOCD), methods 0/8, zip-slip guards, per-member ratio cap | full |
-| zip_methods.cyr  |  143 | The rest of ZIP's methods (2.6.1): 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Kept OUT of `[lib.zip]` so the lean profile never pulls those codecs | full |
+| zip.cyr          | 1013 | PKZIP `.zip` container (2.6.0): in-memory reader (EOCD + central directory index, extract-by-index, CRC-32 verified) + writer (local headers + central directory + EOCD), methods 0/8, zip-slip guards, per-member ratio cap | full |
+| zip_methods.cyr  |  148 | The rest of ZIP's methods (2.6.1): 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Kept OUT of `[lib.zip]` so the lean profile never pulls those codecs | full |
 | tar.cyr          |  710 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  265 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **14313** | | |
+| **Total**        | **14601** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -297,7 +308,7 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 
 Tests: **267 distinct test functions** (257 across the 20 split
 codec×direction suites + 10 in git_object.tcyr) producing
-**4,484,410 assertions** total (4,137,827 + 346,583). Most comes from
+**4,484,462 assertions** total (4,137,879 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -340,8 +351,10 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.67).
 
 ---
 
-*Last Updated: 2026-07-19 (2.6.2 shipped — ZIP Zip64 read + write, lifting the
-65,535-member and 4 GB ceilings; plus a latent 2.6.0 name-aliasing fix the Zip64 test
-surfaced. Remaining ladder: 2.6.3 streaming + per-entry metadata — the last scheduled
-bite of the ZIP arc. Deferred: zstd optimal parse, xz encoder throughput, SIMD CRC-32,
-the wire-identical DEFLATE match-finder speedup; Future bucket unchanged.)*
+*Last Updated: 2026-07-19 (2.6.3 shipped — ZIP streaming write + per-entry metadata.
+**The 2.6.x ZIP archive-container arc is complete**: reader + writer, every method sankoch
+owns, Zip64, streaming, and tar-parity metadata, all reference-verified against unzip /
+bsdtar / Python zipfile. Nothing further is scheduled; the natural next step is a P(-1)
+hardening pass over the ~1,900 lines of zip.cyr + zip_methods.cyr the arc added, which has
+not been security-audited. Deferred: zstd optimal parse, xz encoder throughput, SIMD
+CRC-32, the wire-identical DEFLATE match-finder speedup; Future bucket unchanged.)*

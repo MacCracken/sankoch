@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.3] — 2026-07-19 — ZIP: streaming write + per-entry metadata (the ZIP arc completes)
+
+Final bite of the 2.6.x arc. ZIP gains **per-entry Unix metadata** (mode, mtime, symlinks)
+for tar-parity extraction, and a **streaming writer** using general-purpose bit 3 + data
+descriptors — the format's own answer for a producer that does not know a member's size or
+CRC until it has seen all of it. **The ZIP container is now feature-complete against the
+roadmap.**
+
+### Added — per-entry metadata
+- **`zip_entry_mode` / `zip_entry_mtime` / `zip_entry_is_symlink`** — a member's Unix mode
+  (with file-type bits, like `tar_mode`), modification time in **Unix seconds**, and the
+  symlink predicate. Mode is read from the external-attributes field *only when* "version
+  made by" says Unix (high byte 3); a DOS/NTFS writer leaves MS-DOS attribute bits there,
+  which would be nonsense as a mode, so those report 0 rather than a fabricated one.
+- **`zip_add_meta` / `zip_add_any_meta`** — write a member with an explicit mode and mtime.
+  A **symlink** is `S_IFLNK` in the mode with the target path as the member's content,
+  matching the bsdtar/Info-ZIP convention.
+- **MS-DOS ↔ Unix time conversion** (`_zip_dos_to_unix` / `_zip_unix_to_dos`) over the
+  standard proleptic-Gregorian day count — integer only, no floating point. Pre-1980 and
+  unset times clamp to the format's 1980-01-01 floor, and that floor stamp reads back as
+  *absent* rather than as a spurious 1980 timestamp.
+
+### Added — streaming write
+- **`zip_enc_begin` / `zip_enc_write` / `zip_enc_end`**, mirroring the codec `*_enc_*`
+  shape. The member is written with bit 3 set and zero sizes in the local header, followed
+  by a data descriptor carrying the real CRC and sizes. DEFLATE streams through
+  `deflate_enc_*`; STORE copies. Streamed and non-streamed members mix freely in one
+  archive, and metadata flows through the streaming path.
+- Misuse is refused rather than allowed to emit a corrupt archive: nested `begin`,
+  `write`/`end` with no member open, a non-streamable method, an unsafe name, and —
+  importantly — **`zip_writer_finish` while a member is still open**, which would
+  otherwise leave a local header with no descriptor and no directory entry.
+
+### Notes on reading
+sankoch's reader already handled data-descriptor (bit-3) archives, because it takes member
+sizes from the central directory and reads only the name/extra lengths from the local
+header. 2.6.3 adds a regression fixture for it (a Python archive written to a non-seekable
+sink, which is what makes Python emit descriptors) so that property is now pinned.
+
+### Verified
+- **Metadata round-trip**: sankoch writes mode `0754`, a symlink, a directory and an
+  mtime; Python `zipfile` reads back `create_system=3`, modes `0o100754 / 0o120777 /
+  0o40755` and the exact timestamp — and **`bsdtar` extracts it to a real filesystem as
+  `-rwxr-xr--`, a genuine `lrwxrwxrwx link.txt -> f.txt` symlink, and `drwxr-xr-x`**, all
+  stamped 2021-06-15 12:34:56.
+- Reading bsdtar-written metadata gives an mtime of **1623760496** — matching the
+  reference computation to the second.
+- **Streaming**: the emitted archive carries bit 3 and the `0x08074b50` descriptor
+  signature, and `unzip -t`, `bsdtar` and Python `zipfile` (`testzip()` clean) all accept
+  it with content byte-identical.
+- `scripts/zip-smoke.sh` grows to **13 checks**, adding metadata and data-descriptor
+  fixtures, a streaming-write check, and metadata-preservation assertions across the
+  read → re-pack round-trip.
+
+### Testing
+`tests/tcyr/zip.tcyr` → **20 tests / 175 assertions** (from 16 / 123): metadata
+round-trip incl. the no-metadata case, exact DOS-time conversion at known instants plus
+the clamping behaviour, streaming write with chunked feeds, and the streaming misuse
+guards. Suite total **4,484,410 → 4,484,462 assertions** across 22 suites, 0 failures.
+
 ## [2.6.2] — 2026-07-19 — ZIP: Zip64 (read + write), and a latent name-aliasing fix
 
 Third bite of the 2.6.x arc. ZIP now handles **Zip64** on both sides: archives with more

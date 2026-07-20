@@ -72,7 +72,7 @@ src/
   bzip2.cyr        — .bz2 de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (bzip2_decompress / bzip2_compress)
   zstd.cyr         — RFC-8878 zstd de/compress: FSE/Huffman + repcode-aware + adaptive-FSE-table encoder (zstd_decompress / zstd_compress / zstd_compress_level)
   tar.cyr          — shared tar cursor; tar_open_auto dispatches to gzip/xz/bzip2/zstd
-  zip.cyr          — PKZIP .zip container: in-memory reader + writer (store + DEFLATE, Zip64)
+  zip.cyr          — PKZIP .zip container: reader + writer, Zip64, streaming, Unix metadata
   zip_methods.cyr  — ZIP methods 12/93/95 (bzip2/zstd/xz); kept out of [lib.zip]
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
   runtime.cyr      — shared runtime seam: API lock (_sankoch_lock/_unlock) + alloc seam
