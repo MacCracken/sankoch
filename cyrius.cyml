@@ -39,6 +39,7 @@ modules = [
     "src/zstd.cyr",
     "src/tar.cyr",
     "src/zip.cyr",
+    "src/zip_methods.cyr",
     "src/stream.cyr",
     "src/runtime.cyr",
     "src/lib.cyr",
@@ -154,6 +155,29 @@ modules = [
     "src/lz77.cyr",
     "src/deflate.cyr",
     "src/zip.cyr",
+    "src/runtime.cyr",
+]
+
+# `[lib.zipall]` — ZIP with EVERY method sankoch owns (2.6.1): store / DEFLATE plus
+# 12 (bzip2), 93 (zstd), 95 (xz), read and write, via `zip_methods.cyr`. Use `[lib.zip]`
+# instead when only store + DEFLATE are needed (agnosai) — that profile is a third the
+# size because it never pulls the extra codecs. `zip_methods.cyr` is what keeps the two
+# apart: `zip.cyr` itself never references xz/bzip2/zstd.
+[lib.zipall]
+modules = [
+    "src/types.cyr",
+    "src/xxhash32.cyr",
+    "src/checksum.cyr",
+    "src/bitreader.cyr",
+    "src/bitwriter.cyr",
+    "src/huffman.cyr",
+    "src/lz77.cyr",
+    "src/deflate.cyr",
+    "src/xz.cyr",
+    "src/bzip2.cyr",
+    "src/zstd.cyr",
+    "src/zip.cyr",
+    "src/zip_methods.cyr",
     "src/runtime.cyr",
 ]
 

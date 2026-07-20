@@ -34,6 +34,12 @@
 
 var ZIP_STORE = 0;      # compression method 0 — stored verbatim
 var ZIP_DEFLATE = 8;    # compression method 8 — RFC 1951
+# 2.6.1 methods. The payload for each is the codec's OWN standalone stream (a `.bz2`,
+# `.zst` or `.xz` file body), so a member can be handed straight to the reference tool.
+# Handled by `zip_extract_any` / `zip_add_any` in `zip_methods.cyr`.
+var ZIP_BZIP2 = 12;     # compression method 12 — bzip2
+var ZIP_ZSTD = 93;      # compression method 93 — Zstandard (APPNOTE 6.3.7)
+var ZIP_XZ = 95;        # compression method 95 — .xz (LZMA2)
 
 # Signatures (little-endian on the wire).
 var ZIP_SIG_LOCAL = 0x04034b50;
@@ -264,15 +270,18 @@ fn zip_find(z, name) {
 # declared size); the member's CRC-32 is always verified. The member name is
 # path-checked here so a consumer that writes by name cannot be zip-slipped even if it
 # never calls the accessor itself.
-fn zip_extract_capped(z, i, dst, dst_cap, max_ratio) {
+# Shared member plumbing (2.6.1). Validates the member, locates its payload and applies
+# the destination + ratio bounds, writing [data_offset, csize, usize] into the 3-word
+# `outv`. Returns 0, or a negative ERR_*. Split out so `zip_methods.cyr` can add the
+# other compression methods without duplicating any of the validation — that module is
+# excluded from the lean `[lib.zip]` profile, which must not pull xz/bzip2/zstd in.
+fn _zip_prepare(z, i, dst_cap, max_ratio, outv) {
     var e = _zip_ent(z, i);
     if (e == 0) { return 0 - ERR_INVALID_INPUT; }
     var buf = load64(z + 0);
     var len = load64(z + 8);
-    var name = load64(e + 0);
-    if (_zip_path_safe(name) != 1) { return 0 - ERR_UNSAFE_PATH; }
+    if (_zip_path_safe(load64(e + 0)) != 1) { return 0 - ERR_UNSAFE_PATH; }
 
-    var method = load64(e + 8);
     var csize = load64(e + 24);
     var usize = load64(e + 32);
     var lho = load64(e + 40);
@@ -295,6 +304,37 @@ fn zip_extract_capped(z, i, dst, dst_cap, max_ratio) {
             if (usize / csize > max_ratio) { return 0 - ERR_RATIO_LIMIT; }
         }
     }
+    store64(outv + 0, data);
+    store64(outv + 8, csize);
+    store64(outv + 16, usize);
+    return 0;
+}
+
+# Shared post-check: the decoded length must match the declared size and the member's
+# CRC-32 must verify. Every extraction path goes through this.
+fn _zip_verify(z, i, dst, got, usize) {
+    if (got != usize) { return 0 - ERR_CORRUPT_DATA; }
+    var e = _zip_ent(z, i);
+    if (e == 0) { return 0 - ERR_INVALID_INPUT; }
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
+    if ((crc32(dst, got) & 0xFFFFFFFF) != (load64(e + 16) & 0xFFFFFFFF)) {
+        return 0 - ERR_CHECKSUM_MISMATCH;
+    }
+    return got;
+}
+
+# Extract member `i`. Handles the methods `zip.cyr` itself carries — 0 (store) and
+# 8 (DEFLATE). Methods 12 / 93 / 95 need the bzip2 / zstd / xz decoders, which live
+# behind `zip_extract_any` in `zip_methods.cyr` so the lean profile stays lean.
+fn zip_extract_capped(z, i, dst, dst_cap, max_ratio) {
+    var v[24];
+    var pr = _zip_prepare(z, i, dst_cap, max_ratio, &v);
+    if (pr < 0) { return pr; }
+    var buf = load64(z + 0);
+    var data = load64(&v + 0);
+    var csize = load64(&v + 8);
+    var usize = load64(&v + 16);
+    var method = load64(_zip_ent(z, i) + 8);
 
     var got = 0;
     if (method == ZIP_STORE) {
@@ -311,15 +351,9 @@ fn zip_extract_capped(z, i, dst, dst_cap, max_ratio) {
         }
         if (got < 0) { return got; }
     } else {
-        return 0 - ERR_UNSUPPORTED_FORMAT;   # 2.6.1 adds bzip2 / xz / zstd
+        return 0 - ERR_UNSUPPORTED_FORMAT;   # see zip_extract_any (zip_methods.cyr)
     }
-
-    if (got != usize) { return 0 - ERR_CORRUPT_DATA; }
-    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
-    if ((crc32(dst, got) & 0xFFFFFFFF) != (load64(e + 16) & 0xFFFFFFFF)) {
-        return 0 - ERR_CHECKSUM_MISMATCH;
-    }
-    return got;
+    return _zip_verify(z, i, dst, got, usize);
 }
 
 # Extract with no ratio bound (the member's declared size still bounds the write).

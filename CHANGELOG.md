@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-07-19 — ZIP: every method sankoch owns (bzip2 / zstd / xz, both ways)
+
+Second bite of the 2.6.x arc. ZIP's method field now carries every codec in the tree —
+**12 (bzip2)**, **93 (Zstandard)**, **95 (xz)** — on read *and* write, joining 0 (store)
+and 8 (DEFLATE) from 2.6.0. Method 14 (LZMA "alone" format) stays unsupported: the same
+non-goal as the codec, which owns the `.xz` container, not `.lzma`.
+
+For each of these the ZIP payload is the codec's **own standalone stream** — a `.bz2`,
+`.zst` or `.xz` file body verbatim — so a member's compressed bytes can be handed straight
+to the reference CLI.
+
+### Added
+- **`src/zip_methods.cyr`** (174 lines) — `zip_extract_any` / `zip_extract_any_capped`,
+  `zip_add_any`, and `zip_method_supported`. Store and DEFLATE delegate back to
+  `zip.cyr`, so there is exactly one implementation of each method.
+- **`[lib.zipall]` distlib profile** → `dist/sankoch-zipall.cyr` (10,698 lines): ZIP with
+  every method. Ten bundles total.
+- Correct **version-needed** stamps per APPNOTE (4.6 for bzip2, 6.3 for zstd/xz), so a
+  reference reader refuses an archive it cannot handle rather than mis-decoding it.
+
+### Why a separate module (the profile split)
+`zip.cyr` still references **only** deflate + crc32. That is what keeps CLAUDE.md's
+*Modular by profile* promise — "adding a compression format never bloats consumers that
+don't use it". agnosai round-trips DEFLATE members, so it keeps the lean profile:
+
+| profile | lines | methods |
+|---|---:|---|
+| `[lib.zip]` (agnosai) | **4,969** | 0, 8 |
+| `[lib.zipall]` | 10,698 | 0, 8, 12, 93, 95 |
+
+The lean bundle contains **zero** bzip2/xz/zstd symbols and compiles standalone —
+verified, not assumed. `zip_extract` returns `ERR_UNSUPPORTED_FORMAT` for a method
+`zip.cyr` does not carry; `zip_extract_any` handles it. A function-pointer seam was
+considered and rejected: `fnptr` availability in a lean profile depends on the consumer's
+`[deps] stdlib` list, and it carries per-target ABI caveats — not worth it in a path that
+validates untrusted archives.
+
+### Verified — reference parity in both directions
+- **sankoch writes → reference reads.** `bsdtar` (libarchive) extracts all five methods
+  from one sankoch archive, every member byte-identical. Python `zipfile` confirms 0/8/12/93
+  (it cannot decode 95 at all — its own limitation, which bsdtar covers).
+- **reference writes → sankoch reads.** Python `zipfile` method 12 and method 93, and a
+  `bsdtar --options zip:compression=xz` method-95 archive, all extract byte-identically.
+- **`scripts/zip-smoke.sh` extended to 7 archive shapes**, now including an all-methods
+  archive and a bsdtar-written xz archive (the only way to exercise 95 on the read side,
+  since Python cannot write it). A member's method survives read → re-pack: an xz member
+  goes back out as method 95 and bsdtar re-verifies it.
+
+### Testing
+`tests/tcyr/zip.tcyr` grows to **15 tests / 98 assertions** (from 11 / 59): all five
+methods round-trip with their method preserved, the lean reader *refuses* the extra
+methods (the contract that keeps `[lib.zip]` free of xz/bzip2/zstd), `zip_method_supported`
+including method 14's rejection, and the zip-slip guard + ratio cap on the extra-method
+path. Suite total **4,484,346 → 4,484,385 assertions** across 22 suites, 0 failures.
+
 ## [2.6.0] — 2026-07-19 — ZIP archive container: agnosai `.agpkg` core (store + DEFLATE, read + write)
 
 Opens the 2.6.x ZIP arc. New `src/zip.cyr` (487 lines) — the PKZIP `.zip` container as an

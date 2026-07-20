@@ -1,4 +1,5 @@
-# zip_smoke.cyr — read /tmp/sankoch-zip-in.zip with sankoch's reader, print the index and
+# zip_smoke.cyr — read /tmp/sankoch-zip-in.zip with sankoch's reader (every method), print
+# the index and
 # each member's extracted length + a content fingerprint; then WRITE an archive from the
 # same members to /tmp/sankoch-zip-out.zip so a reference tool can verify it.
 #
@@ -50,7 +51,7 @@ fn run() {
         var name = zip_entry_name(z, i);
         var usz = zip_entry_size(z, i);
         var out = _sankoch_alloc(usz + 16);
-        var got = zip_extract(z, i, out, usz + 16);
+        var got = zip_extract_any(z, i, out, usz + 16);
         ps("  "); ps(name);
         ps("  method="); print_num(zip_entry_method(z, i));
         ps(" usize="); print_num(usz);
@@ -61,7 +62,11 @@ fn run() {
         ps(" sum="); print_num(sum);
         ps("\n");
         if (got < 0) { return 4; }
-        if (zip_add(w, name, out, got, ZIP_DEFLATE) < 0) { ps("zip_add failed\n"); return 5; }
+        # Re-pack with the method the source used, so a multi-method archive survives
+        # the round-trip with its methods intact (2.6.1).
+        var m = zip_entry_method(z, i);
+        if (m != ZIP_STORE && zip_method_supported(m) != 1) { m = ZIP_DEFLATE; }
+        if (zip_add_any(w, name, out, got, m) < 0) { ps("zip_add failed\n"); return 5; }
         i = i + 1;
     }
     var total = zip_writer_finish(w);

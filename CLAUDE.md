@@ -73,6 +73,7 @@ src/
   zstd.cyr         — RFC-8878 zstd de/compress: FSE/Huffman + repcode-aware + adaptive-FSE-table encoder (zstd_decompress / zstd_compress / zstd_compress_level)
   tar.cyr          — shared tar cursor; tar_open_auto dispatches to gzip/xz/bzip2/zstd
   zip.cyr          — PKZIP .zip container: in-memory reader + writer (store + DEFLATE)
+  zip_methods.cyr  — ZIP methods 12/93/95 (bzip2/zstd/xz); kept out of [lib.zip]
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
   runtime.cyr      — shared runtime seam: API lock (_sankoch_lock/_unlock) + alloc seam
 programs/
@@ -83,7 +84,7 @@ fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd — auto-di
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
   sankoch-core.cyr — kernel-safe profile; ships as lib/sankoch-core.cyr alongside
-  sankoch-<p>.cyr  — lean per-codec/container profiles (zlib/gzip/xz/bzip2/zstd/zip/tar)
+  sankoch-<p>.cyr  — lean per-codec/container profiles (zlib/gzip/xz/bzip2/zstd/zip/zipall/tar)
 cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] + per-codec profiles: zlib/gzip/xz/bzip2/zstd/tar)
 ```
 
@@ -102,7 +103,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 - **Test after EVERY change**, not after the feature is done.
 - **ONE change at a time** — never bundle unrelated changes.
 - **Study the RFCs** — RFC 1951 is the DEFLATE bible; read before writing code.
-- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`; ZIP via `unzip` / Python `zipfile`. The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
+- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`; ZIP via `unzip` / `bsdtar` / Python `zipfile`. The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
 
 ## Rules (Hard Constraints)
 

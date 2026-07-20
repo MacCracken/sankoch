@@ -260,6 +260,107 @@ fn test_zip_writer_bounds() {
     return 0;
 }
 
+# 2.6.1: every method sankoch owns round-trips through the writer and reader, and the
+# member's declared method survives. STORE is the fallback when a codec cannot shrink the
+# data, so use a compressible payload where a real method is expected.
+fn test_zip_all_methods() {
+    var n = 20000;
+    var src = alloc(n);
+    _zt_fill(src, n, 97);
+
+    var cap = 262144;
+    var arc = alloc(cap);
+    var w = zip_writer_init(arc, cap);
+    assert(w != 0, "all-methods writer init");
+    assert(zip_add_any(w, "m00.txt", src, n, ZIP_STORE) == 0, "add store");
+    assert(zip_add_any(w, "m08.txt", src, n, ZIP_DEFLATE) == 0, "add deflate");
+    assert(zip_add_any(w, "m12.txt", src, n, ZIP_BZIP2) == 0, "add bzip2");
+    assert(zip_add_any(w, "m93.txt", src, n, ZIP_ZSTD) == 0, "add zstd");
+    assert(zip_add_any(w, "m95.txt", src, n, ZIP_XZ) == 0, "add xz");
+    var total = zip_writer_finish(w);
+    assert(total > 0, "all-methods finish");
+
+    var z = zip_open(arc, total);
+    assert(z != 0, "all-methods reopen");
+    assert(zip_count(z) == 5, "five members");
+
+    var out = alloc(n + 64);
+    var idx = 0;
+    while (idx < 5) {
+        var got = zip_extract_any(z, idx, out, n + 64);
+        assert(got == n, "all-methods extract length");
+        assert(_zt_eq(out, src, n) == 1, "all-methods extract content");
+        idx = idx + 1;
+    }
+    # Each member kept the method it was written with (the payload compressed, so no
+    # STORE fallback fired for 8/12/93/95).
+    assert(zip_entry_method(z, zip_find(z, "m00.txt")) == ZIP_STORE, "m00 method preserved");
+    assert(zip_entry_method(z, zip_find(z, "m08.txt")) == ZIP_DEFLATE, "m08 method preserved");
+    assert(zip_entry_method(z, zip_find(z, "m12.txt")) == ZIP_BZIP2, "m12 method preserved");
+    assert(zip_entry_method(z, zip_find(z, "m93.txt")) == ZIP_ZSTD, "m93 method preserved");
+    assert(zip_entry_method(z, zip_find(z, "m95.txt")) == ZIP_XZ, "m95 method preserved");
+    return 0;
+}
+
+# The lean reader (`zip_extract`) handles only the methods zip.cyr itself carries; the
+# extra methods must be refused there rather than mis-decoded. This is the contract that
+# keeps the `[lib.zip]` distlib profile free of xz/bzip2/zstd.
+fn test_zip_lean_refuses_extra_methods() {
+    var n = 4000;
+    var src = alloc(n);
+    _zt_fill(src, n, 97);
+    var arc = alloc(65536);
+    var w = zip_writer_init(arc, 65536);
+    assert(zip_add_any(w, "b.txt", src, n, ZIP_BZIP2) == 0, "add bzip2 for lean check");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    var out = alloc(n + 64);
+    assert(zip_extract(z, 0, out, n + 64) == 0 - ERR_UNSUPPORTED_FORMAT,
+    "zip_extract refuses a method zip.cyr does not carry");
+    assert(zip_extract_any(z, 0, out, n + 64) == n,
+    "zip_extract_any handles it");
+    return 0;
+}
+
+# Method support predicate + rejection of a method sankoch does not implement.
+fn test_zip_method_support() {
+    assert(zip_method_supported(ZIP_STORE) == 1, "store supported");
+    assert(zip_method_supported(ZIP_DEFLATE) == 1, "deflate supported");
+    assert(zip_method_supported(ZIP_BZIP2) == 1, "bzip2 supported");
+    assert(zip_method_supported(ZIP_ZSTD) == 1, "zstd supported");
+    assert(zip_method_supported(ZIP_XZ) == 1, "xz supported");
+    assert(zip_method_supported(14) == 0, "method 14 (LZMA alone) is a non-goal");
+    assert(zip_method_supported(99) == 0, "unknown method unsupported");
+    var d = alloc(16);
+    _zt_fill(d, 16, 65);
+    var arc = alloc(4096);
+    var w = zip_writer_init(arc, 4096);
+    assert(zip_add_any(w, "x.txt", d, 16, 14) == 0 - ERR_UNSUPPORTED_FORMAT,
+    "writer refuses method 14");
+    return 0;
+}
+
+# The ratio cap and the zip-slip guard apply on the extra-method path too.
+fn test_zip_any_guards() {
+    var n = 100000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 0); i = i + 1; }
+    var arc = alloc(262144);
+    var w = zip_writer_init(arc, 262144);
+    assert(zip_add_any(w, "../evil", src, 16, ZIP_BZIP2) == 0 - ERR_UNSAFE_PATH,
+    "zip_add_any rejects an unsafe name");
+    assert(zip_add_any(w, "bomb.bin", src, n, ZIP_XZ) == 0, "add xz bomb");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    var out = alloc(n + 64);
+    assert(zip_extract_any_capped(z, 0, out, n + 64, 10) == 0 - ERR_RATIO_LIMIT,
+    "ratio cap trips on the extra-method path");
+    assert(zip_extract_any_capped(z, 0, out, n + 64, 0) == n,
+    "uncapped extra-method extract succeeds");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zip_roundtrip();
@@ -273,6 +374,10 @@ fn main() {
     test_zip_index_bounds();
     test_zip_dst_too_small();
     test_zip_writer_bounds();
+    test_zip_all_methods();
+    test_zip_lean_refuses_extra_methods();
+    test_zip_method_support();
+    test_zip_any_guards();
     return assert_summary();
 }
 

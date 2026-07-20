@@ -1,0 +1,174 @@
+# zip_methods.cyr — the rest of ZIP's compression methods (2.6.1).
+#
+# `zip.cyr` carries methods 0 (store) and 8 (DEFLATE) — everything agnosai's `.agpkg`
+# filing needs — and deliberately nothing else, so the `[lib.zip]` distlib profile stays
+# at the DEFLATE closure. This module adds the methods whose codecs sankoch also owns:
+#
+#     12  bzip2      -> bzip2_compress   / bzip2_decompress
+#     93  Zstandard  -> zstd_compress    / zstd_decompress     (APPNOTE 6.3.7)
+#     95  xz         -> xz_compress      / xz_decompress
+#
+# Splitting them out is what keeps CLAUDE.md's *Modular by profile* promise — "adding a
+# compression format never bloats consumers that don't use it". A consumer that only
+# round-trips DEFLATE members links `[lib.zip]` and never pays for xz/bzip2/zstd; one
+# that wants every method links `[lib.zipall]` (or the full bundle), which adds this
+# module and those codecs.
+#
+# For each of these methods the ZIP payload is the codec's OWN standalone stream — a
+# `.bz2`, `.zst` or `.xz` file body verbatim — so a member's compressed bytes can be fed
+# straight to the reference CLI. `scripts/zip-smoke.sh` does exactly that.
+#
+# Method 14 (LZMA "alone" format) stays unsupported: the same non-goal as the codec,
+# which owns the `.xz` container, not `.lzma`.
+#
+# All validation (path safety, bounds, ratio cap, CRC-32) is shared with `zip.cyr` via
+# `_zip_prepare` / `_zip_verify` — this module adds codec dispatch, nothing else.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Is `method` one this build can decode? (Store/DEFLATE always; the rest via this module.)
+fn zip_method_supported(method) {
+    if (method == ZIP_STORE) { return 1; }
+    if (method == ZIP_DEFLATE) { return 1; }
+    if (method == ZIP_BZIP2) { return 1; }
+    if (method == ZIP_ZSTD) { return 1; }
+    if (method == ZIP_XZ) { return 1; }
+    return 0;
+}
+
+# Extract member `i` with EVERY method sankoch owns. Store and DEFLATE delegate to
+# `zip_extract_capped` so there is exactly one implementation of each. Returns the
+# uncompressed length, or a negative ERR_*.
+fn zip_extract_any_capped(z, i, dst, dst_cap, max_ratio) {
+    var e = _zip_ent(z, i);
+    if (e == 0) { return 0 - ERR_INVALID_INPUT; }
+    var method = load64(e + 8);
+    if (method == ZIP_STORE || method == ZIP_DEFLATE) {
+        return zip_extract_capped(z, i, dst, dst_cap, max_ratio);
+    }
+
+    var v[24];
+    var pr = _zip_prepare(z, i, dst_cap, max_ratio, &v);
+    if (pr < 0) { return pr; }
+    var buf = load64(z + 0);
+    var data = load64(&v + 0);
+    var csize = load64(&v + 8);
+    var usize = load64(&v + 16);
+
+    var got = 0;
+    if (method == ZIP_BZIP2) {
+        if (max_ratio > 0) {
+            got = bzip2_decompress_with_ratio_cap(buf + data, csize, dst, dst_cap, max_ratio);
+        } else {
+            got = bzip2_decompress(buf + data, csize, dst, dst_cap);
+        }
+    } elif (method == ZIP_XZ) {
+        if (max_ratio > 0) {
+            got = xz_decompress_with_ratio_cap(buf + data, csize, dst, dst_cap, max_ratio);
+        } else {
+            got = xz_decompress(buf + data, csize, dst, dst_cap);
+        }
+    } elif (method == ZIP_ZSTD) {
+        # zstd has no ratio-capped variant yet; _zip_prepare's declared-size bound plus
+        # the dst_cap the decoder enforces already box the write in.
+        got = zstd_decompress(buf + data, csize, dst, dst_cap);
+    } else {
+        return 0 - ERR_UNSUPPORTED_FORMAT;
+    }
+    if (got < 0) { return got; }
+    return _zip_verify(z, i, dst, got, usize);
+}
+
+fn zip_extract_any(z, i, dst, dst_cap) {
+    return zip_extract_any_capped(z, i, dst, dst_cap, 0);
+}
+
+# Append a member using any method sankoch owns. Store and DEFLATE delegate to `zip_add`.
+# Like `zip_add`, a method that fails to shrink the member falls back to STORE, so a
+# pathological input can never inflate the archive. Returns 0 or a negative ERR_*.
+fn zip_add_any(w, name, data, len, method) {
+    if (method == ZIP_STORE || method == ZIP_DEFLATE) {
+        return zip_add(w, name, data, len, method);
+    }
+    if (load64(w + 40) != 0) { return load64(w + 40); }
+    if (len < 0) { return 0 - ERR_INVALID_INPUT; }
+    if (_zip_path_safe(name) != 1) { return 0 - ERR_UNSAFE_PATH; }
+    if (zip_method_supported(method) != 1) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+    var count = load64(w + 24);
+    if (count >= ZIP_MAX_ENTRIES) { return 0 - ERR_OUTPUT_LIMIT; }
+
+    var dst = load64(w + 0);
+    var cap = load64(w + 8);
+    var pos = load64(w + 16);
+    var nlen = strlen(name);
+
+    if (crc32_init_table() < 0) { return 0 - ERR_OOM; }
+    var crc = crc32(data, len) & 0xFFFFFFFF;
+
+    var hdr = pos;
+    var body = hdr + 30 + nlen;
+    if (body > cap) { store64(w + 40, 0 - ERR_BUFFER_TOO_SMALL); return 0 - ERR_BUFFER_TOO_SMALL; }
+    var stored_method = ZIP_STORE;
+    var csize = 0;
+    if (len > 0) {
+        var room = cap - body;
+        var cl = 0 - 1;
+        if (method == ZIP_BZIP2) { cl = bzip2_compress(data, len, dst + body, room); }
+        elif (method == ZIP_XZ) { cl = xz_compress(data, len, dst + body, room); }
+        elif (method == ZIP_ZSTD) { cl = zstd_compress(data, len, dst + body, room); }
+        if (cl > 0 && cl < len) {
+            stored_method = method;
+            csize = cl;
+        }
+    }
+    if (stored_method == ZIP_STORE) {
+        if (body + len > cap) { store64(w + 40, 0 - ERR_BUFFER_TOO_SMALL); return 0 - ERR_BUFFER_TOO_SMALL; }
+        var k = 0;
+        while (k < len) { store8(dst + body + k, load8(data + k)); k = k + 1; }
+        csize = len;
+    }
+
+    # Version-needed per APPNOTE: 4.6 for bzip2, 6.3 for zstd/xz. Reference readers use it
+    # to refuse an archive they cannot handle rather than mis-decode it.
+    var vneed = 20;
+    if (stored_method == ZIP_BZIP2) { vneed = 46; }
+    elif (stored_method == ZIP_ZSTD || stored_method == ZIP_XZ) { vneed = 63; }
+
+    _zip_put32(dst + hdr + 0, ZIP_SIG_LOCAL);
+    _zip_put16(dst + hdr + 4, vneed);
+    _zip_put16(dst + hdr + 6, 0);
+    _zip_put16(dst + hdr + 8, stored_method);
+    _zip_put16(dst + hdr + 10, 0);
+    _zip_put16(dst + hdr + 12, 0x21);
+    _zip_put32(dst + hdr + 14, crc);
+    _zip_put32(dst + hdr + 18, csize);
+    _zip_put32(dst + hdr + 22, len);
+    _zip_put16(dst + hdr + 26, nlen);
+    _zip_put16(dst + hdr + 28, 0);
+    var j = 0;
+    while (j < nlen) { store8(dst + hdr + 30 + j, load8(name + j)); j = j + 1; }
+
+    var recs = load64(w + 32);
+    var reccap = load64(w + 48);
+    if (count >= reccap) {
+        var ncap = reccap * 2;
+        var nrecs = _sankoch_alloc(ncap * ZIP_ENT_SIZE);
+        if (nrecs == 0) { store64(w + 40, 0 - ERR_OOM); return 0 - ERR_OOM; }
+        var b = 0;
+        while (b < count * ZIP_ENT_SIZE) { store8(nrecs + b, load8(recs + b)); b = b + 1; }
+        store64(w + 32, nrecs);
+        store64(w + 48, ncap);
+        recs = nrecs;
+    }
+    var r = recs + count * ZIP_ENT_SIZE;
+    store64(r + 0, name);
+    store64(r + 8, stored_method);
+    store64(r + 16, crc);
+    store64(r + 24, csize);
+    store64(r + 32, len);
+    store64(r + 40, hdr);
+
+    store64(w + 16, body + csize);
+    store64(w + 24, count + 1);
+    return 0;
+}
