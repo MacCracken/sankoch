@@ -46,6 +46,7 @@ cyrius fuzz                              # all fuzz harness functions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + SIZE lines
 cyrius distlib                           # → dist/sankoch.cyr (full)
 cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe LZ4 decompress)
+cyrius distlib zip                       # → dist/sankoch-zip.cyr (ZIP container profile)
 ```
 
 Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
@@ -71,6 +72,7 @@ src/
   bzip2.cyr        — .bz2 de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (bzip2_decompress / bzip2_compress)
   zstd.cyr         — RFC-8878 zstd de/compress: FSE/Huffman + repcode-aware + adaptive-FSE-table encoder (zstd_decompress / zstd_compress / zstd_compress_level)
   tar.cyr          — shared tar cursor; tar_open_auto dispatches to gzip/xz/bzip2/zstd
+  zip.cyr          — PKZIP .zip container: in-memory reader + writer (store + DEFLATE)
   stream.cyr       — Streaming dispatch (compress + buffered/incremental decompress)
   runtime.cyr      — shared runtime seam: API lock (_sankoch_lock/_unlock) + alloc seam
 programs/
@@ -81,6 +83,7 @@ fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd — auto-di
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
   sankoch-core.cyr — kernel-safe profile; ships as lib/sankoch-core.cyr alongside
+  sankoch-<p>.cyr  — lean per-codec/container profiles (zlib/gzip/xz/bzip2/zstd/zip/tar)
 cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] + per-codec profiles: zlib/gzip/xz/bzip2/zstd/tar)
 ```
 
@@ -99,7 +102,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 - **Test after EVERY change**, not after the feature is done.
 - **ONE change at a time** — never bundle unrelated changes.
 - **Study the RFCs** — RFC 1951 is the DEFLATE bible; read before writing code.
-- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`. The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
+- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`; ZIP via `unzip` / Python `zipfile`. The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
 
 ## Rules (Hard Constraints)
 

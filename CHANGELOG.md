@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-07-19 — ZIP archive container: agnosai `.agpkg` core (store + DEFLATE, read + write)
+
+Opens the 2.6.x ZIP arc. New `src/zip.cyr` (487 lines) — the PKZIP `.zip` container as an
+in-memory reader **and** writer, scoped directly from the consumer: agnosai's
+`definitions/packaging.rs` round-trips an `.agpkg` bundle (a ZIP of `manifest.json` + one
+JSON per agent definition, `ZipWriter` with `CompressionMethod::Deflated` on `export()`,
+`ZipArchive` on `import(&[u8])`). **This is the whole agnosai filing.** Methods 0 (store)
+and 8 (DEFLATE); the other methods, zip64 and streaming follow across 2.6.1–2.6.3.
+
+Where `tar.cyr` is a forward pull-cursor over a stream, ZIP is random-access — the End Of
+Central Directory record at the tail indexes every member — so the reader is an **index**
+(enumerate / find by name / extract one member), not a cursor. Both sides work over plain
+byte buffers; a consumer's file I/O stays on its side.
+
+### Added
+- **`zip_open` / `zip_count` / `zip_entry_*` / `zip_find`** — parse the EOCD (scanning
+  backward past a trailing comment) and the central directory into an index. Every offset
+  and length is validated against the buffer before use; multi-disk (spanned) and
+  encrypted archives are rejected rather than mis-read.
+- **`zip_extract` / `zip_extract_capped`** — extract one member by index, store or
+  DEFLATE, with the member's **CRC-32 always verified**. The capped form bounds expansion
+  through the shared `ERR_RATIO_LIMIT` machinery, so agnosai's hand-rolled 1 MiB/file
+  zip-bomb guard is absorbed natively. The data offset is taken from the **local** header
+  (whose name/extra lengths may differ from the central directory's).
+- **`zip_writer_init` / `zip_add` / `zip_writer_finish`** — emit local file headers, the
+  central directory and the EOCD. DEFLATE falls back to STORE when compression would not
+  shrink the member, so a pathological input cannot inflate the archive.
+- **Zip-slip guards** mirroring `tar.cyr`: absolute paths, any `..` component, empty
+  interior components (`a//b`), NUL/control bytes and **backslash** (Windows-produced
+  separators, which a POSIX consumer joining onto a root could escape with) are refused —
+  on write by `zip_add`, and on read by `zip_extract*`, so a consumer that writes by name
+  is protected even if it never inspects the name itself. New shared `ERR_UNSAFE_PATH`.
+- **`[lib.zip]` distlib profile** → `dist/sankoch-zip.cyr` (4,935 lines): the DEFLATE
+  closure + crc32 + `zip.cyr`. Deliberately excludes `tar.cyr` and the codecs its
+  `tar_open_auto` dispatches to — `zip.cyr` carries its own path guard so the profile stays
+  lean, the same tradeoff `zstd.cyr` makes for its bit reader. Nine bundles total.
+
+### Testing
+- **`tests/tcyr/zip.tcyr`** — 11 test functions / 59 assertions: round-trip (store +
+  DEFLATE, nested names), empty archive, empty member, `zip_find` hit/miss, all six
+  zip-slip shapes, the ratio cap, CRC-32 catching a flipped **stored** byte (one that
+  decodes cleanly, so the checksum path is genuinely exercised), malformed/truncated/garbage
+  input, out-of-range and negative indices, undersized destination, and writer
+  buffer-overrun refusal. (`tar.cyr` still has no tcyr suite — a gap the P(-1) audit
+  flagged; zip does not repeat it.)
+- **`scripts/zip-smoke.sh`** — reference-CLI parity, both directions, over five archive
+  shapes (agnosai `.agpkg`, mixed methods, edge shapes incl. a 40-member archive and a
+  5-deep nested name, incompressible payload, and an archive with a trailing comment that
+  exercises the EOCD backward scan): Python `zipfile` writes → sankoch reads → sankoch
+  re-packs → **`unzip -t` and Python `zipfile` accept it with every member byte-identical**.
+  5/5.
+
+### Notes
+- Suite total **4,484,286 → 4,484,346 assertions** across **22** suites, 0 failures.
+- Non-goals, unchanged from the roadmap: encryption (ZipCrypto is broken; AES-in-ZIP needs
+  a real AES primitive sankoch deliberately doesn't carry), multi-disk/spanned archives,
+  and Deflate64.
+
 ## [2.5.10] — 2026-07-19 — P(-1) hardening: the audit remainder (clears 2.6.0)
 
 Closes the deferred half of the [2026-07-19 P(-1) audit](docs/audit/2026-07-19-pre-2.6.0.md).

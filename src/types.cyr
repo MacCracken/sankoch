@@ -27,6 +27,7 @@ enum Error {
     ERR_MATCH_OUT_OF_RANGE = 9;
     ERR_OOM = 10;             # allocation failure (2.3.7: lazy-global / arena allocs)
     ERR_RATIO_LIMIT = 11;     # decompression expansion ratio exceeded (2.4.5 ratio cap)
+    ERR_UNSAFE_PATH = 12;     # archive member path escapes the extraction root (2.6.0 zip-slip)
 }
 
 # Limits and magic bytes

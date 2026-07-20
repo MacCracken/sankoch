@@ -1,0 +1,76 @@
+# zip_smoke.cyr — read /tmp/sankoch-zip-in.zip with sankoch's reader, print the index and
+# each member's extracted length + a content fingerprint; then WRITE an archive from the
+# same members to /tmp/sankoch-zip-out.zip so a reference tool can verify it.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+fn ps(s: cstring): i64 { syscall(1, 1, s, strlen(s)); return 0; }
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(8, fd, 0, 2); syscall(8, fd, 0, 0);
+    var buf = _sankoch_alloc(sz + 16);
+    if (buf == 0) { return 0; }
+    var off = 0;
+    while (off < sz) { var n = sys_read(fd, buf + off, sz - off); if (n <= 0) { break; } off = off + n; }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+fn write_all(path, buf, len) {
+    var fd = sys_open(path, 577, 420);
+    if (fd < 0) { return 0 - 1; }
+    var off = 0;
+    while (off < len) { var w = sys_write(fd, buf + off, len - off); if (w <= 0) { break; } off = off + w; }
+    sys_close(fd);
+    return off;
+}
+
+fn run() {
+    var buf = read_all("/tmp/sankoch-zip-in.zip");
+    if (buf == 0) { ps("read failed\n"); return 1; }
+    var z = zip_open(buf, g_len);
+    if (z == 0) { ps("zip_open FAILED\n"); return 2; }
+    var n = zip_count(z);
+    ps("entries="); print_num(n); ps("\n");
+
+    # Re-pack every member into a new archive as we go.
+    var ocap = 1048576;
+    var obuf = _sankoch_alloc(ocap);
+    var w = zip_writer_init(obuf, ocap);
+    if (w == 0) { ps("writer init failed\n"); return 3; }
+
+    var i = 0;
+    while (i < n) {
+        var name = zip_entry_name(z, i);
+        var usz = zip_entry_size(z, i);
+        var out = _sankoch_alloc(usz + 16);
+        var got = zip_extract(z, i, out, usz + 16);
+        ps("  "); ps(name);
+        ps("  method="); print_num(zip_entry_method(z, i));
+        ps(" usize="); print_num(usz);
+        ps(" got="); print_num(got);
+        # fingerprint: sum of bytes, so a content mismatch shows up
+        var sum = 0; var k = 0;
+        while (k < got) { sum = sum + (load8(out + k) & 0xFF); k = k + 1; }
+        ps(" sum="); print_num(sum);
+        ps("\n");
+        if (got < 0) { return 4; }
+        if (zip_add(w, name, out, got, ZIP_DEFLATE) < 0) { ps("zip_add failed\n"); return 5; }
+        i = i + 1;
+    }
+    var total = zip_writer_finish(w);
+    if (total < 0) { ps("writer finish failed\n"); return 6; }
+    ps("wrote archive bytes="); print_num(total); ps("\n");
+    write_all("/tmp/sankoch-zip-out.zip", obuf, total);
+    return 0;
+}
+
+fn main() { alloc_init(); return run(); }
+var exit_code = main();
+syscall(60, exit_code);

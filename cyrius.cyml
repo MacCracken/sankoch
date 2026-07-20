@@ -38,6 +38,7 @@ modules = [
     "src/bzip2.cyr",
     "src/zstd.cyr",
     "src/tar.cyr",
+    "src/zip.cyr",
     "src/stream.cyr",
     "src/runtime.cyr",
     "src/lib.cyr",
@@ -134,6 +135,25 @@ modules = [
     "src/lz77.cyr",
     "src/deflate.cyr",
     "src/gzip.cyr",
+    "src/runtime.cyr",
+]
+
+# `[lib.zip]` — the PKZIP `.zip` container (2.6.0): in-memory reader + writer for
+# methods 0 (store) and 8 (DEFLATE). The DEFLATE closure + crc32, with `zip.cyr`
+# instead of an envelope module. agnosai's `.agpkg` profile. Deliberately excludes
+# `tar.cyr` (and the codecs its `tar_open_auto` dispatches to) — zip.cyr carries its
+# own path guard so this profile stays lean.
+[lib.zip]
+modules = [
+    "src/types.cyr",
+    "src/xxhash32.cyr",
+    "src/checksum.cyr",
+    "src/bitreader.cyr",
+    "src/bitwriter.cyr",
+    "src/huffman.cyr",
+    "src/lz77.cyr",
+    "src/deflate.cyr",
+    "src/zip.cyr",
     "src/runtime.cyr",
 ]
 

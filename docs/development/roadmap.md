@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.10) | **Last Updated**: 2026-07-19
+> **Status**: Stable (v2.6.0) | **Last Updated**: 2026-07-19
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
@@ -11,9 +11,11 @@ shared tar cursor and ratio-capped decompression across the DEFLATE family
 + xz + bzip2. zstd-encode competitiveness landed across 2.5.6–2.5.8 — the
 encoder now **beats `zstd -3` (zstd's own default level) on every fixture in
 the benchmark corpus**, and the decoder is hardened against hostile input. The
-forward ladder is the full-feature ZIP archive container arc (2.6.x — agnosai's
-`.agpkg` need first at 2.6.0, then the rest across 2.6.1+), with the zstd
-optimal/2-pass parse deferred to its own unscheduled arc.
+The ZIP archive container opened at **2.6.0** — `zip.cyr` is an in-memory PKZIP
+reader + writer for methods 0/8, the whole agnosai `.agpkg` filing. The forward
+ladder is the rest of that arc (2.6.1 other methods → 2.6.2 zip64 → 2.6.3
+streaming + metadata), with the zstd optimal/2-pass parse and xz encoder
+throughput deferred to their own unscheduled arcs.
 
 ---
 
@@ -122,50 +124,39 @@ performance gap in the tree and `takumi` is an xz-encode consumer (a 4 MB tarbal
 not micro-optimisation. Numbers in
 [`docs/benchmarks/2026-07-19-2.5.9-p1-baseline.md`](../benchmarks/2026-07-19-2.5.9-p1-baseline.md).
 
-### 2.6.x — ZIP archive container arc  (full-feature, agnosai-first)
+> **2.6.0 — ZIP archive container: agnosai `.agpkg` core — ✅ shipped 2026-07-19**
+> (see CHANGELOG).
+>
+> New `src/zip.cyr` (487 lines): the PKZIP `.zip` container as an in-memory **reader and
+> writer** for methods 0 (store) and 8 (DEFLATE) — EOCD + central directory index,
+> extract-by-index with the member's **CRC-32 always verified**, local headers + central
+> directory + EOCD on write, DEFLATE falling back to STORE when it would not shrink.
+> Zip-slip guards mirror `tar.cyr` (absolute / `..` / empty interior components /
+> control bytes / **backslash**), enforced on both write and read, with a new shared
+> `ERR_UNSAFE_PATH`; a per-member expansion cap folds into `ERR_RATIO_LIMIT`. New
+> `[lib.zip]` distlib profile (nine bundles total), `tests/tcyr/zip.tcyr` (11 tests /
+> 59 assertions — the 22nd suite), and `scripts/zip-smoke.sh` proving reference parity
+> **both ways** across five archive shapes: Python `zipfile` writes → sankoch reads →
+> sankoch re-packs → `unzip -t` + Python `zipfile` accept it byte-identically, 5/5.
 
-A new `zip.cyr` archive module built out to the same completeness the
-codecs carry — read + write, every method sankoch owns, zip64, streaming
-— but delivered **across the 2.6.x arc so agnosai's lean `.agpkg` need
-lands first (2.6.0) and unblocks the port before the rest fills in**. The
-PKZIP `.zip` container throughout: local file headers + central directory
-+ end-of-central-directory record, per-entry CRC-32 (all already in-tree,
-reusing the DEFLATE codec). **Reference-CLI parity is the bar** — every
-round-trip must decode via `unzip` / Python `zipfile`, the same load-
-bearing rule the codecs hold. Bites may merge/split per the usual sizing
-rule; the ordering is the commitment, not the exact boundaries.
+### 2.6.x — the rest of the ZIP arc
 
-- **2.6.0 — agnosai core: store + DEFLATE, read + write.** Scoped
-  directly from the consumer, not guessed: agnosai's
-  `src/definitions/packaging.rs` round-trips an `.agpkg` bundle (a ZIP of
-  `manifest.json` + one JSON per agent definition) — `ZipWriter` with
-  `CompressionMethod::Deflated` on `export()`, `ZipArchive` on
-  `import(&[u8])`, proven by `test_export_import_round_trip`. In-memory
-  reader (enumerate the central directory, pull each entry by name) +
-  store/DEFLATE writer (local headers + central directory), both over byte
-  buffers — agnosai's `export_to_file` / `import_from_file` stay thin
-  `std::fs` wrappers on its side. A per-entry **uncompressed-size cap** is
-  built in (agnosai hand-rolls a 1 MiB/file + entry-count zip-bomb guard;
-  sankoch's `ERR_RATIO_LIMIT` ratio-cap absorbs it natively). Zip-slip /
-  path-traversal guards mirror `tar.cyr`. **This is the whole agnosai
-  filing** (~250 lines, deflate + crc32); everything below is parity
-  build-out that **does not block agnosai** — its ZIP need is behind the
-  non-default `definitions` feature, excluded from agnosai v2.0.0 parity
-  (the `sankoch` row in
-  [`agnosai/docs/development/cyrius-port-plan.md`](https://github.com/MacCracken/agnosai/blob/main/docs/development/cyrius-port-plan.md)).
-- **2.6.1 — the other methods.** Wire the codecs sankoch owns into ZIP's
-  method field, all **both ways**: **12 (bzip2)**, **95 (xz)**, and
-  **93 (zstd)** — the last is full round-trip because 2.5.5 zstd encode
-  lands before this arc. Method 14 (raw LZMA alone-format) stays
-  unsupported — same non-goal as the codec, which handles the `.xz`
+Built out to the same completeness the codecs carry. Bites may merge/split per the usual
+sizing rule; the ordering is the commitment, not the exact boundaries. **None of this
+blocks agnosai** — its filing shipped at 2.6.0.
+
+- **2.6.1 — the other methods.** Wire the codecs sankoch owns into ZIP's method field,
+  all **both ways**: **12 (bzip2)**, **95 (xz)**, and **93 (zstd)**. Method 14 (raw LZMA
+  alone-format) stays unsupported — same non-goal as the codec, which handles the `.xz`
   container, not `.lzma`.
-- **2.6.2 — zip64.** >4 GB entries and >65 535-entry / >4 GB archives: the
-  Zip64 end-of-central-directory record + locator + the Zip64 extended-
-  information extra field, on read and write.
-- **2.6.3 — streaming + metadata.** Streaming read + streaming write (data
-  descriptors — bit-3 sizes-after-data) mirroring the codec `*_enc_*` /
-  `*_dec_*` shape, plus per-entry metadata (mtime, mode, symlink) for
-  tar-parity extraction.
+- **2.6.2 — zip64.** >4 GB entries and >65,535-entry / >4 GB archives: the Zip64
+  end-of-central-directory record + locator + the Zip64 extended-information extra field,
+  on read and write. 2.6.0 caps at 65,535 entries (`ZIP_MAX_ENTRIES`) and 32-bit size
+  fields by design.
+- **2.6.3 — streaming + metadata.** Streaming read + streaming write (data descriptors —
+  bit-3 sizes-after-data) mirroring the codec `*_enc_*` / `*_dec_*` shape, plus per-entry
+  metadata (mtime, mode, symlink) for tar-parity extraction. 2.6.0 writes a fixed
+  1980-01-01 MS-DOS date and no external attributes.
 
 **Non-goals** (like the codec non-goals): **encryption** — ZipCrypto is
 cryptographically broken, and AES-in-ZIP needs a real AES primitive
@@ -261,11 +252,12 @@ at 2.5.5.)
 | xz.cyr           | 1836 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
 | bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
 | zstd.cyr         | 2384 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
+| zip.cyr          |  487 | PKZIP `.zip` container (2.6.0): in-memory reader (EOCD + central directory index, extract-by-index, CRC-32 verified) + writer (local headers + central directory + EOCD), methods 0/8, zip-slip guards, per-member ratio cap | full |
 | tar.cyr          |  710 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  265 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **13437** | | |
+| **Total**        | **13926** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -274,7 +266,7 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 
 Tests: **267 distinct test functions** (257 across the 20 split
 codec×direction suites + 10 in git_object.tcyr) producing
-**4,484,286 assertions** total (4,137,703 + 346,583). Most comes from
+**4,484,346 assertions** total (4,137,763 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -317,8 +309,9 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.67).
 
 ---
 
-*Last Updated: 2026-07-19 (2.5.10 P(-1) audit remainder shipped — every confirmed finding
-from the 2026-07-19 audit is resolved and **2.6.0 is cleared to open**. Next: the 2.6.x ZIP
-archive container arc, agnosai `.agpkg` core first at 2.6.0. Deferred: the zstd optimal
-parse arc, xz encoder throughput (~400–900× vs reference), SIMD CRC-32, the wire-identical
+*Last Updated: 2026-07-19 (2.6.0 ZIP archive container shipped — `zip.cyr` in-memory
+PKZIP reader + writer, store + DEFLATE, the agnosai `.agpkg` core; `[lib.zip]` profile
+(nine bundles), `zip.tcyr` (22nd suite), `zip-smoke.sh` reference parity both ways.
+Remaining ladder: 2.6.1 other methods → 2.6.2 zip64 → 2.6.3 streaming + metadata.
+Deferred: zstd optimal parse, xz encoder throughput, SIMD CRC-32, the wire-identical
 DEFLATE match-finder speedup; Future bucket unchanged.)*

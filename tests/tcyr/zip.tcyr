@@ -1,0 +1,280 @@
+# sankoch — ZIP container (2.6.0): reader + writer round-trips, guards, malformed input
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/zip.tcyr
+#
+# Reference-CLI parity (`unzip -t` / Python `zipfile`) is covered by
+# scripts/zip-smoke.sh — this suite is the self-contained CI half.
+
+include "tests/tcyr/_harness.tcyr"
+
+# Build a buffer of `n` bytes with a compressible repeating pattern.
+fn _zt_fill(buf, n, seedch) {
+    var i = 0;
+    while (i < n) {
+        store8(buf + i, seedch + (i % 17));
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _zt_eq(a, b, n) {
+    var i = 0;
+    while (i < n) {
+        if ((load8(a + i) & 0xFF) != (load8(b + i) & 0xFF)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Write two members, read them back, verify names, sizes and bytes.
+fn test_zip_roundtrip() {
+    var big = 4000;
+    var a = alloc(big);
+    _zt_fill(a, big, 65);
+    var b = alloc(64);
+    _zt_fill(b, 64, 97);
+
+    var cap = 65536;
+    var arc = alloc(cap);
+    var w = zip_writer_init(arc, cap);
+    assert(w != 0, "zip writer init");
+    assert(zip_add(w, "manifest.json", b, 64, ZIP_DEFLATE) == 0, "zip_add small");
+    assert(zip_add(w, "definitions/a.json", a, big, ZIP_DEFLATE) == 0, "zip_add big");
+    var total = zip_writer_finish(w);
+    assert(total > 0, "zip_writer_finish");
+    assert(total < big, "zip DEFLATE actually compresses the archive below raw size");
+
+    var z = zip_open(arc, total);
+    assert(z != 0, "zip_open on our own archive");
+    assert(zip_count(z) == 2, "zip entry count");
+
+    var i0 = zip_find(z, "manifest.json");
+    var i1 = zip_find(z, "definitions/a.json");
+    assert(i0 >= 0, "zip_find manifest");
+    assert(i1 >= 0, "zip_find nested name");
+    assert(zip_find(z, "absent.json") < 0, "zip_find miss returns -1");
+
+    assert(zip_entry_size(z, i0) == 64, "entry size small");
+    assert(zip_entry_size(z, i1) == big, "entry size big");
+
+    var o0 = alloc(256);
+    assert(zip_extract(z, i0, o0, 256) == 64, "extract small");
+    assert(_zt_eq(o0, b, 64) == 1, "extract small content");
+
+    var o1 = alloc(big + 16);
+    assert(zip_extract(z, i1, o1, big + 16) == big, "extract big");
+    assert(_zt_eq(o1, a, big) == 1, "extract big content");
+    return 0;
+}
+
+# STORE method: content must survive verbatim, and the member must report method 0.
+fn test_zip_store_method() {
+    var n = 300;
+    var src = alloc(n);
+    var st = 12345;
+    var i = 0;
+    while (i < n) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        store8(src + i, (st >> 40) & 0xFF);      # incompressible -> STORE is honest
+        i = i + 1;
+    }
+    var cap = 4096;
+    var arc = alloc(cap);
+    var w = zip_writer_init(arc, cap);
+    assert(zip_add(w, "raw.bin", src, n, ZIP_STORE) == 0, "zip_add store");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    assert(z != 0, "zip_open store archive");
+    assert(zip_entry_method(z, 0) == ZIP_STORE, "stored member reports method 0");
+    var out = alloc(n + 16);
+    assert(zip_extract(z, 0, out, n + 16) == n, "extract stored");
+    assert(_zt_eq(out, src, n) == 1, "stored content verbatim");
+    return 0;
+}
+
+# An archive with no members is legal: just an EOCD.
+fn test_zip_empty_archive() {
+    var arc = alloc(256);
+    var w = zip_writer_init(arc, 256);
+    var total = zip_writer_finish(w);
+    assert(total == 22, "empty archive is exactly one 22-byte EOCD");
+    var z = zip_open(arc, total);
+    assert(z != 0, "zip_open empty archive");
+    assert(zip_count(z) == 0, "empty archive has 0 entries");
+    assert(zip_find(z, "anything") < 0, "find in empty archive");
+    return 0;
+}
+
+# A zero-length member round-trips (agnosai writes empty definition files).
+fn test_zip_empty_member() {
+    var arc = alloc(4096);
+    var w = zip_writer_init(arc, 4096);
+    var dummy = alloc(1);
+    assert(zip_add(w, "empty.json", dummy, 0, ZIP_DEFLATE) == 0, "zip_add empty member");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    assert(z != 0, "zip_open empty-member archive");
+    assert(zip_entry_size(z, 0) == 0, "empty member size 0");
+    var out = alloc(16);
+    assert(zip_extract(z, 0, out, 16) == 0, "extract empty member");
+    return 0;
+}
+
+# Zip-slip: every escaping name shape must be refused at extract, and refused on write.
+fn test_zip_slip_guards() {
+    var arc = alloc(4096);
+    var w = zip_writer_init(arc, 4096);
+    var d = alloc(8);
+    _zt_fill(d, 8, 65);
+    # The writer refuses to even record an unsafe name.
+    assert(zip_add(w, "../evil.txt", d, 8, ZIP_STORE) == 0 - ERR_UNSAFE_PATH, "writer rejects ..");
+    assert(zip_add(w, "/etc/evil", d, 8, ZIP_STORE) == 0 - ERR_UNSAFE_PATH, "writer rejects absolute");
+    assert(zip_add(w, "a\\b.txt", d, 8, ZIP_STORE) == 0 - ERR_UNSAFE_PATH, "writer rejects backslash");
+    assert(zip_add(w, "a//b.txt", d, 8, ZIP_STORE) == 0 - ERR_UNSAFE_PATH, "writer rejects empty component");
+    assert(zip_add(w, "ok/../../x", d, 8, ZIP_STORE) == 0 - ERR_UNSAFE_PATH, "writer rejects interior ..");
+    assert(zip_add(w, "", d, 8, ZIP_STORE) == 0 - ERR_UNSAFE_PATH, "writer rejects empty name");
+    # A legitimate nested name still works.
+    assert(zip_add(w, "definitions/ok.json", d, 8, ZIP_STORE) == 0, "writer accepts nested name");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    assert(zip_count(z) == 1, "only the safe member was recorded");
+    return 0;
+}
+
+# The per-member expansion cap folds into ERR_RATIO_LIMIT.
+fn test_zip_ratio_cap() {
+    var n = 200000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, 0); i = i + 1; }   # compresses enormously
+    var cap = 262144;
+    var arc = alloc(cap);
+    var w = zip_writer_init(arc, cap);
+    assert(zip_add(w, "bomb.bin", src, n, ZIP_DEFLATE) == 0, "zip_add bomb");
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    assert(z != 0, "zip_open bomb archive");
+    var out = alloc(n + 16);
+    # A tight cap must trip; no cap must decode.
+    assert(zip_extract_capped(z, 0, out, n + 16, 10) == 0 - ERR_RATIO_LIMIT,
+    "ratio cap trips on a high-expansion member");
+    assert(zip_extract_capped(z, 0, out, n + 16, 0) == n, "uncapped extract succeeds");
+    return 0;
+}
+
+# A single flipped byte in a STORED payload decodes fine but must fail CRC-32.
+fn test_zip_crc_detects_corruption() {
+    var n = 64;
+    var src = alloc(n);
+    _zt_fill(src, n, 65);
+    var arc = alloc(4096);
+    var w = zip_writer_init(arc, 4096);
+    assert(zip_add(w, "s.txt", src, n, ZIP_STORE) == 0, "zip_add for crc test");
+    var total = zip_writer_finish(w);
+    var out = alloc(n + 16);
+    var z0 = zip_open(arc, total);
+    assert(zip_extract(z0, 0, out, n + 16) == n, "clean extract before corruption");
+    # local header is at offset 0: data begins after 30 + name length ("s.txt" = 5)
+    var dataoff = 30 + 5;
+    store8(arc + dataoff, (load8(arc + dataoff) & 0xFF) ^ 0xFF);
+    var z1 = zip_open(arc, total);
+    assert(z1 != 0, "archive still parses after payload corruption");
+    assert(zip_extract(z1, 0, out, n + 16) == 0 - ERR_CHECKSUM_MISMATCH,
+    "CRC-32 catches a flipped stored byte");
+    return 0;
+}
+
+# Malformed containers must be refused by zip_open, never mis-parsed.
+fn test_zip_malformed() {
+    var buf = alloc(512);
+    var i = 0;
+    while (i < 512) { store8(buf + i, 65 + (i % 26)); i = i + 1; }
+    assert(zip_open(buf, 512) == 0, "garbage is not a zip");
+    assert(zip_open(buf, 0) == 0, "zero length rejected");
+    assert(zip_open(buf, 4) == 0, "too short for an EOCD rejected");
+
+    # Truncate a real archive to just past its local header.
+    var arc = alloc(4096);
+    var w = zip_writer_init(arc, 4096);
+    var d = alloc(32);
+    _zt_fill(d, 32, 65);
+    zip_add(w, "x.txt", d, 32, ZIP_STORE);
+    var total = zip_writer_finish(w);
+    assert(zip_open(arc, 40) == 0, "truncated archive rejected");
+    assert(zip_open(arc, total) != 0, "control: full archive still opens");
+    return 0;
+}
+
+# Out-of-range indices must return errors, never read out of bounds.
+fn test_zip_index_bounds() {
+    var arc = alloc(4096);
+    var w = zip_writer_init(arc, 4096);
+    var d = alloc(16);
+    _zt_fill(d, 16, 65);
+    zip_add(w, "a.txt", d, 16, ZIP_STORE);
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    var out = alloc(64);
+    assert(zip_entry_name(z, 5) == 0, "name of out-of-range index is 0");
+    assert(zip_entry_size(z, 5) < 0, "size of out-of-range index is negative");
+    assert(zip_entry_size(z, 0 - 1) < 0, "negative index rejected");
+    assert(zip_extract(z, 5, out, 64) < 0, "extract out-of-range index errors");
+    assert(zip_extract(z, 0 - 1, out, 64) < 0, "extract negative index errors");
+    return 0;
+}
+
+# A too-small destination must be refused rather than overrun.
+fn test_zip_dst_too_small() {
+    var n = 500;
+    var src = alloc(n);
+    _zt_fill(src, n, 65);
+    var arc = alloc(8192);
+    var w = zip_writer_init(arc, 8192);
+    zip_add(w, "a.bin", src, n, ZIP_DEFLATE);
+    var total = zip_writer_finish(w);
+    var z = zip_open(arc, total);
+    var small = alloc(64);
+    assert(zip_extract(z, 0, small, 64) == 0 - ERR_BUFFER_TOO_SMALL,
+    "extract into an undersized buffer is refused");
+    return 0;
+}
+
+# The writer must refuse to run past its own output buffer.
+fn test_zip_writer_bounds() {
+    var n = 4000;
+    var src = alloc(n);
+    var st = 999;
+    var i = 0;
+    while (i < n) {
+        st = st * 6364136223846793005 + 1442695040888963407;
+        store8(src + i, (st >> 40) & 0xFF);       # incompressible: cannot fit a tiny buffer
+        i = i + 1;
+    }
+    var arc = alloc(128);
+    var w = zip_writer_init(arc, 128);
+    assert(w != 0, "writer init with a small buffer");
+    var r = zip_add(w, "big.bin", src, n, ZIP_STORE);
+    assert(r == 0 - ERR_BUFFER_TOO_SMALL, "zip_add refuses to overrun dst");
+    assert(zip_writer_finish(w) < 0, "finish reports the sticky error");
+    return 0;
+}
+
+fn main() {
+    _test_init();
+    test_zip_roundtrip();
+    test_zip_store_method();
+    test_zip_empty_archive();
+    test_zip_empty_member();
+    test_zip_slip_guards();
+    test_zip_ratio_cap();
+    test_zip_crc_detects_corruption();
+    test_zip_malformed();
+    test_zip_index_bounds();
+    test_zip_dst_too_small();
+    test_zip_writer_bounds();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
