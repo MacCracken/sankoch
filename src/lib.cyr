@@ -99,6 +99,17 @@ fn _sankoch_reset_tables(): i64 {
     crc64_table = 0; crc32bz_table = 0;
     _xz_probs = 0; _xze_tmp = 0; _xze_prices = 0; _xze_dp_ready = 0;
     _bz_tables_ready = 0; _bze_ready = 0;
+    # zstd lazy globals + the 2.5.10 pools. zstd now routes through _sankoch_alloc
+    # (2.5.10 L-5), so its first-call OOM sites are finally reachable by the sweep —
+    # but only if these guards are cleared first.
+    _z_lit = 0; _z_huff_sym = 0; _z_huff_nb = 0;
+    _z_pool_tab = 0; _z_pool_next = 0; _z_pool_scratch = 0;
+    _z_pool_weight = 0; _z_pool_wscr = 0; _z_pool_wtab = 0; _z_pool_rd = 0;
+    _ze_ctp = 0; _ze_oom = 0;
+    _ze_huff_ready = 0; _ze_cnt = 0;
+    _ze_lz_ready = 0; _ze_head = 0;
+    _ze_plan_ready = 0; _ze_pmode = 0;
+    _ze_ct_ll = 0; _ze_ct_of = 0; _ze_ct_ml = 0;
     return 0;
 }
 

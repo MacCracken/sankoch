@@ -74,7 +74,7 @@ fn _star_field_cstr(block, off, maxlen) {
         if (load8(block + off + n) == 0) { break; }
         n = n + 1;
     }
-    var buf = alloc(n + 1);
+    var buf = _sankoch_alloc(n + 1);
     if (buf == 0) { return 0; }   # >2 GiB field or real exhaustion — never memcpy into NULL
     memcpy(buf, block + off, n);
     store8(buf + n, 0);
@@ -90,7 +90,7 @@ fn _star_full_path(block) {
     var lp = strlen(prefix);
     if (lp == 0) { return name; }
     var ln = strlen(name);
-    var buf = alloc(lp + 1 + ln + 1);
+    var buf = _sankoch_alloc(lp + 1 + ln + 1);
     if (buf == 0) { return 0; }
     memcpy(buf, prefix, lp);
     store8(buf + lp, 47);
@@ -239,10 +239,10 @@ var _STAR_FNV_PRIME = 0x100000001b3;
 
 # Allocate a ledger: [+0 capacity][+8 count][+16 buckets-ptr]. 0 = empty bucket.
 fn _star_ledger_new() {
-    var led = alloc(24);
+    var led = _sankoch_alloc(24);
     if (led == 0) { return 0; }
     var cap = 64;
-    var b = alloc(cap * 8);
+    var b = _sankoch_alloc(cap * 8);
     if (b == 0) { return 0; }
     var i = 0;
     while (i < cap) { store64(b + i * 8, 0); i = i + 1; }
@@ -260,7 +260,7 @@ fn _star_ledger_add(led, h) {
     var cnt = load64(led + 8);
     if ((cnt + 1) * 2 > cap) {
         var ncap = cap * 2;
-        var nb = alloc(ncap * 8);
+        var nb = _sankoch_alloc(ncap * 8);
         if (nb == 0) { return 0 - 1; }
         var j = 0;
         while (j < ncap) { store64(nb + j * 8, 0); j = j + 1; }
@@ -393,7 +393,7 @@ fn _star_gzip_isize(buf, len) {
 # --- PAX extended headers ('x' per-file / 'g' global) -------------------------------------
 # Override record: +0 path cstr (0=unset), +8 linkpath cstr, +16 size i64 (-1=unset).
 fn _star_pax_new() {
-    var r = alloc(24);
+    var r = _sankoch_alloc(24);
     if (r == 0) { return 0; }
     store64(r + 0, 0);
     store64(r + 8, 0);
@@ -411,7 +411,7 @@ fn _star_pax_reset(r) {
 fn _star_pax_cstr(data, start, end) {
     var n = end - start;
     if (n < 0) { n = 0; }
-    var buf = alloc(n + 1);
+    var buf = _sankoch_alloc(n + 1);
     if (buf == 0) { return 0; }   # oversized PAX value — leave the override unset, don't crash
     if (n > 0) { memcpy(buf, data + start, n); }
     store8(buf + n, 0);
@@ -490,7 +490,7 @@ fn _star_pax_parse(data, len, rec) {
 # --- public: pull cursor -------------------------------------------------------------------
 # Open a cursor over a DECOMPRESSED tar already in memory (buf, len).
 fn tar_open(buf, len) {
-    var cur = alloc(128);
+    var cur = _sankoch_alloc(128);
     if (cur == 0) { return 0; }
     var px = _star_pax_new();
     var pg = _star_pax_new();
@@ -596,7 +596,11 @@ fn tar_next(cur) {
 
         store64(cur + 64, kind);
         store64(cur + 72, full);
-        store64(cur + 80, _star_octal(block + 100, 8));
+        # A non-octal mode field parses to the -1 sentinel; storing it verbatim would let a
+        # consumer chmod() with 0o7777 (setuid+setgid+sticky). Fall back to 0644 (2.5.10 R-1).
+        var mode_v = _star_octal(block + 100, 8);
+        if (mode_v < 0) { mode_v = 420; }
+        store64(cur + 80, mode_v);
         store64(cur + 88, _star_octal(block + 136, 12));
         if (kind == 2) {
             var link = _star_field_cstr(block, 157, 100);
@@ -653,46 +657,51 @@ fn tar_open_auto(archive, len) {
     elif (b0 == 0x28 && b1 == 0xB5 && b2 == 0x2F && b3 == 0xFD) { fmt = FORMAT_ZSTD; }
     if (fmt == 0) { return tar_open(archive, len); }
 
-    if (fmt == FORMAT_ZSTD) {
-        var osize = zstd_frame_content_size(archive, len);
-        var zcap = osize + 512;
-        if (osize <= 0) { zcap = len * 20; if (zcap < 1048576) { zcap = 1048576; } }
-        if (zcap > TAR_MAX_OUT) { zcap = TAR_MAX_OUT; }
-        var zout = alloc(zcap);
-        if (zout == 0) { return 0; }
-        var zn = zstd_decompress(archive, len, zout, zcap);
-        if (zn < 0) { return 0; }
-        return tar_open(zout, zn);
-    }
+    # Every codec here decodes into one in-RAM buffer, grown by doubling on
+    # ERR_BUFFER_TOO_SMALL only. The ladder ceiling is min(TAR_MAX_OUT,
+    # DECOMPRESS_MAX_OUTPUT): the codecs refuse to emit past DECOMPRESS_MAX_OUTPUT, so
+    # allocating beyond it can never succeed (2.5.10 M-1 — the old ladder treated
+    # ERR_OUTPUT_LIMIT as growable and doubled all the way to 512 MiB, re-running a full
+    # decode at each rung and bumping ~1 GiB of never-freed arena per hostile stream).
+    var ceiling = TAR_MAX_OUT;
+    if (DECOMPRESS_MAX_OUTPUT < ceiling) { ceiling = DECOMPRESS_MAX_OUTPUT; }
 
-    if (fmt == FORMAT_GZIP) {
+    # Seed the buffer from a declared size where one exists, else an 8x guess.
+    var cap = 0;
+    if (fmt == FORMAT_ZSTD) {
+        # Whole-STREAM size (2.5.10 M-2): frame_content_size covers only the first frame,
+        # which under-allocated (and silently truncated) concatenated archives.
+        var osize = zstd_content_size(archive, len);
+        if (osize > 0) { cap = osize + 512; }
+    } elif (fmt == FORMAT_GZIP) {
+        # ISIZE is only the LAST member's size and is attacker-controlled, so treat it as
+        # a HINT, not a contract: a multi-member .tar.gz under-sizes here and must be able
+        # to grow (2.5.10 M-4 — the gzip branch used to have no retry and returned 0), and
+        # a forged huge ISIZE must not drive a giant allocation (M-1 sibling).
         var isize = _star_gzip_isize(archive, len);
-        if (isize <= 0) { return 0; }
-        if (isize > TAR_MAX_OUT) { return 0; }
-        var gcap = isize + 512;
-        var gout = alloc(gcap);
-        if (gout == 0) { return 0; }
-        var gn = gzip_decompress(archive, len, gout, gcap);
-        if (gn < 0) { return 0; }
-        return tar_open(gout, gn);
+        if (isize > 0 && isize <= ceiling) { cap = isize + 512; }
     }
-    # xz / bzip2 carry no reliable output size: 8x estimate, double on buffer-too-small.
-    var cap = len * 8;
+    if (cap <= 0) { cap = len * 8; }
     if (cap < 1048576) { cap = 1048576; }
-    if (cap > TAR_MAX_OUT) { cap = TAR_MAX_OUT; }
+    if (cap > ceiling) { cap = ceiling; }
+
     var done = 0;
     while (done == 0) {
-        var out = alloc(cap);
+        var out = _sankoch_alloc(cap);
         if (out == 0) { return 0; }
         var dn = 0 - 1;
         if (fmt == FORMAT_XZ) { dn = xz_decompress(archive, len, out, cap); }
-        else { dn = bzip2_decompress(archive, len, out, cap); }
+        elif (fmt == FORMAT_BZIP2) { dn = bzip2_decompress(archive, len, out, cap); }
+        elif (fmt == FORMAT_GZIP) { dn = gzip_decompress(archive, len, out, cap); }
+        else { dn = zstd_decompress(archive, len, out, cap); }
         if (dn >= 0) { return tar_open(out, dn); }
         var e = 0 - dn;
-        if (e == ERR_BUFFER_TOO_SMALL || e == ERR_OUTPUT_LIMIT) {
-            if (cap >= TAR_MAX_OUT) { return 0; }
+        # ERR_OUTPUT_LIMIT is the codec's fixed ceiling, not a buffer shortfall — growing
+        # cannot change the outcome, so it is terminal here.
+        if (e == ERR_BUFFER_TOO_SMALL) {
+            if (cap >= ceiling) { return 0; }
             cap = cap * 2;
-            if (cap > TAR_MAX_OUT) { cap = TAR_MAX_OUT; }
+            if (cap > ceiling) { cap = ceiling; }
         } else {
             return 0;
         }

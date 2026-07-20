@@ -173,6 +173,10 @@ fn test_oom_compress_sweep() {
     _oom_retry_path(FORMAT_DEFLATE, 6, 36);
     _oom_retry_path(FORMAT_XZ, 6, 40);
     _oom_retry_path(FORMAT_BZIP2, 9, 44);
+    # 2.5.10 (L-5): zstd now routes its allocations through the _sankoch_alloc seam,
+    # so its OOM paths are finally sweepable — they were structurally invisible before.
+    _oom_compress_path(FORMAT_ZSTD, 6, 30);
+    _oom_retry_path(FORMAT_ZSTD, 6, 30);
     # Recovery: fresh tables, no fault → normal compress works + decodes.
     _sankoch_reset_tables();
     var src = alloc(256);

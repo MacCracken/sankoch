@@ -111,6 +111,38 @@ fn fuzz_xz_corrupt(seed) {
     return 0;
 }
 
+# Strategy 2b (2.5.10 L-5): TRUNCATION. The pre-2.5.10 harness only ever fed random
+# bytes, byte-flips and round-trips — never a valid stream cut short. That is the one
+# mutation class that reaches the block check field, where the 2.5.9 audit found an
+# out-of-bounds read (M-5: the CRC field was read before its length was bounded). Every
+# prefix of a valid stream must be rejected cleanly, never crash, never over-read.
+fn fuzz_xz_truncate(seed) {
+    _fuzz_seed(seed);
+    var src[256];
+    var n = _xz_fuzz_fixture(&src);
+    # cut at a pseudo-random prefix length in [0, n)
+    var cut = (_fuzz_next() | ((_fuzz_next() & 1) << 8)) % n;
+    var dst[8192];
+    var dlen = xz_decompress(&src, cut, &dst, 8192);
+    assert(dlen < 0, "fuzz_xz truncated stream is rejected");
+    return 0;
+}
+
+# Exhaustive companion: sweep EVERY prefix length of the fixture once, so the check-field
+# boundary (the M-5 site) is hit deterministically rather than by chance.
+fn fuzz_xz_truncate_sweep() {
+    var src[256];
+    var n = _xz_fuzz_fixture(&src);
+    var dst[8192];
+    var cut = 0;
+    while (cut < n) {
+        var dlen = xz_decompress(&src, cut, &dst, 8192);
+        assert(dlen < 0, "fuzz_xz prefix sweep rejects every truncation");
+        cut = cut + 1;
+    }
+    return 0;
+}
+
 # Strategy 3: encode -> decode round-trip on generated data. The encoder
 # must always produce a stream our decoder reproduces byte-for-byte.
 # `mode` selects the input shape: 0 random, 1 periodic, 2 mostly-constant.
@@ -229,6 +261,14 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_xz: 200 corruption tests passed");
+
+    seed = 1;
+    while (seed <= 100) {
+        fuzz_xz_truncate(seed * 2654435761);
+        seed = seed + 1;
+    }
+    fuzz_xz_truncate_sweep();
+    println("fuzz_xz: 100 truncation tests + full prefix sweep passed");
 
     seed = 1;
     while (seed <= 100) {

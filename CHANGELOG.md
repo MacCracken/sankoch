@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.10] — 2026-07-19 — P(-1) hardening: the audit remainder (clears 2.6.0)
+
+Closes the deferred half of the [2026-07-19 P(-1) audit](docs/audit/2026-07-19-pre-2.6.0.md).
+2.5.9 landed the security-critical subset; this release lands the resource-exhaustion,
+interop and testability cluster that was held back because it all touches `zstd.cyr`
+memory lifetime and `tar_open_auto` sizing. **With this, every confirmed audit finding is
+resolved and 2.6.0 (the ZIP container arc) is cleared to open.**
+
+### Fixed — resource exhaustion
+
+- **M-9 / M-10 — zstd leaked its working memory on every call** — the bump arena never
+  frees, and both directions re-allocated per call/block: `zstd_decompress` zeroed the
+  `_z_lit` guard in its per-call reset (forcing a fresh 256 KiB scratch every call) and
+  rebuilt the FSE/Huffman decode tables, weight arrays and bit readers per block; the
+  encoder rebuilt its FSE coding tables per block. Measured on a 200 KB JSON corpus:
+  **decode 349,552 B/call, encode 90,208 B/call** — 4,000 frames ≈ 1.4 GB, reachable from
+  repeated *valid* public-API calls. **Fixed by pooling**: one persistent decode-table slot
+  per sequence stream (Repeat mode still returns the same pointer, so cross-block table
+  reuse is unchanged — this changes lifetime, not semantics), pooled readNCount/weight
+  scratch, an 8-slot round-robin for the 40-byte bit-reader structs, and four slot-indexed
+  encoder coding tables (the one-time Predefined tables keep their own permanent
+  allocation). **Both leaks are now 0 B/call**, and encoder output is byte-identical
+  (verified against the 2.5.8/2.5.9 sizes and reference `zstd -d`).
+- **M-1 — `tar_open_auto` burned ~1 GiB of arena on a hostile stream** — the retry ladder
+  treated `ERR_OUTPUT_LIMIT` as growable, but that error is the codec's fixed 16 MiB
+  `DECOMPRESS_MAX_OUTPUT` ceiling and is independent of `cap`, so growing could never
+  change the outcome; the ladder doubled to 512 MiB anyway, re-running a full decode at
+  each rung. A 51-byte bzip2 bomb consumed **1030 MB**. Now only `ERR_BUFFER_TOO_SMALL`
+  retries and the ladder is clamped to `min(TAR_MAX_OUT, DECOMPRESS_MAX_OUTPUT)`:
+  **1030 MB → 38 MB (−96 %)**. A forged gzip ISIZE above the ceiling is likewise rejected
+  before allocating.
+
+### Fixed — correctness / interop
+
+- **M-2 — multi-frame `.zst` was silently truncated to the first frame** — RFC 8878 §3
+  defines a `.zst` file as a *concatenation* of frames (sankoch's own gzip/xz/bzip2
+  decoders already handled concatenation; zstd was the outlier, undocumented). A 3-frame
+  archive returned frame 1's bytes **as success**. `zstd_decompress` now loops over frames,
+  stepping over skippable frames (magic `0x184D2A5x`) by their declared length, with
+  per-frame state reset (recent offsets, Huffman/FSE repeat tables) and a zero-advance
+  progress guard. New `zstd_content_size` reports the **whole-stream** size — sizing a
+  multi-frame archive with the first frame's `zstd_frame_content_size` is what made
+  `tar_open_auto` hand back a truncated cursor. Verified byte-identical against reference
+  `zstd -dc` on single-frame, multi-frame and skippable+multi-frame inputs.
+- **M-4 — a valid multi-member `.tar.gz` was rejected** — `_star_gzip_isize` reads only the
+  *last* member's ISIZE, so the buffer under-sized and the gzip branch (unlike xz/bzip2)
+  had no retry, returning 0. The gzip branch now shares the retry loop and treats ISIZE as
+  a hint. A genuine 2-member archive that `gunzip`/`tar -tf` accept now opens (41 entries;
+  it returned "cannot open" before).
+- **L-2 — the concatenated-gzip ratio cap wrote one byte past its ceiling** — spent
+  headroom was clamped up to 1, letting the next member emit a byte beyond the cap before
+  tripping. The member is now *starved* (`member_cap = 0`) and the resulting
+  `ERR_BUFFER_TOO_SMALL` reported as `ERR_RATIO_LIMIT`, which makes the ceiling exact while
+  still accepting a legal `[member at ceiling][empty trailing member]` stream (the naive
+  "reject on zero headroom" fix breaks that case). Verified: the byte at the ceiling is no
+  longer written, and the legal empty-trailing stream still decodes.
+- **L-3 — batch DEFLATE stored blocks ignored the 16 MB output ceiling** the streaming path
+  enforces, so batch and streaming disagreed on the `types.cyr` invariant. Guard added at
+  both the dict and non-dict sites.
+- **L-4 — RFC 8878 errata 7297** — 4-stream literals with `Regenerated_Size < 6` underflow
+  the fourth stream's size; reference `zstd -dc` rejects them, sankoch accepted them (the
+  negative count short-circuited the loop, so this was a conformance gap, not a memory-safety
+  one). Now rejected, plus a defensive negative-count guard in `_z_huff_decode_stream`.
+- **R-1** — a non-octal tar mode field parsed to the `-1` sentinel and was stored verbatim,
+  which a consumer could hand to `chmod` as `0o7777` (setuid+setgid+sticky). Falls back to
+  `0644`.
+
+### Fixed — OOM robustness (completes M-8 / M-11)
+
+- **M-11 + the zstd half of M-8** — every remaining unchecked allocation on the zstd decode
+  and encode paths is now null-checked and propagates a clean negative error. The
+  encoder's three lazy-init groups use completion-flag guards (the 2.5.9 M-8 pattern) with
+  a per-call `_ze_oom` flag. Verified: decoding a valid frame under a 300–600 MB
+  address-space cap returned SIGSEGV before and now returns cleanly at every pressure level.
+
+### Testing (closes L-5 / I-1)
+
+- **zstd, tar and stream allocations now route through the `_sankoch_alloc` fault seam**
+  (74 call sites). The audit judged this non-viable because it would break `[lib.zstd]`
+  self-containment — but 2.5.9 added `runtime.cyr` to that profile for the M-12 mutex, so
+  the blocker is gone. Their OOM paths were previously *structurally untestable*.
+- **zstd added to the OOM fault sweep** (compress + partial-OOM-then-retry), and
+  `_sankoch_reset_tables()` extended to clear the zstd lazy globals and 2.5.10 pools.
+  **This immediately caught a real bug**: `_ze_oom` was sticky, so one OOM would have
+  poisoned every subsequent `zstd_compress` in the process. Now per-call.
+- **`fuzz_xz_truncate` + an exhaustive prefix sweep** — the xz harness previously mutated
+  only random bytes, byte-flips and round-trips, never truncation: the one class that
+  reaches the block check field where the 2.5.9 audit found an OOB read (M-5).
+- Suite total **4,484,226 → 4,484,286 assertions**, 0 failures; fuzz 5/5; all encoder
+  output and SIZE lines unchanged.
+
 ## [2.5.9] — 2026-07-19 — P(-1) hardening: security remediation (first audit of the 2.4.x/2.5.x surface)
 
 The pre-2.6.0 P(-1) scaffold-hardening pass ran the **first security audit of everything

@@ -144,18 +144,30 @@ fn _gzip_decompress_inner(src, src_len, dst, dst_cap, ratio_max): i64 {
         if (pos + 2 > src_len) { break; }
         if (load8(src + pos) != 31 || load8(src + pos + 1) != 139) { break; }
 
-        # Remaining ratio headroom for this member. Clamp to >= 1 when the
-        # cap is active so a member at the ceiling still trips (and never
-        # collapses to the 0 "disabled" sentinel).
+        # Remaining ratio headroom for this member. A ratio of 0 is the "disabled"
+        # sentinel, so it can never be passed through; but clamping a spent headroom
+        # up to 1 let the next member emit one byte PAST the ceiling before tripping
+        # (2.5.10 L-2). Instead, starve the member of output space: an empty trailing
+        # member (legal per RFC 1952) still decodes to 0 bytes, while any member that
+        # wants to emit gets ERR_BUFFER_TOO_SMALL, which we report as ERR_RATIO_LIMIT.
         var member_ratio = ratio_max;
+        var member_cap = dst_cap - total;
+        var starved = 0;
         if (ratio_max != 0) {
             member_ratio = ratio_max - total;
-            if (member_ratio < 1) { member_ratio = 1; }
+            if (member_ratio < 1) {
+                member_ratio = 1;
+                member_cap = 0;
+                starved = 1;
+            }
         }
 
         var dlen = _gzip_decompress_member(src + pos, src_len - pos,
-        dst + total, dst_cap - total, member_ratio);
-        if (dlen < 0) { return dlen; }
+        dst + total, member_cap, member_ratio);
+        if (dlen < 0) {
+            if (starved == 1 && dlen == 0 - ERR_BUFFER_TOO_SMALL) { return 0 - ERR_RATIO_LIMIT; }
+            return dlen;
+        }
         total = total + dlen;
         pos = pos + _gzip_member_end;
     }
