@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.2] — 2026-07-19 — ZIP: Zip64 (read + write), and a latent name-aliasing fix
+
+Third bite of the 2.6.x arc. ZIP now handles **Zip64** on both sides: archives with more
+than 65,535 members, directories larger than 4 GB, and members whose sizes or local-header
+offsets overflow their 32-bit fields.
+
+### Added
+- **Zip64 EOCD record + locator (read)** — `zip_open` looks for the locator immediately
+  before the EOCD and, when present, takes the entry count, directory size and directory
+  offset from the Zip64 record instead of the 16/32-bit fields. An archive whose EOCD
+  count reads `0xFFFF` is no longer truncated to whatever fit the sentinel.
+- **Zip64 extended-information extra field (read)** — per-member sizes and local-header
+  offsets flagged with the all-ones sentinel are resolved from the header ID 0x0001
+  record. The parse is driven by *which* sentinels were seen, because each field is
+  present only if its base field overflowed — length alone does not tell you what is in
+  the record.
+- **Zip64 on write** — `zip_writer_finish` emits the Zip64 EOCD record + locator when the
+  archive needs them (>65,535 members, or a directory whose size/offset overflows 32
+  bits), and stamps the plain EOCD with sentinels. Per-member Zip64 extra fields are
+  written in both the local and central headers when a size or offset overflows.
+  `ZIP_MAX_ENTRIES` rises from 65,535 to 16,777,216 — the u16 ceiling is gone, and what
+  remains is the practical limit of fitting the archive in the caller's buffer.
+- Shared **`_zip_emit_local` / `_zip_record`** helpers. 2.6.1 had left local-header
+  emission duplicated between `zip_add` and `zip_add_any`; Zip64 would have made that
+  three copies of the layout, so both now go through one implementation.
+
+### Fixed
+- **The writer aliased caller-supplied member names instead of copying them** (latent
+  since 2.6.0). The central directory is not emitted until `zip_writer_finish`, so the
+  record kept a pointer into the caller's buffer. A caller that formats names into one
+  reusable buffer — the natural way to add many members — silently got the **last name on
+  every entry**, and the resulting archive was *clean by every external check*: valid
+  CRCs, correct member count, accepted by `unzip`, `bsdtar` and Python `zipfile`. Only the
+  duplicate names gave it away. Found while writing the 70,000-entry Zip64 test; names are
+  now copied into the arena, and `test_zip_name_not_aliased` scribbles over the caller's
+  buffer before `finish` to prove it (reverting the fix fails the test).
+
+### Verified
+- **Read**: a Python `force_zip64=True` member (sentinels + extra field on a small file)
+  extracts correctly, and a real 70,000-entry Python archive — whose EOCD count is
+  `0xFFFF` — reads all 70,000 members with first/middle/last extracting correctly.
+- **Write**: sankoch emits a 70,000-entry archive at **6,230,098 bytes — byte-for-byte the
+  size Python produces for the same content**. It carries a Zip64 EOCD record + locator,
+  its plain EOCD defers with `0xFFFF`, and Python `zipfile` (70,000 unique names,
+  `testzip()` clean), `bsdtar` (70,000 listed) and `unzip -t` all accept it.
+- `scripts/zip-smoke.sh` grows to **10 checks**, adding both Zip64 read fixtures and a
+  Zip64 write check that asserts the records are present and the EOCD defers.
+
+### Notes
+- `tests/tcyr/zip.tcyr` → 16 tests / 123 assertions. The 65,536-entry Zip64 trigger needs
+  ~6 MB, which does not fit the 4 MB tcyr harness heap, so the write path is covered in
+  the smoke script (standalone program, own heap) and the aliasing regression — which
+  needs only five members — lives in the suite.
+- Suite total **4,484,385 → 4,484,410 assertions** across 22 suites, 0 failures.
+- Multi-disk/spanned archives remain a non-goal: the Zip64 record's disk fields are
+  validated as zero and anything else is rejected rather than mis-read.
+
 ## [2.6.1] — 2026-07-19 — ZIP: every method sankoch owns (bzip2 / zstd / xz, both ways)
 
 Second bite of the 2.6.x arc. ZIP's method field now carries every codec in the tree —

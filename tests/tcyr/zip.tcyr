@@ -361,6 +361,49 @@ fn test_zip_any_guards() {
     return 0;
 }
 
+# Regression (2.6.2): the writer must COPY each member name, not alias the caller's
+# buffer. The central directory is not emitted until zip_writer_finish, so holding the
+# pointer meant a caller formatting names into ONE reusable buffer — the natural way to
+# add many members — silently got the last name on every entry, with valid CRCs and a
+# reference-tool-clean archive hiding it. Found while writing the 70,000-entry zip64 test.
+fn test_zip_name_not_aliased() {
+    var arc = alloc(65536);
+    var w = zip_writer_init(arc, 65536);
+    assert(w != 0, "aliasing test: writer init");
+    var d = alloc(4);
+    _zt_fill(d, 4, 65);
+    var nm = alloc(16);                     # ONE buffer, rewritten every iteration
+    var i = 0;
+    while (i < 5) {
+        store8(nm + 0, 102);                # 'f'
+        store8(nm + 1, 48 + i);             # '0'..'4'
+        store8(nm + 2, 0);
+        assert(zip_add(w, nm, d, 4, ZIP_STORE) == 0, "aliasing test: add");
+        i = i + 1;
+    }
+    # Scribble over the buffer before finishing — a correct writer is unaffected.
+    store8(nm + 0, 90); store8(nm + 1, 90); store8(nm + 2, 0);
+    var total = zip_writer_finish(w);
+    assert(total > 0, "aliasing test: finish");
+
+    var z = zip_open(arc, total);
+    assert(z != 0, "aliasing test: reopen");
+    assert(zip_count(z) == 5, "aliasing test: five members");
+    i = 0;
+    while (i < 5) {
+        var nm2 = zip_entry_name(z, i);
+        assert(strlen(nm2) == 2, "aliasing test: name length");
+        assert((load8(nm2 + 0) & 0xFF) == 102, "aliasing test: name prefix");
+        assert((load8(nm2 + 1) & 0xFF) == 48 + i, "aliasing test: name is per-entry, not the last one");
+        i = i + 1;
+    }
+    # And each is findable by its own name.
+    var probe = alloc(8);
+    store8(probe + 0, 102); store8(probe + 1, 51); store8(probe + 2, 0);   # "f3"
+    assert(zip_find(z, probe) == 3, "aliasing test: find by distinct name");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zip_roundtrip();
@@ -378,6 +421,7 @@ fn main() {
     test_zip_lean_refuses_extra_methods();
     test_zip_method_support();
     test_zip_any_guards();
+    test_zip_name_not_aliased();
     return assert_summary();
 }
 

@@ -22,7 +22,7 @@ CYRIUS_NO_WARN_PIN_DRIFT=1 CYRIUS_NO_WARN_SHADOW_LIB=1 sh -c \
 WORK="$(mktemp -d /tmp/sankoch-zip-XXXXXX)"
 IN="/tmp/sankoch-zip-in.zip"
 OUT="/tmp/sankoch-zip-out.zip"
-trap 'rm -rf "$WORK" "$IN" "$OUT"' EXIT
+trap 'rm -rf "$WORK" "$IN" "$OUT" /tmp/sankoch-zip-z64' EXIT
 
 rc=0
 
@@ -72,6 +72,18 @@ with zipfile.ZipFile(os.path.join(w, "methods.zip"), "w") as z:
 with zipfile.ZipFile(os.path.join(w, "comment.zip"), "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("c.txt", b"commented archive" * 50)
     z.comment = b"sankoch zip-smoke trailing comment" * 20
+
+# 7a. Zip64 EXTRA FIELD: a small member forced to use the zip64 sentinels + extra field.
+with zipfile.ZipFile(os.path.join(w, "z64extra.zip"), "w", zipfile.ZIP_DEFLATED,
+                     allowZip64=True) as z:
+    with z.open("big.txt", "w", force_zip64=True) as f:
+        f.write(b"zip64 extended information " * 100)
+
+# 7b. Zip64 EOCD RECORD: more members than the plain EOCD's u16 count can express.
+with zipfile.ZipFile(os.path.join(w, "z64many.zip"), "w", zipfile.ZIP_STORED,
+                     allowZip64=True) as z:
+    for i in range(70000):
+        z.writestr("f%05d" % i, b"y")
 PY
 
 # 7. an xz-method (95) archive — Python cannot write method 95, so use bsdtar when it is
@@ -86,7 +98,7 @@ fi
 
 total=0
 pass=0
-for f in agpkg mixed edges random methods xzm comment; do
+for f in agpkg mixed edges random methods z64extra z64many xzm comment; do
     src="$WORK/$f.zip"
     [ -f "$src" ] || continue
     total=$((total + 1))
@@ -144,10 +156,49 @@ PY
     fi
 done
 
+# --- Zip64 WRITE: sankoch emits >65,535 members; reference tools must accept it --------
+total=$((total + 1))
+: > /tmp/sankoch-zip-z64
+rm -f "$OUT"
+if ! "$BIN" > "$WORK/z64w.log" 2>&1; then
+    echo "  FAIL zip64-write: sankoch exited $?"
+    sed 's/^/      /' "$WORK/z64w.log"
+    rc=1
+else
+    if python3 - "$OUT" <<'PY'
+import struct, sys, zipfile
+p = sys.argv[1]
+d = open(p, "rb").read()
+# the Zip64 EOCD record + locator must both be present, and the plain EOCD must defer
+if d.rfind(struct.pack("<I", 0x06064b50)) < 0: sys.exit(1)
+if d.rfind(struct.pack("<I", 0x07064b50)) < 0: sys.exit(1)
+e = d.rfind(struct.pack("<I", 0x06054b50))
+if struct.unpack("<H", d[e + 10:e + 12])[0] != 0xFFFF: sys.exit(1)
+with zipfile.ZipFile(p) as z:
+    nl = z.namelist()
+    if len(nl) != 70000 or len(set(nl)) != 70000: sys.exit(1)
+    if z.testzip() is not None: sys.exit(1)
+    if any(z.read(n) != b"y" for n in (nl[0], nl[len(nl) // 2], nl[-1])): sys.exit(1)
+sys.exit(0)
+PY
+    then
+        if command -v bsdtar >/dev/null 2>&1 && [ "$(bsdtar -tf "$OUT" 2>/dev/null | wc -l)" != "70000" ]; then
+            echo "  FAIL zip64-write: bsdtar did not list 70000 members"
+            rc=1
+        else
+            pass=$((pass + 1))
+        fi
+    else
+        echo "  FAIL zip64-write: zip64 records missing or content/CRC mismatch"
+        rc=1
+    fi
+fi
+rm -f /tmp/sankoch-zip-z64
+
 echo ""
 echo "  $pass/$total archives: Python-written -> sankoch read -> sankoch written -> unzip -t + zipfile byte-identical"
 if [ "$rc" -eq 0 ]; then
-    echo "zip-smoke: PASS — reference unzip / bsdtar / Python zipfile accept sankoch's ZIP output (methods 0/8/12/93/95, read + write)"
+    echo "zip-smoke: PASS — reference unzip / bsdtar / Python zipfile accept sankoch's ZIP output (methods 0/8/12/93/95 + Zip64, read + write)"
 else
     echo "zip-smoke: FAIL"
 fi

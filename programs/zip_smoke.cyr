@@ -32,6 +32,39 @@ fn write_all(path, buf, len) {
     return off;
 }
 
+# Zip64 write mode (2.6.2): emit an archive with more members than the plain EOCD's u16
+# count can express, so the Zip64 EOCD record + locator path is exercised end-to-end and a
+# reference tool gets to verify it. Triggered by the driver script creating a flag file.
+fn run_z64() {
+    var N = 70000;
+    var cap = 33554432;
+    var arc = _sankoch_alloc(cap);
+    if (arc == 0) { ps("z64: alloc failed\n"); return 1; }
+    var w = zip_writer_init(arc, cap);
+    if (w == 0) { ps("z64: writer init failed\n"); return 1; }
+    var payload = _sankoch_alloc(8);
+    store8(payload, 121);
+    var nm = _sankoch_alloc(24);
+    var i = 0;
+    while (i < N) {
+        store8(nm, 102);
+        var v = i; var d = 5;
+        while (d > 0) { store8(nm + d, 48 + v % 10); v = v / 10; d = d - 1; }
+        store8(nm + 6, 0);
+        if (zip_add(w, nm, payload, 1, ZIP_STORE) < 0) { ps("z64: add failed\n"); return 2; }
+        i = i + 1;
+    }
+    var total = zip_writer_finish(w);
+    if (total < 0) { ps("z64: finish failed\n"); return 3; }
+    ps("z64 entries="); print_num(N); ps(" bytes="); print_num(total); ps("\n");
+    write_all("/tmp/sankoch-zip-out.zip", arc, total);
+    var z = zip_open(arc, total);
+    if (z == 0) { ps("z64: self-reopen failed\n"); return 4; }
+    if (zip_count(z) != N) { ps("z64: count mismatch\n"); return 5; }
+    ps("z64 self-reopen OK, last="); ps(zip_entry_name(z, N - 1)); ps("\n");
+    return 0;
+}
+
 fn run() {
     var buf = read_all("/tmp/sankoch-zip-in.zip");
     if (buf == 0) { ps("read failed\n"); return 1; }
@@ -41,7 +74,10 @@ fn run() {
     ps("entries="); print_num(n); ps("\n");
 
     # Re-pack every member into a new archive as we go.
-    var ocap = 1048576;
+    # Size the re-pack buffer from the input: a 70,000-member zip64 fixture needs far
+    # more than a fixed 1 MiB, and STORE fallback can make a member no smaller than its
+    # source. Headroom covers per-member headers + the central directory.
+    var ocap = g_len * 4 + 4194304;
     var obuf = _sankoch_alloc(ocap);
     var w = zip_writer_init(obuf, ocap);
     if (w == 0) { ps("writer init failed\n"); return 3; }
@@ -76,6 +112,11 @@ fn run() {
     return 0;
 }
 
-fn main() { alloc_init(); return run(); }
+fn main() {
+    alloc_init();
+    var fd = sys_open("/tmp/sankoch-zip-z64", 0, 0);
+    if (fd >= 0) { sys_close(fd); return run_z64(); }
+    return run();
+}
 var exit_code = main();
 syscall(60, exit_code);

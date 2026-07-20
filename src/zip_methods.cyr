@@ -106,7 +106,7 @@ fn zip_add_any(w, name, data, len, method) {
     var crc = crc32(data, len) & 0xFFFFFFFF;
 
     var hdr = pos;
-    var body = hdr + 30 + nlen;
+    var body = hdr + _zip_local_size(nlen, len);
     if (body > cap) { store64(w + 40, 0 - ERR_BUFFER_TOO_SMALL); return 0 - ERR_BUFFER_TOO_SMALL; }
     var stored_method = ZIP_STORE;
     var csize = 0;
@@ -134,41 +134,10 @@ fn zip_add_any(w, name, data, len, method) {
     if (stored_method == ZIP_BZIP2) { vneed = 46; }
     elif (stored_method == ZIP_ZSTD || stored_method == ZIP_XZ) { vneed = 63; }
 
-    _zip_put32(dst + hdr + 0, ZIP_SIG_LOCAL);
-    _zip_put16(dst + hdr + 4, vneed);
-    _zip_put16(dst + hdr + 6, 0);
-    _zip_put16(dst + hdr + 8, stored_method);
-    _zip_put16(dst + hdr + 10, 0);
-    _zip_put16(dst + hdr + 12, 0x21);
-    _zip_put32(dst + hdr + 14, crc);
-    _zip_put32(dst + hdr + 18, csize);
-    _zip_put32(dst + hdr + 22, len);
-    _zip_put16(dst + hdr + 26, nlen);
-    _zip_put16(dst + hdr + 28, 0);
-    var j = 0;
-    while (j < nlen) { store8(dst + hdr + 30 + j, load8(name + j)); j = j + 1; }
-
-    var recs = load64(w + 32);
-    var reccap = load64(w + 48);
-    if (count >= reccap) {
-        var ncap = reccap * 2;
-        var nrecs = _sankoch_alloc(ncap * ZIP_ENT_SIZE);
-        if (nrecs == 0) { store64(w + 40, 0 - ERR_OOM); return 0 - ERR_OOM; }
-        var b = 0;
-        while (b < count * ZIP_ENT_SIZE) { store8(nrecs + b, load8(recs + b)); b = b + 1; }
-        store64(w + 32, nrecs);
-        store64(w + 48, ncap);
-        recs = nrecs;
-    }
-    var r = recs + count * ZIP_ENT_SIZE;
-    store64(r + 0, name);
-    store64(r + 8, stored_method);
-    store64(r + 16, crc);
-    store64(r + 24, csize);
-    store64(r + 32, len);
-    store64(r + 40, hdr);
-
+    # Header layout (including Zip64) is shared with zip_add — one implementation.
+    _zip_emit_local(dst, hdr, name, nlen, crc, csize, len, stored_method, vneed);
+    var rr = _zip_record(w, name, stored_method, crc, csize, len, hdr);
+    if (rr < 0) { return rr; }
     store64(w + 16, body + csize);
-    store64(w + 24, count + 1);
     return 0;
 }
