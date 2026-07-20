@@ -7,6 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.9] — 2026-07-19 — P(-1) hardening: security remediation (first audit of the 2.4.x/2.5.x surface)
+
+The pre-2.6.0 P(-1) scaffold-hardening pass ran the **first security audit of everything
+shipped since the 2026-06-16 pre-2.4.0 audit** — `xz.cyr`, `bzip2.cyr`, `tar.cyr`, and the
+zstd *encoder*, none of which had ever been audited (see
+[`docs/audit/2026-07-19-pre-2.6.0.md`](docs/audit/2026-07-19-pre-2.6.0.md)). It found
+**1 HIGH + 13 MEDIUM + 5 LOW** (post adversarial verification; 11 further reports were
+refuted or severity-rebased). Every finding was reproduced by execution and carries a
+verified fix.
+
+This release lands the **security-critical subset** — the HIGH plus the MEDIUMs reachable
+from a public API on attacker-controlled input, plus the zstd concurrency fix. The
+resource-leak, interop, and zstd decode-OOM findings are scheduled for **2.5.10** (they
+cluster in `zstd.cyr`'s memory-lifetime work and land together).
+
+### Security fixes
+
+- **H-1 (HIGH) — tar symlink-chain path traversal** (`src/tar.cyr`) — a four-entry archive
+  of purely *relative* entries (`d/`, `d/up -> ..`, `esc -> d/up/..`, then `esc/pwned.txt`)
+  wrote a file **outside the extraction root**, silently, with `tar_next` returning success
+  for every entry. The per-entry `_star_symlink_safe` check validated each symlink target in
+  isolation and could not see that an *earlier* entry had planted a symlink in a later
+  entry's path prefix. GNU tar 1.35 refuses the identical bytes. **Fix**: a cross-entry
+  symlink ledger — every symlink path emitted so far is recorded (64-bit FNV-1a hash of the
+  canonical path, open-addressed, grows by doubling → O(n) not O(n²)), and any later entry
+  written *through* or *onto* one is rejected with `TAR_ERR_UNSAFE`. Tracking *every*
+  symlink (not just those with `..`/absolute targets) is what makes it sound: a symlink can
+  never be planted under another symlink, so each ledger path has only real-directory
+  ancestors and its literal path equals its resolved path — no aliasing hole. Verified
+  against a **5,000-archive randomized differential** (261 naive-escaping archives, all
+  rejected, 0 unsound) and matched to GNU tar's contract (rejects the escape chain, accepts
+  a benign in-root `lib -> usr/lib` symlink). Deliberately stricter than GNU tar for the
+  write-*through*-an-in-root-symlink pattern, which real tar tools never produce. The module
+  docstring's "traversal safety enforced HERE, consumers inherit it for free" overclaim was
+  corrected to "defence in depth; consumers should still use `openat2(RESOLVE_BENEATH)` /
+  `O_NOFOLLOW`". takumi/agnova notified.
+- **M-3 (MEDIUM) — tar parse-path NULL-page write** (`src/tar.cyr`) — a GNU LongLink ('L')
+  entry with a >2 GiB linkname (or a PAX `path=` record) drove `alloc()` past its 2 GiB
+  `ALLOC_MAX`, returning 0, and the following `memcpy` faulted on the NULL page — reachable
+  via `tar_open`/`tar_next` on a memory-mapped archive. **Fix**: null-check all five
+  parse-path allocations; new `TAR_ERR_OOM = 7`; `tar_next` maps a failed allocation to
+  `-TAR_ERR_OOM`. Verified: a 2 GiB archive that SIGSEGV'd (rc 139) pre-fix returns a clean
+  `-7`.
+- **M-5 (MEDIUM) — xz check-field out-of-bounds read** (`src/xz.cyr`) — `_xz_verify_check`
+  read the 4-/8-byte CRC field *before* the length guard, so a stream truncated at a block's
+  check field read up to 8 bytes past the input. **Fix**: bound-check each branch before
+  reading. Verified against an exhaustive truncation sweep (no crash) with reference `xz`
+  round-trips still byte-exact.
+- **M-6 (MEDIUM) — xz Index-record DoS hang** (`src/xz.cyr`) — a crafted 9-byte
+  Number-of-Records varint (~2⁶²) spun the index loop for years while holding `_sankoch_mtx`
+  (a whole-library deadlock), because the loop incremented its counter even after
+  `_xz_varint` no-op-faulted at EOF, and `_xz_err` was checked only after the loop. **Fix**:
+  reject a record count exceeding half the remaining bytes up front (each record needs ≥2),
+  and break the instant a varint faults. Verified: a 66-byte hostile stream that hung past a
+  15 s timeout (rc 124) pre-fix now returns `ERR_CORRUPT_DATA` instantly.
+- **M-7 (MEDIUM) — xz `--check=sha256` silent acceptance** (`src/xz.cyr`) — sankoch carries
+  no SHA-256 primitive, so sha256-checked streams were accepted with the digest skipped
+  entirely; a corrupted payload decoded to wrong plaintext returned as success. **Fix
+  (fail-closed)**: a sha256-checked stream now returns `ERR_UNSUPPORTED_FORMAT` rather than
+  trusting unverified data. **Behaviour change** for a valid-but-rare container (sankoch's
+  own encoder emits CRC-64; CRC-32/CRC-64 streams are unaffected). Verified: reference
+  `xz --check=sha256` output now rejected; crc streams still decode.
+- **M-8 (MEDIUM) — partial-OOM lazy-init latch → NULL write on retry** (`src/lz77.cyr`,
+  `src/bzip2.cyr`, `src/xz.cyr`; also **L-1**, the bzip2 decode-table twin) — a multi-alloc
+  lazy init that failed part-way left a *guard pointer* set while a sibling stayed NULL, so
+  the documented reaction to `-ERR_OOM` (retry) skipped the init and wrote through the NULL.
+  This is the negative answer to the audit's charter question **INFO-E** (xz/bzip2 encoder
+  OOM propagation was broken). **Fix**: guard each group on a dedicated completion flag set
+  only after every allocation succeeds, so a retry re-enters cleanly. `lz77_init` unlatches
+  its guard on the second-alloc failure. Verified via a new partial-OOM-then-retry fault
+  sweep across deflate/xz/bzip2 that SIGSEGV'd (rc 139) pre-fix and passes post-fix.
+  (zstd's encoder OOM half of M-8 clusters with M-9/M-10/M-11 and is scheduled for 2.5.10.)
+- **M-12 (MEDIUM) — zstd unserialized global state** (`src/zstd.cyr`) — `zstd.cyr` took no
+  lock while mutating ~49 per-call globals, so concurrent callers of the public
+  `zstd_compress`/`zstd_decompress` raced (measured: 20/20 concurrent runs failed — wrong
+  output or SIGSEGV via an OOB write past a stale `_z_outcap`). Every other codec already
+  serialized on the API lock. **Fix**: `runtime.cyr` added to the `[lib.zstd]` distlib
+  profile (stays stdlib-only), the four public entries wrapped in `_sankoch_lock`/`_unlock`
+  over new `_zstd_*_inner` bodies, and the `lib.cyr` format dispatch repointed at the
+  inners (no recursive lock). Output is **byte-identical** — the mutex changes no encoded
+  bytes (verified against the 2.5.8 sizes and reference `zstd -d`).
+- **M-13 (MEDIUM) — stream unchecked allocations → NULL write** (`src/stream.cyr`) —
+  `_stream_grow` copied into and published a NULL buffer when `alloc` failed, and the three
+  `stream_*_init` functions stored through a NULL ctx; reachable from the public
+  `stream_write`/`stream_*_init` under real memory pressure or an absurd write length. **Fix**:
+  `_stream_grow` returns `-ERR_OOM` and leaves the ctx untouched; the buffered write loop
+  propagates it; the init functions check every allocation. Verified: `stream_write(ctx,
+  data, 1<<40)` that SIGSEGV'd (rc 139) pre-fix returns `-ERR_OOM`.
+
+### Testing
+
+- **OOM fault-injection sweep extended to the never-audited codecs** (INFO-E / I-1) — the
+  2.3.7 sweep covered only deflate/gzip/lz4; it now covers xz and bzip2 compress, plus a new
+  **partial-OOM-then-retry** phase (deflate/xz/bzip2) that exercises the M-8 latch class.
+  `_sankoch_reset_tables()` was extended to reset the xz/bzip2/crc64 lazy globals it had
+  omitted (without which a warmed global masked the first-call OOM site).
+- Randomized **tar traversal differential** against a naive-resolution oracle (5,000
+  archives, 0 unsound) backing H-1.
+- Suite total **4,484,022 → 4,484,226 assertions**, 0 failures; fuzz 5/5. All output-format
+  SIZE lines unchanged (the fixes touch decode-safety / OOM / lock / tar paths, never
+  encoder output).
+
+### Deferred to 2.5.10 (from the audit)
+
+M-1 (tar retry-ladder arena DoS), M-2 (multi-frame `.zst` truncation), M-4 (multi-member
+`.tar.gz` rejection), M-9 (zstd decode per-call arena leak), M-10 (zstd encoder FSE-ctable
+leak), M-11 (zstd decode OOM null-checks), and the zstd-encoder half of M-8 — all cluster
+in `zstd.cyr` memory-lifetime work and `tar_open_auto` sizing, and land together. Plus the
+LOW/INFO items (L-2..L-5, I-1 completion). See the audit record's remediation list.
+
 ## [2.5.8] — 2026-07-19 — zstd encoder: priced parse (the last parse-quality slot)
 
 The 2.5.8 slot was scheduled as an optimal / 2-pass parse. Diagnosis found a cheaper

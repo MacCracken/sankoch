@@ -403,9 +403,13 @@ fn _bz_decode_block(level): i64 {
 
 var _bz_last_block_crc = 0;
 
-# Allocate the bzip2 working tables once.
+# Allocate the bzip2 working tables once. Guard on a dedicated completion flag, NOT on
+# a table pointer: a partial OOM (some allocs done, one failed) must leave the guard
+# clear so a retry re-enters, rather than latching a half-initialised table set that a
+# later deref turns into a NULL-page write (2.5.9 M-8/L-1).
+var _bz_tables_ready = 0;
 fn _bz_alloc_tables(): i64 {
-    if (_bz_tt != 0) { return 0; }
+    if (_bz_tables_ready == 1) { return 0; }
     _bz_limit = _sankoch_alloc(BZ_N_GROUPS * BZ_MAX_CODE_LEN * 8);
     _bz_base = _sankoch_alloc(BZ_N_GROUPS * BZ_MAX_CODE_LEN * 8);
     _bz_perm = _sankoch_alloc(BZ_N_GROUPS * BZ_MAX_ALPHA * 8);
@@ -423,8 +427,9 @@ fn _bz_alloc_tables(): i64 {
     || _bz_len == 0 || _bz_selector == 0 || _bz_selmtf == 0 || _bz_inuse == 0
     || _bz_seq == 0 || _bz_mtf == 0 || _bz_unzftab == 0 || _bz_cftab == 0
     || _bz_tt == 0) {
-        return 0 - ERR_OOM;
+        return 0 - ERR_OOM;   # flag stays clear -> a retry re-allocates cleanly
     }
+    _bz_tables_ready = 1;
     return 0;
 }
 
@@ -575,8 +580,9 @@ var _bze_heap = 0;    # hbMakeCodeLengths heap (i64[260])
 var _bze_hwt = 0;     # ... weights (i64[600])
 var _bze_hpar = 0;    # ... parents (i64[600])
 
+var _bze_ready = 0;
 fn _bze_alloc(): i64 {
-    if (_bze_rle != 0) { return 0; }
+    if (_bze_ready == 1) { return 0; }   # completion flag, not the first pointer (2.5.9 M-8)
     var nb = BZ_MAX_BLOCK + 8;
     _bze_rle = _sankoch_alloc(nb);
     _bze_ptr = _sankoch_alloc(nb * 8);
@@ -605,8 +611,9 @@ fn _bze_alloc(): i64 {
     || _bze_sel == 0 || _bze_selmtf == 0 || _bze_yy == 0 || _bze_unseq == 0
     || _bze_seq2 == 0 || _bze_inuse2 == 0 || _bze_heap == 0 || _bze_hwt == 0
     || _bze_hpar == 0) {
-        return 0 - ERR_OOM;
+        return 0 - ERR_OOM;   # flag stays clear -> a retry re-allocates cleanly
     }
+    _bze_ready = 1;
     return 0;
 }
 

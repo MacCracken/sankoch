@@ -4,8 +4,13 @@
 # canonical tar parser lives here — lifted from takumi's proven extract_archive (2.4.x) and made
 # sink-agnostic. Each consumer drives the cursor and does its OWN writes: takumi -> filesystem,
 # agnova -> ext2. The header-checksum validation, PAX ('x'/'g') and GNU ('L'/'K') long-name
-# handling, ustar prefix, and path/symlink traversal safety are all enforced HERE, so every
-# consumer inherits the security guards for free.
+# handling, and ustar prefix are enforced HERE. Path-traversal safety is enforced in TWO layers:
+# per-entry ("..", absolute, bad bytes, single-hop symlink depth) AND cross-entry (2.5.9 — a
+# ledger that rejects any member written through or onto a symlink an earlier entry planted,
+# closing the multi-hop-symlink-chain escape). This guard is DEFENCE IN DEPTH, not a licence to
+# extract untrusted archives unguarded: a consumer that follows symlinks on write should still
+# use openat2(RESOLVE_BENEATH) / O_NOFOLLOW per component, since a symlink already present in the
+# destination (not planted by this archive) is outside what the cursor can see.
 #
 # Usage:
 #   var cur = tar_open_auto(archive, len);       # sniffs gzip/xz/bzip2/zstd, decompresses in RAM
@@ -32,6 +37,7 @@ var TAR_ERR_UNSAFE = 3;
 var TAR_ERR_UNSUPPORTED = 4;
 var TAR_ERR_DECOMPRESS = 5;
 var TAR_ERR_TOO_LARGE = 6;
+var TAR_ERR_OOM = 7;   # an allocation failed (e.g. a >2 GiB long-name/PAX field)
 
 var TAR_MAX_OUT = 536870912;   # 512 MiB decompression ceiling (matches takumi SRC_MAX_BYTES)
 
@@ -69,6 +75,7 @@ fn _star_field_cstr(block, off, maxlen) {
         n = n + 1;
     }
     var buf = alloc(n + 1);
+    if (buf == 0) { return 0; }   # >2 GiB field or real exhaustion — never memcpy into NULL
     memcpy(buf, block + off, n);
     store8(buf + n, 0);
     return buf;
@@ -77,11 +84,14 @@ fn _star_field_cstr(block, off, maxlen) {
 # ustar full path = prefix (345,155) + "/" + name (0,100) when prefix is set.
 fn _star_full_path(block) {
     var name = _star_field_cstr(block, 0, 100);
+    if (name == 0) { return 0; }
     var prefix = _star_field_cstr(block, 345, 155);
+    if (prefix == 0) { return 0; }
     var lp = strlen(prefix);
     if (lp == 0) { return name; }
     var ln = strlen(name);
     var buf = alloc(lp + 1 + ln + 1);
+    if (buf == 0) { return 0; }
     memcpy(buf, prefix, lp);
     store8(buf + lp, 47);
     memcpy(buf + lp + 1, name, ln);
@@ -199,6 +209,152 @@ fn _star_symlink_safe(link_rel, target) {
     return 1;
 }
 
+# --- symlink-prefix ledger (2.5.9, closes the H-1 cross-entry traversal hole) -------------
+# _star_symlink_safe validates a symlink target one hop at a time and assumes every
+# intermediate component is a real directory. It is blind to an EARLIER archive entry
+# having planted a symlink at one of those components, so a chain like
+#   d/          d/up -> ..          esc -> d/up/..          esc/pwned.txt
+# escapes the extraction root while every per-entry check passes (proven: writes to
+# ../pwned.txt; GNU tar refuses the same bytes). The cursor kept no cross-entry state.
+#
+# The fix is a ledger of every symlink path emitted so far; any later entry whose
+# DIRECTORY PREFIX (or, for a file/dir, whose own path) is one of those symlinks is
+# rejected — exactly the write-through-or-onto-a-symlink operation a safe extractor
+# refuses. Tracking EVERY symlink (not just those with absolute/".." targets) is what
+# makes it sound: a symlink can never be planted under another symlink (its own prefix
+# check rejects it first), so every ledger path has only real-directory ancestors and
+# its literal path equals its resolved path — there is no aliasing hole for a benign
+# symlink to open. We key on the 64-bit FNV-1a hash of the canonical path (drop "." and
+# empty components); a hash collision can only cause an over-reject, never let an escape
+# through, so the guard is sound by construction. Open-addressed, grows by doubling, so
+# N symlinks + N deep paths cost O(N), not the O(N^2) of a linear scan.
+#
+# This is deliberately STRICTER than GNU tar: it also refuses to write a member THROUGH
+# an in-root symlinked directory (e.g. `lib -> usr/lib` then `lib/foo.so`). Real archives
+# never do that — merged-/usr rootfs images write to `usr/lib/foo.so` directly and carry
+# `lib -> usr/lib` only as a leaf compat symlink — so the strict rule costs nothing in
+# practice while removing the aliasing class entirely.
+var _STAR_FNV_OFF = 0xcbf29ce484222325;
+var _STAR_FNV_PRIME = 0x100000001b3;
+
+# Allocate a ledger: [+0 capacity][+8 count][+16 buckets-ptr]. 0 = empty bucket.
+fn _star_ledger_new() {
+    var led = alloc(24);
+    if (led == 0) { return 0; }
+    var cap = 64;
+    var b = alloc(cap * 8);
+    if (b == 0) { return 0; }
+    var i = 0;
+    while (i < cap) { store64(b + i * 8, 0); i = i + 1; }
+    store64(led + 0, cap);
+    store64(led + 8, 0);
+    store64(led + 16, b);
+    return led;
+}
+
+# Insert hash `h` (0 remapped to 1 so 0 stays the empty sentinel). Grows at load 0.5.
+# Returns 0 on success, <0 on OOM.
+fn _star_ledger_add(led, h) {
+    if (h == 0) { h = 1; }
+    var cap = load64(led + 0);
+    var cnt = load64(led + 8);
+    if ((cnt + 1) * 2 > cap) {
+        var ncap = cap * 2;
+        var nb = alloc(ncap * 8);
+        if (nb == 0) { return 0 - 1; }
+        var j = 0;
+        while (j < ncap) { store64(nb + j * 8, 0); j = j + 1; }
+        var ob = load64(led + 16);
+        var k = 0;
+        while (k < cap) {
+            var v = load64(ob + k * 8);
+            if (v != 0) {
+                var idx = v & (ncap - 1);
+                while (load64(nb + idx * 8) != 0) { idx = (idx + 1) & (ncap - 1); }
+                store64(nb + idx * 8, v);
+            }
+            k = k + 1;
+        }
+        store64(led + 0, ncap);
+        store64(led + 16, nb);
+        cap = ncap;
+    }
+    var b = load64(led + 16);
+    var i = h & (cap - 1);
+    while (load64(b + i * 8) != 0) {
+        if (load64(b + i * 8) == h) { return 0; }   # already present
+        i = (i + 1) & (cap - 1);
+    }
+    store64(b + i * 8, h);
+    store64(led + 8, cnt + 1);
+    return 0;
+}
+
+fn _star_ledger_has(led, h) {
+    if (h == 0) { h = 1; }
+    var cap = load64(led + 0);
+    var b = load64(led + 16);
+    var i = h & (cap - 1);
+    while (load64(b + i * 8) != 0) {
+        if (load64(b + i * 8) == h) { return 1; }
+        i = (i + 1) & (cap - 1);
+    }
+    return 0;
+}
+
+# Walk `path` in canonical form (skip "." and empty components). For each proper
+# directory prefix, test membership in `led` — return 1 (unsafe) if any prefix is a
+# known symlink. Otherwise store the full canonical hash via *full_hash and return 0.
+# Two passes so we know which completed component is the last (no per-component alloc).
+fn _star_ledger_prefix_unsafe(led, path, full_hash) {
+    var n = strlen(path);
+    # pass 1: count real (non "."/empty) components
+    var total = 0;
+    var i = 0;
+    var start = 0;
+    while (i <= n) {
+        var c = 47;
+        if (i < n) { c = load8(path + i) & 0xFF; }
+        if (c == 47) {
+            var clen = i - start;
+            if (clen > 0) {
+                if (clen != 1 || load8(path + start) != 46) { total = total + 1; }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    # pass 2: running FNV over canonical bytes; check each dir prefix (component k<total)
+    var h = _STAR_FNV_OFF;
+    var seen = 0;
+    i = 0;
+    start = 0;
+    while (i <= n) {
+        var c2 = 47;
+        if (i < n) { c2 = load8(path + i) & 0xFF; }
+        if (c2 == 47) {
+            var clen2 = i - start;
+            var real = 0;
+            if (clen2 > 0) {
+                if (clen2 != 1 || load8(path + start) != 46) { real = 1; }
+            }
+            if (real == 1) {
+                if (seen > 0) { h = (h ^ 47) * _STAR_FNV_PRIME; }   # canonical '/' separator
+                var j = start;
+                while (j < i) { h = (h ^ (load8(path + j) & 0xFF)) * _STAR_FNV_PRIME; j = j + 1; }
+                seen = seen + 1;
+                if (seen < total) {                                 # a directory prefix
+                    if (_star_ledger_has(led, h) == 1) { return 1; }
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    store64(full_hash, h);
+    return 0;
+}
+
 # 512-byte all-zero block test (the archive terminator is two of these).
 fn _star_zero_block(block) {
     var i = 0;
@@ -238,6 +394,7 @@ fn _star_gzip_isize(buf, len) {
 # Override record: +0 path cstr (0=unset), +8 linkpath cstr, +16 size i64 (-1=unset).
 fn _star_pax_new() {
     var r = alloc(24);
+    if (r == 0) { return 0; }
     store64(r + 0, 0);
     store64(r + 8, 0);
     store64(r + 16, 0 - 1);
@@ -255,6 +412,7 @@ fn _star_pax_cstr(data, start, end) {
     var n = end - start;
     if (n < 0) { n = 0; }
     var buf = alloc(n + 1);
+    if (buf == 0) { return 0; }   # oversized PAX value — leave the override unset, don't crash
     if (n > 0) { memcpy(buf, data + start, n); }
     store8(buf + n, 0);
     return buf;
@@ -333,11 +491,17 @@ fn _star_pax_parse(data, len, rec) {
 # Open a cursor over a DECOMPRESSED tar already in memory (buf, len).
 fn tar_open(buf, len) {
     var cur = alloc(128);
+    if (cur == 0) { return 0; }
+    var px = _star_pax_new();
+    var pg = _star_pax_new();
+    var led = _star_ledger_new();
+    if (px == 0 || pg == 0 || led == 0) { return 0; }
     store64(cur + 0, buf);
     store64(cur + 8, len);
     store64(cur + 16, 0);
-    store64(cur + 32, _star_pax_new());
-    store64(cur + 40, _star_pax_new());
+    store64(cur + 24, led);            # symlink-prefix ledger (2.5.9)
+    store64(cur + 32, px);
+    store64(cur + 40, pg);
     store64(cur + 48, 0);
     store64(cur + 56, 0);
     return cur;
@@ -385,13 +549,16 @@ fn tar_next(cur) {
         if (typ == 76 || typ == 75) {                  # GNU 'L' / 'K' long name
             pos = pos + 512;
             if (pos + size > len) { return 0 - TAR_ERR_TRUNCATED; }
-            if (typ == 76) { store64(cur + 48, _star_field_cstr(buf + pos, 0, size)); }
-            else { store64(cur + 56, _star_field_cstr(buf + pos, 0, size)); }
+            var lname = _star_field_cstr(buf + pos, 0, size);   # size is attacker-controlled
+            if (lname == 0) { return 0 - TAR_ERR_OOM; }         # >2 GiB long name, not a NULL write
+            if (typ == 76) { store64(cur + 48, lname); }
+            else { store64(cur + 56, lname); }
             pos = pos + ((size + 511) / 512) * 512;
             continue;
         }
 
         var full = _star_full_path(block);
+        if (full == 0) { return 0 - TAR_ERR_OOM; }
         var opath = load64(px + 0);
         if (opath == 0) { opath = load64(pg + 0); }
         if (opath == 0) { opath = load64(cur + 48); }
@@ -411,6 +578,20 @@ fn tar_next(cur) {
             if (fl > 0) { if (load8(full + fl - 1) == 47) { kind = 1; } }
         }
         if (_star_path_safe(full) != 1) { return 0 - TAR_ERR_UNSAFE; }
+        # Cross-entry guard (2.5.9): reject writing through a symlink planted by an
+        # earlier entry — the escape _star_symlink_safe's per-entry check cannot see.
+        var led = load64(cur + 24);
+        var fhash = 0;
+        if (_star_ledger_prefix_unsafe(led, full, &fhash) == 1) {
+            return 0 - TAR_ERR_UNSAFE;
+        }
+        # A file/dir written AT a path that is already a risky symlink follows that
+        # symlink on write (open(2) O_WRONLY / mkdir resolve the final component), so
+        # the leaf must be checked too — not just directory prefixes. (A symlink entry
+        # onto an existing symlink is EEXIST, not a follow, so kind 2 is exempt.)
+        if (kind != 2) {
+            if (_star_ledger_has(led, fhash) == 1) { return 0 - TAR_ERR_UNSAFE; }
+        }
         pos = pos + 512;
 
         store64(cur + 64, kind);
@@ -424,6 +605,13 @@ fn tar_next(cur) {
             if (olink == 0) { olink = load64(cur + 56); }
             if (olink != 0) { link = olink; }
             if (_star_symlink_safe(full, link) != 1) { return 0 - TAR_ERR_UNSAFE; }
+            # Record EVERY symlink, not just risky ones. Because a symlink can never be
+            # planted under another symlink (its prefix check above would have rejected
+            # it), each ledger path has only real-directory ancestors, so its literal
+            # path equals its resolved path — no aliasing hole. Tracking only "risky"
+            # targets left exactly such a hole (a benign `a -> .` aliasing a later
+            # `a/d -> ..` reachable as `d`). Sound over clever.
+            if (_star_ledger_add(led, fhash) < 0) { return 0 - TAR_ERR_OOM; }
             store64(cur + 96, 0);
             store64(cur + 104, 0);
             store64(cur + 112, link);

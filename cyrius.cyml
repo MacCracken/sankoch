@@ -96,6 +96,7 @@ modules = [
 modules = [
     "src/types.cyr",
     "src/zstd.cyr",
+    "src/runtime.cyr",
 ]
 
 # `[lib.bzip2]` — bzip2 decode (BWT + Huffman + MTF). Needs the bzip2 CRC + the

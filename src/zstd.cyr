@@ -710,7 +710,11 @@ fn _z_resolve_offset(offval, llen) {
 }
 
 # ============================ frame / block / public ============================
-fn zstd_decompress(src, src_len, dst, dst_cap) {
+# Unlocked decode body. Callers holding _sankoch_mtx (the lib.cyr format dispatch)
+# call this directly; the public zstd_decompress wraps it in the API lock. All the
+# _z_* decode globals are shared per-call state, so concurrent unlocked callers race
+# (2.5.9 M-12 — was a real corruption + OOB write before the lock was added).
+fn _zstd_decompress_inner(src, src_len, dst, dst_cap) {
     _z_init_tables();
     if (src_len < 4) { return 0 - 1; }
     if ((load8(src) & 0xFF) != 0x28 || (load8(src + 1) & 0xFF) != 0xB5
@@ -2043,16 +2047,37 @@ fn _ze_encode(src, src_len, dst, dst_cap) {
     return _ze_op;
 }
 
-# Public: compress src -> a .zst frame at the default level (6). Returns the frame
-# byte length, or a negative error.
-fn zstd_compress(src, src_len, dst, dst_cap) {
-    zstd_set_level(6);
+# Unlocked encode body. The lib.cyr dispatch (which already holds _sankoch_mtx) calls
+# this directly; the public zstd_compress/_level wrap it in the API lock. The _ze_*
+# encode globals are shared per-call state, so this must not run unlocked concurrently.
+fn _zstd_compress_inner(src, src_len, dst, dst_cap, level): i64 {
+    zstd_set_level(level);
     return _ze_encode(src, src_len, dst, dst_cap);
+}
+
+# Public: compress src -> a .zst frame at the default level (6). Returns the frame
+# byte length, or a negative error. Serialized on the API lock (2.5.9 M-12) — every
+# other codec already was; zstd was the lone lock-free outlier.
+fn zstd_compress(src, src_len, dst, dst_cap) {
+    _sankoch_lock();
+    var r = _zstd_compress_inner(src, src_len, dst, dst_cap, 6);
+    _sankoch_unlock();
+    return r;
 }
 
 # Public: compress at an explicit level (1=fast/greedy .. 6=default .. 9=best/deepest
 # search). Ratio-for-throughput knob; the output is a valid frame at every level.
 fn zstd_compress_level(src, src_len, dst, dst_cap, level): i64 {
-    zstd_set_level(level);
-    return _ze_encode(src, src_len, dst, dst_cap);
+    _sankoch_lock();
+    var r = _zstd_compress_inner(src, src_len, dst, dst_cap, level);
+    _sankoch_unlock();
+    return r;
+}
+
+# Public: decompress a .zst frame. Serialized on the API lock (2.5.9 M-12).
+fn zstd_decompress(src, src_len, dst, dst_cap) {
+    _sankoch_lock();
+    var r = _zstd_decompress_inner(src, src_len, dst, dst_cap);
+    _sankoch_unlock();
+    return r;
 }

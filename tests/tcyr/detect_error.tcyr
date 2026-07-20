@@ -164,6 +164,15 @@ fn test_oom_compress_sweep() {
     _oom_compress_path(FORMAT_DEFLATE, 1, 20);
     _oom_compress_path(FORMAT_GZIP, 6, 36);
     _oom_compress_path(FORMAT_LZ4, 6, 8);
+    # 2.5.9: the never-audited encoders (the INFO-E charter). Their lazy inits are
+    # larger (xz ~17 allocs, bzip2 ~21) — sweep past the last site.
+    _oom_compress_path(FORMAT_XZ, 6, 40);
+    _oom_compress_path(FORMAT_BZIP2, 9, 44);
+    # 2.5.9 (M-8): the partial-OOM-then-retry latch, across every alloc-seam encoder.
+    # Pre-2.5.9 these SIGSEGV on the retry (guard pointer latched, sibling NULL).
+    _oom_retry_path(FORMAT_DEFLATE, 6, 36);
+    _oom_retry_path(FORMAT_XZ, 6, 40);
+    _oom_retry_path(FORMAT_BZIP2, 9, 44);
     # Recovery: fresh tables, no fault → normal compress works + decodes.
     _sankoch_reset_tables();
     var src = alloc(256);

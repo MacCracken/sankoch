@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.5.8) | **Last Updated**: 2026-07-19
+> **Status**: Stable (v2.5.9) | **Last Updated**: 2026-07-19
 
 Shipped history lives in `CHANGELOG.md`; this file is the **forward**
 ladder — the committed next-release ladder, deferred items, known
@@ -80,6 +80,31 @@ optimal/2-pass parse deferred to its own unscheduled arc.
 > ~100 lines and **zero new allocation**. Also fixed a 2.5.7 defect where merely enabling
 > the lazy lookahead inflated ascending-integer text by **67 %** — now covered by
 > `test_zc_lazy_beats_greedy`. Reference `zstd -d` v1.5.7 was the correctness bar throughout.
+
+> **2.5.9 — P(-1) security hardening — ✅ shipped 2026-07-19**
+> (see CHANGELOG + [`docs/audit/2026-07-19-pre-2.6.0.md`](../audit/2026-07-19-pre-2.6.0.md)
+> + [`docs/benchmarks/2026-07-19-2.5.9-p1-baseline.md`](../benchmarks/2026-07-19-2.5.9-p1-baseline.md)).
+>
+> The pre-2.6.0 P(-1) scaffold-hardening pass. First security audit of the never-audited
+> 2.4.x/2.5.x surface (xz / bzip2 / tar / zstd-encoder): **1 HIGH + 13 MEDIUM + 5 LOW**
+> (post adversarial verification; 11 refuted or rebased). Landed the **security-critical
+> subset**: **H-1** tar symlink-chain traversal (arbitrary file write outside the root —
+> cross-entry symlink ledger, 5,000-archive differential, GNU-tar contract matched),
+> **M-3** tar NULL-write, **M-5/M-6/M-7** xz OOB-read / DoS-hang / sha256-fail-closed,
+> **M-8+L-1** the OOM-latch crash class (INFO-E answered, negative), **M-12** zstd
+> concurrency lock, **M-13** stream allocs. Each reproduced pre-fix, verified post-fix.
+
+### 2.5.10 — the audit remainder (gates 2.6.0)
+
+The resource-leak / interop / zstd-decode-OOM cluster deferred from 2.5.9 because it all
+touches `zstd.cyr` memory lifetime + `tar_open_auto` sizing and lands coherently: **M-1**
+(tar retry-ladder ~1 GiB arena DoS), **M-2** (multi-frame `.zst` truncation), **M-4**
+(multi-member `.tar.gz` rejection), **M-9** (zstd decode ~262 KB/call leak), **M-10** (zstd
+encoder FSE-ctable leak), **M-11** (zstd decode OOM null-checks), the **zstd-encoder half of
+M-8**, and the LOW/INFO tail (**L-2** gzip ratio 1-byte overshoot, **L-3** DEFLATE
+stored-block ceiling, **L-4** zstd errata-7297 guard, **L-5 / I-1** route zstd/tar/stream
+allocs through the fault seam + `fuzz_xz_truncate`). Verified fixes are sketched in the
+audit record's remediation list. **2.6.0 opens after this lands.**
 
 ## ⏸ Deferred — zstd optimal / 2-pass parse
 
@@ -236,20 +261,20 @@ at 2.5.5.)
 | bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  683 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes (OOM-propagating allocs) | full |
-| lz77.cyr         |  181 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
+| lz77.cyr         |  184 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  181 | LZ4 block + frame decompress (incl. per-block checksum) + LZ4F enum (kernel-safe) | core |
 | lz4.cyr          |  935 | LZ4 block + frame compress + `lz4f_enc_*` (configurable block-max + checksum) + `lz4f_dec_*` streaming | full |
 | deflate.cyr      | 2540 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
 | zlib.cyr         |  485 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
 | gzip.cyr         |  638 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
-| xz.cyr           | 1819 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
-| bzip2.cyr        | 1316 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
-| zstd.cyr         | 2058 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
-| tar.cyr          |  513 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + path-traversal guards (2.5.0) | full |
-| stream.cyr       |  250 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
+| xz.cyr           | 1836 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
+| bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
+| zstd.cyr         | 2083 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
+| tar.cyr          |  701 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
+| stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
-| lib.cyr          |  246 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **12845** | | |
+| lib.cyr          |  254 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
+| **Total**        | **13099** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -258,7 +283,7 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 
 Tests: **267 distinct test functions** (257 across the 20 split
 codec×direction suites + 10 in git_object.tcyr) producing
-**4,484,022 assertions** total (4,137,439 + 346,583). Most comes from
+**4,484,226 assertions** total (4,137,643 + 346,583). Most comes from
 per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
@@ -301,9 +326,10 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.67).
 
 ---
 
-*Last Updated: 2026-07-19 (2.5.8 zstd encoder priced parse shipped — `_ze_mvalue`
-bit-cost match selection replaces raw length compares; corpus −9.9 %, no regression on
-any of eleven fixtures, beats `zstd -3` on every fixture. The scheduled optimal/2-pass
-DP was built, measured against it, and moved to its own deferred arc. Remaining ladder:
-2.6.x full-feature ZIP archive container arc, agnosai `.agpkg` core first at 2.6.0.
-Other Deferred + Future entries unchanged.)*
+*Last Updated: 2026-07-19 (2.5.9 P(-1) security-hardening pass — first audit of the
+never-audited 2.4.x/2.5.x surface [xz/bzip2/tar/zstd-encoder], 1 HIGH + 13 MEDIUM + 5 LOW;
+landed the security-critical subset [H-1 tar symlink-chain traversal, M-3 tar NULL-write,
+M-5/M-6/M-7 xz OOB/DoS/sha256, M-8+L-1 OOM-latch class, M-12 zstd concurrency lock, M-13
+stream allocs]; remainder [resource leaks / interop / zstd decode-OOM] → 2.5.10, which
+gates 2.6.0. Audit: docs/audit/2026-07-19-pre-2.6.0.md. Deferred zstd optimal parse + the
+2.6.x ZIP arc unchanged.)*

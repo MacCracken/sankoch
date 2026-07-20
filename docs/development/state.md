@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-07-19 (v2.5.8 cut — **zstd encoder priced parse**: `_ze_mvalue` replaces raw length comparisons with an integer bit-cost compare, plus repcode candidates at the lookahead position. Corpus −9.9 %; **no regression on any of 11 fixtures**; now beats `zstd -3` — zstd's own default — on *every* fixture. Fixed a 2.5.7 defect where enabling the lazy lookahead made regular data 67 % bigger. The full optimal/2-pass DP was built, measured against this, and deferred to its own arc) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
+> **Last refresh**: 2026-07-19 (v2.5.9 cut — **P(-1) security hardening**: first audit of the never-audited 2.4.x/2.5.x surface [xz/bzip2/tar/zstd-encoder] found 1 HIGH + 13 MEDIUM + 5 LOW; 2.5.9 lands the security-critical subset — H-1 tar symlink-chain traversal, M-3 tar NULL-write, M-5/M-6/M-7 xz OOB-read/DoS-hang/sha256-fail-closed, M-8+L-1 OOM-latch crash class, M-12 zstd concurrency lock, M-13 stream allocs; resource-leak/interop/zstd-decode-OOM cluster deferred to 2.5.10. Audit: `docs/audit/2026-07-19-pre-2.6.0.md`) | **Refresh cadence**: every release; bumped by the release post-hook or by hand if the hook misses.
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.5.8` — single source of truth (2.5.8 = **zstd encoder priced parse** [`_ze_mvalue` bit-cost match selection + repcode candidates at the lookahead; corpus −9.9 %, zero regressions, beats `zstd -3` everywhere]; 2.5.7 = **zstd encoder parse quality** [repcode-aware match finding + adaptive FSE sequence tables; now beats `zstd -3` on real code/text/binary]; 2.5.6 = **zstd encoder competitiveness + decoder hardening** [FSE literal weights + repeat-offset codes + lazy parse + 1..9 level knob; decoder closed against 36 verified OOB/DoS paths + `fuzz_zstd.fcyr`]; 2.5.5 = **sovereign zstd encoder** `zstd_compress` [LZ77 + FSE sequences + Huffman literals; completes the codec, decode shipped 2.5.0]; 2.5.4 = xz / bzip2 encoder throughput [output byte-identical]; 2.5.3 = xz / bzip2 ratio cap; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
+- **`VERSION`**: `2.5.9` — single source of truth (2.5.9 = **P(-1) security hardening** [1 HIGH tar symlink-chain traversal + xz OOB-read/DoS/sha256 + OOM-latch crash class + zstd concurrency lock + stream allocs; first audit of the 2.4.x/2.5.x surface]; 2.5.8 = **zstd encoder priced parse** [`_ze_mvalue` bit-cost match selection + repcode candidates at the lookahead; corpus −9.9 %, zero regressions, beats `zstd -3` everywhere]; 2.5.7 = **zstd encoder parse quality** [repcode-aware match finding + adaptive FSE sequence tables; now beats `zstd -3` on real code/text/binary]; 2.5.6 = **zstd encoder competitiveness + decoder hardening** [FSE literal weights + repeat-offset codes + lazy parse + 1..9 level knob; decoder closed against 36 verified OOB/DoS paths + `fuzz_zstd.fcyr`]; 2.5.5 = **sovereign zstd encoder** `zstd_compress` [LZ77 + FSE sequences + Huffman literals; completes the codec, decode shipped 2.5.0]; 2.5.4 = xz / bzip2 encoder throughput [output byte-identical]; 2.5.3 = xz / bzip2 ratio cap; 2.5.2 = toolchain pin refresh to Cyrius 6.4.66; 2.5.1 = per-codec distlib profiles; 2.5.0 = sovereign `zstd.cyr` decoder + shared `tar.cyr` cursor)
 - **`cyrius.cyml [package].cyrius`**: `6.4.67` — toolchain pin (bumped from 6.4.66 during the 2.5.6 arc; 2.5.5 shipped on 6.4.66. `cyrius deps` re-resolved, all gates green)
-- **Tag**: `2.5.8` (bare semver, no `v` prefix)
+- **Tag**: `2.5.9` (bare semver, no `v` prefix)
 - **Released**: 2026-07-19
 
 ## Distribution
@@ -28,7 +28,7 @@ type: state
 
 ## Source
 
-- **Source**: **12,845 lines** across 19 domain modules (`src/*.cyr`). The 2.5.8 arc grew `zstd.cyr` **1,992 → 2,058** (+66 — `_ze_mvalue` integer bit-price + priced lazy accept test, repcode candidates at the lookahead position, the rep0−1 probe, and the Huffman tree-description race; the hand-tuned `+2` rep slack was deleted). Largest modules: `deflate.cyr` **2,540**, `zstd.cyr` **2,058**, `xz.cyr` **1,819**, `bzip2.cyr` **1,316**, `lz4.cyr` **935**, `huffman.cyr` **683**, `gzip.cyr` **638**, `tar.cyr` **513**; `runtime.cyr` **73**, `lib.cyr` **246**, `types.cyr` **42**.
+- **Source**: **13,099 lines** across 19 domain modules (`src/*.cyr`). The 2.5.9 security-hardening arc grew `tar.cyr` **513 → 701** (+188 — the cross-entry symlink ledger for H-1 + parse-path OOM guards for M-3), `zstd.cyr` **2,058 → 2,083** (+25 — M-12 lock wrappers), `xz.cyr` **1,819 → 1,836** (M-5/M-6/M-7 + M-8 flag), `bzip2.cyr` **1,316 → 1,323** (M-8/L-1 flags), `stream.cyr` **250 → 256** (M-13), `lz77.cyr` **181 → 184** (M-8), `lib.cyr` **246 → 254** (I-1 reset + M-12 dispatch). Largest modules: `deflate.cyr` **2,540**, `zstd.cyr` **2,083**, `xz.cyr` **1,836**, `bzip2.cyr` **1,323**, `lz4.cyr` **935**, `tar.cyr` **701**, `huffman.cyr` **683**, `gzip.cyr` **638**; `runtime.cyr` **73**, `lib.cyr` **254**, `types.cyr` **42**.
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
@@ -40,9 +40,9 @@ cross-cutting helpers).
 
 | Suite group                                   | Functions | Assertions |
 |-----------------------------------------------|----------:|-----------:|
-| `tests/tcyr/*.tcyr` (20 split suites)         |       257 |  4,137,439 |
+| `tests/tcyr/*.tcyr` (20 split suites)         |       257 |  4,137,643 |
 | `tests/tcyr/git_object.tcyr`                  |        10 |    346,583 |
-| **Total**                                     |   **267** | **4,484,022** |
+| **Total**                                     |   **267** | **4,484,226** |
 
 Split suites: `checksum`, `lz4_{compress,decompress}`,
 `lz4f_{compress,decompress}`, `deflate_{compress,decompress}`,
@@ -80,31 +80,48 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 12,827 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd de/compress (encode 2.5.5, competitive 2.5.6–2.5.8) + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
+| `dist/sankoch.cyr`           | 13,142 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd de/compress (encode 2.5.5, competitive 2.5.6–2.5.8) + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
 | `dist/sankoch-core.cyr`      |   317 | **[lib.core]** kernel-safe LZ4 batch decompress only (types + xxhash32 + lz4_decode); no alloc / syscalls / mutex (AGNOS initrd) |
-| `dist/sankoch-zlib.cyr`      | 4,889 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
-| `dist/sankoch-gzip.cyr`      | 5,042 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
-| `dist/sankoch-xz.cyr`        | 2,755 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-bzip2.cyr`     | 2,071 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-zstd.cyr`      | 2,100 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd **de + compress** (decode 2.5.0, hardened 2.5.6; sovereign `zstd_compress` encoder 2.5.5, competitive 2.5.6–2.5.8 — now beats `zstd -3`, zstd's own default, on every fixture — with a 1..9 `zstd_compress_level`), fully self-contained (own bit reader / FSE / Huffman, no runtime/mutex). agnova `base-system.tar.zst` + takumi zstd tarballs; the ZIP method-93 write path (2.6.x) |
-| `dist/sankoch-tar.cyr`       | 10,748 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
+| `dist/sankoch-zlib.cyr`      | 4,927 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
+| `dist/sankoch-gzip.cyr`      | 5,080 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
+| `dist/sankoch-xz.cyr`        | 2,798 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-bzip2.cyr`     | 2,098 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-zstd.cyr`      | 2,212 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd **de + compress** (decode 2.5.0, hardened 2.5.6; sovereign `zstd_compress` encoder 2.5.5, competitive 2.5.6–2.5.8 — now beats `zstd -3`, zstd's own default, on every fixture — with a 1..9 `zstd_compress_level`), own bit reader / FSE / Huffman; carries `runtime.cyr` since 2.5.9 for the API lock (M-12 — was lock-free, which raced under concurrent callers). agnova `base-system.tar.zst` + takumi zstd tarballs; the ZIP method-93 write path (2.6.x) |
+| `dist/sankoch-tar.cyr`       | 11,035 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
 
 All zero deps. Regenerated at every release via `cyrius distlib` (full) plus the seven named profiles — `cyrius distlib core` / `zlib` / `gzip` / `xz` / `bzip2` / `zstd` / `tar` (eight bundles total). CI gates on drift across all eight.
 
 ## In-flight slots
 
-**Ladder committed; 2.5.8 shipped (2026-07-19); 2.6.x next.** 2.5.8 closed the
-parse-quality arc — **not** with the scheduled optimal/2-pass DP, but with a **priced
-parse**: `_ze_mvalue` replaces the two hardcoded match-*length* comparisons in
-`_ze_lz_parse` with an integer bit-*cost* compare, and the one-step lookahead now gets the
-same repcode candidates the current position already had. Corpus **−9.9 %** with **no
-regression on any of eleven fixtures**, and the default level now beats `zstd -3` — zstd's
-own default — on *every* fixture (2.5.7 still lost to `-3` on json records and
-ascending-integer text). Ratios in
-[`docs/benchmarks/2026-07-19-2.5.8-priced-parse.md`](../benchmarks/2026-07-19-2.5.8-priced-parse.md).
-Reference `zstd -d` v1.5.7 (15-case encode smoke + 1,150 fuzz iterations) is the
-correctness bar. Forward ladder in
-[`roadmap.md`](roadmap.md#-scheduled--the-committed-next-release-ladder):
+**2.5.9 shipped (2026-07-19); 2.5.10 next (audit remainder), then 2.6.x.** 2.5.9 was the
+pre-2.6.0 **P(-1) scaffold-hardening pass** — the first security audit of the never-audited
+2.4.x/2.5.x surface (xz/bzip2/tar/zstd-encoder). It found **1 HIGH + 13 MEDIUM + 5 LOW**
+and landed the **security-critical subset**: H-1 tar symlink-chain traversal (arbitrary
+file write outside the extraction root — a cross-entry symlink ledger closes it, verified
+against a 5,000-archive differential), M-3 tar NULL-write, M-5/M-6/M-7 xz OOB-read /
+DoS-hang / sha256-fail-closed, M-8+L-1 the OOM-latch crash class (INFO-E, negative), M-12
+zstd concurrency lock (`runtime.cyr` → `[lib.zstd]`), M-13 stream allocs. Full record +
+remediation status in
+[`docs/audit/2026-07-19-pre-2.6.0.md`](../audit/2026-07-19-pre-2.6.0.md); baseline in
+[`docs/benchmarks/2026-07-19-2.5.9-p1-baseline.md`](../benchmarks/2026-07-19-2.5.9-p1-baseline.md).
+
+- **2.5.10 — the audit remainder (blocks 2.6.0).** The resource-leak / interop /
+  zstd-decode-OOM cluster deferred from 2.5.9 because it all touches `zstd.cyr` memory
+  lifetime + `tar_open_auto` sizing and lands coherently: **M-1** (tar retry-ladder ~1 GiB
+  arena DoS), **M-2** (multi-frame `.zst` silently truncated to frame 1), **M-4**
+  (multi-member `.tar.gz` wrongly rejected), **M-9** (zstd decode ~262 KB/call arena leak),
+  **M-10** (zstd encoder FSE-ctable leak), **M-11** (zstd decode OOM null-checks), the
+  **zstd-encoder half of M-8**, and the LOW/INFO tail (L-2..L-5, I-1 completion —
+  route zstd/tar/stream allocs through the fault seam, `fuzz_xz_truncate`). 2.6.0 opens
+  after this lands.
+- **Deferred — zstd optimal / 2-pass parse (its own arc, unscheduled).** Was the 2.5.8
+  slot; built and measured side by side against the priced parse before being deferred.
+  A verified DP probe reached 251,733 B on the seven-fixture corpus against 2.5.8's
+  251,333 B — i.e. **worse on total** — while costing ~400 lines, ~224 KiB of DP arrays
+  and 4–74× encode time. It is genuinely better on real source/binary specifically
+  (−3.6 % vs 2.5.8's −0.5 %), so it stays on the ladder rather than being dropped, but it
+  is an arc, not a point release. Schedule if a consumer needs that last few percent on
+  source/binary.
 
 - **Deferred — zstd optimal / 2-pass parse (its own arc, unscheduled).** Was the 2.5.8
   slot; built and measured side by side against the priced parse before being deferred.
@@ -149,7 +166,7 @@ encode shipped 2.5.5).
 ## CI / release gates
 
 - **Cleanliness**: `cyrius build` 0 warnings on library path; `cyrius lint` 0 warnings per source file; `cyrfmt --check` clean across all `src/` + `programs/` + `tests/` + `fuzz/`; `cyrius vet src/lib.cyr` clean (25 deps, 0 untrusted, 0 missing).
-- **Tests**: all tcyr suites green (19 split codec×direction suites incl. `zstd_compress` + `ratio_cap` + `git_object`, auto-discovered by the CI Test loop); all fuzz harnesses green (5 files — lz4 / deflate / xz / bzip2 / zstd, auto-discovered via `fuzz/*.fcyr`).
+- **Tests**: all tcyr suites green (19 split codec×direction suites incl. `zstd_compress` + `ratio_cap` + `git_object`, auto-discovered by the CI Test loop; `detect_error` carries the 2.5.9 OOM-latch retry sweep across deflate/xz/bzip2); all fuzz harnesses green (5 files — lz4 / deflate / xz / bzip2 / zstd, auto-discovered via `fuzz/*.fcyr`). **Note (2.5.9)**: `cyrius test` does not propagate a child suite's SIGSEGV as a non-zero exit — a crashing suite reports no failure line; verify a suspect suite by building + running its binary directly.
 - **Wire-format gate**: 43 SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; 2.5.8 added `SIZE zstd6_rec_256K`, a record-structured parse-quality canary — the three `zstd6_text_*` lines use a periodic filler that is one long match at any level, so they did not move a byte across either the 2.5.7 or 2.5.8 parse rewrite; pre-existing lines unchanged.) The **xz and bzip2 encoders** (2.4.1 / 2.4.3) and the **zstd encoder** (`SIZE zstd6_*`, 2.5.6) are **deliberately excluded** from this gate — their output is not bit-reproducible across encoder versions, so they ship informational ratio lines in `bench` instead, as does the 2.4.5 ratio-cap section.
 - **Bundle gate**: `cyrius distlib` + `cyrius distlib core` regenerate `dist/sankoch.cyr` + `dist/sankoch-core.cyr`; CI fails on drift.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
@@ -163,6 +180,7 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.5.9  | 2026-07-19 | **P(-1) security hardening** — first audit of the never-audited 2.4.x/2.5.x surface (1 HIGH + 13 MED + 5 LOW); landed the security-critical subset: H-1 tar symlink-chain traversal, M-3 tar NULL-write, M-5/M-6/M-7 xz OOB-read/DoS-hang/sha256-fail-closed, M-8+L-1 OOM-latch crash class (INFO-E), M-12 zstd concurrency lock, M-13 stream allocs; remainder → 2.5.10 |
 | 2.5.8  | 2026-07-19 | **zstd encoder priced parse** — `_ze_mvalue` bit-cost match selection replaces raw length compares; repcode candidates at the lookahead position; corpus −9.9 %, no regression on any of 11 fixtures, beats `zstd -3` (zstd's default) on every fixture; fixes a 2.5.7 defect where the lazy lookahead inflated regular data 67 % |
 | 2.5.7  | 2026-07-18 | **zstd encoder parse quality** — repcode-aware match finding + adaptive FSE sequence tables (per-block RLE/FSE_Compressed/Predefined); now *beats* `zstd -3` (the default level) by 4–11 % on real code/text/binary; structured/tabular +106 %→−6 % vs `zstd -1` |
 | 2.5.6  | 2026-07-18 | **zstd encoder competitiveness + decoder hardening** — FSE literal weights + repeat offsets + lazy parse + 1..9 level knob (now *beats* `zstd -1` on source/binary/repetitive); decoder closed against 36 verified OOB/DoS paths + new `fuzz_zstd.fcyr` |
@@ -186,13 +204,17 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 ## Open INFOs carried forward
 
-Minor tracked items for the next P(-1) / audit pass to resolve or rebase. From the most recent audit ([`docs/audit/2026-06-16-pre-2.4.0.md`](../audit/2026-06-16-pre-2.4.0.md), zero HIGH/MED/LOW findings). Closed items live in `CHANGELOG.md`.
+Tracked items to resolve or rebase. The **2.5.9 P(-1) audit**
+([`docs/audit/2026-07-19-pre-2.6.0.md`](../audit/2026-07-19-pre-2.6.0.md)) is the current
+source; it found 1 HIGH + 13 MEDIUM + 5 LOW (the security-critical subset fixed in 2.5.9,
+the rest scheduled for 2.5.10 — see In-flight slots). Closed items live in `CHANGELOG.md`.
 
-- **INFO-B** — batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len` (dict staged in `dst`). The 2.3.6 *streaming* FDICT path removed this for the streaming variant (dict in scratch); the batch constraint stands. Already enforced at runtime; docstring-polish item.
-- **INFO-C** — aarch64 LZ77 / FDICT match-copy use unaligned `load64`. Permitted by ARMv6+ but some implementations pay a cycle penalty. Flagged for future investigation if aarch64 perf benchmarks surface this as hot.
-- **INFO-D** — on a *retried* OOM, partially-allocated lazy tables orphan their bump-allocated memory (`_sankoch_alloc` arena does not free). OOM-path only; minor.
-- **INFO-E** — the xz and bzip2 encoders allocate large working buffers (xz prob/DP ~0.6 MB; bzip2 BWT + Huffman ~44 MB at level 9) as lazy singletons. Acceptable for userspace encode, but a future audit should confirm the OOM-propagation paths on first-call failure.
+- **INFO-B** — batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len` (dict staged in `dst`). Carried unchanged (not re-derived in the 2.5.9 audit). Already enforced at runtime; docstring-polish item.
+- **INFO-C** — aarch64 LZ77 / FDICT match-copy use unaligned `load64`. The 2.5.9 audit confirmed only one such site repo-wide; aarch64 cross-build green. Carried, narrowed — revisit only if aarch64 perf surfaces it.
+- **INFO-D** — **amplified by the 2.5.9 audit.** The orphaned-memory-on-retry leak is the *accepted cost* of the M-8 completion-flag fix (arena still never frees). Separately the never-freeing arena has real DoS teeth on some paths (audit M-1 / M-9 / M-10, deferred to 2.5.10); tracked as a design item for a future arena-with-reset.
+- ~~**INFO-E**~~ — **RESOLVED (negative) in 2.5.9.** The audit's charter question. First-call/partial OOM propagation on the encode path *was* broken (audit M-8): a partial lazy-init latched and the next call wrote through NULL, in the xz encoder, bzip2 encoder, and shared `lz77_init`. Fixed with completion-flag guards + a partial-OOM-then-retry fault sweep. The zstd encoder's OOM half (raw-`alloc` sites, no fault-seam coverage) is deferred to 2.5.10 with the zstd memory cluster.
 - ~~**INFO-F**~~ — **CLOSED in 2.5.3.** The ratio cap now covers xz and bzip2 decode too (`xz_decompress_with_ratio_cap` / `bzip2_decompress_with_ratio_cap`, batch). The DEFLATE-family-only gap is closed.
+- **INFO-I1** (new, 2.5.9) — `_sankoch_reset_tables()` was extended to reset the xz/bzip2/crc64 lazy globals it had omitted (so the OOM sweep re-triggers their first-call inits). Completion (route zstd/tar/stream allocs through the `_sankoch_alloc` fault seam so their OOM paths are sweepable; add `fuzz_xz_truncate`) is scheduled for 2.5.10.
 
 ---
 

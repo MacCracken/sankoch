@@ -135,6 +135,31 @@ fn _oom_compress_path(fmt, level, limit) {
     return 0;
 }
 
+# 2.5.9 (M-8): the retry-after-partial-OOM latch. The plain sweep above resets the
+# tables every iteration, so it never exercises the dangerous path: a first call that
+# fails PART-WAY through a multi-alloc lazy init (leaving a guard pointer set but a
+# sibling NULL), followed WITHOUT a reset by a second call — which the pre-2.5.9 code
+# turned into a NULL-page write. Here we fault at each site, let it fail, clear the
+# fault, and retry with NO reset; the retry must re-enter the init and succeed. A crash
+# = a re-introduced latch; a hang = a lock leaked on the OOM path.
+fn _oom_retry_path(fmt, level, limit) {
+    var src = alloc(256);
+    var i = 0;
+    while (i < 256) { store8(src + i, 65 + (i % 26)); i = i + 1; }
+    var dst = alloc(4096);
+    var n = 0;
+    while (n < limit) {
+        _sankoch_reset_tables();
+        _sankoch_alloc_set_fail_at(n);
+        compress_level(fmt, src, 256, dst, 4096, level);   # may OOM mid-init
+        _sankoch_alloc_set_fail_at(0 - 1);                 # clear the fault
+        var r2 = compress_level(fmt, src, 256, dst, 4096, level);   # retry, no reset
+        assert(r2 > 0, "oom retry: second attempt succeeds after a partial-OOM first attempt");
+        n = n + 1;
+    }
+    return 0;
+}
+
 # Common dict + input — input has heavy overlap with dict so the
 # dict-warmed encoder reaches into the dict via match references.
 fn _dict_test_dict() {

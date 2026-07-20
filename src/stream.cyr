@@ -72,6 +72,7 @@ fn stream_compress_init(format, level, dst, dst_cap): i64 {
     if (inner == 0) { return 0; }
 
     var ctx = alloc(48);
+    if (ctx == 0) { return 0; }   # 2.5.9 M-13: don't store through a NULL ctx
     store64(ctx, format);
     store64(ctx + 8, level);
     store64(ctx + 16, STREAM_COMPRESS);
@@ -86,6 +87,7 @@ fn _stream_grow(ctx): i64 {
     var cap = load64(ctx + 32);
     var new_cap = cap * 2;
     var new_buf = alloc(new_cap);
+    if (new_buf == 0) { return 0 - ERR_OOM; }   # 2.5.9 M-13: never copy into / publish a NULL buffer
     var len = load64(ctx + 40);
     var i = 0;
     while (i < len) {
@@ -99,10 +101,13 @@ fn _stream_grow(ctx): i64 {
 
 fn stream_decompress_init(format): i64 {
     var ctx = alloc(48);
+    if (ctx == 0) { return 0; }   # 2.5.9 M-13
+    var buf = alloc(STREAM_INIT_CAP);
+    if (buf == 0) { return 0; }   # inner buffer alloc failed — don't hand back a ctx with a NULL buffer
     store64(ctx, format);
     store64(ctx + 8, 0);
     store64(ctx + 16, STREAM_DECOMPRESS);
-    store64(ctx + 24, alloc(STREAM_INIT_CAP));
+    store64(ctx + 24, buf);
     store64(ctx + 32, STREAM_INIT_CAP);
     store64(ctx + 40, 0);
     return ctx;
@@ -132,6 +137,7 @@ fn stream_decompress_init_inc(format, dst, dst_cap): i64 {
     if (inner == 0) { return 0; }
 
     var ctx = alloc(48);
+    if (ctx == 0) { return 0; }   # 2.5.9 M-13
     store64(ctx, format);
     store64(ctx + 8, 0);
     store64(ctx + 16, STREAM_DECOMPRESS_INC);
@@ -179,7 +185,7 @@ fn stream_write(ctx, data, len): i64 {
     var written = load64(ctx + 40);
     var cap = load64(ctx + 32);
     while (written + len > cap) {
-        _stream_grow(ctx);
+        if (_stream_grow(ctx) < 0) { return 0 - ERR_OOM; }   # 2.5.9 M-13: propagate, don't NULL-write
         cap = load64(ctx + 32);
     }
     var buf = load64(ctx + 24);
