@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.6.4) — ZIP surface P(-1)-audited and cleared | **Last Updated**: 2026-07-20
+> **Status**: Stable (v2.7.0) — xz encoder repetitive-data speedup shipped | **Last Updated**: 2026-07-20
 
 This file is the **forward** ladder — what is in progress, the committed
 next-release ladder, and the longer-horizon Future bucket. **Shipped history
@@ -28,24 +28,28 @@ The 2.6.x line completes the feature surface. 2.7.x is the deferred
 performance/ratio work, promoted into a committed ladder, **highest-value
 first**. Each is a measured gap, not a guess.
 
-### 2.7.0 — xz encoder match finder (the largest measured gap)
+### 2.7.1 — xz encoder HC4 match finder (the real-source gap)
 
-The 2.5.9 P(-1) baseline measured xz encode at **~0.07–0.16 MB/s — roughly
-400–900× slower than reference `xz -6`** for equal-or-better ratio (1 MB of
-zeros: 14.8 s vs ~16 ms; 1 MB of text: 6.4 s). Scaling is *linear*, so it is a
-constant factor, not an algorithmic blow-up: reference xz uses a BT4 binary-tree
-match finder with hash-chain skipping, while sankoch walks a plain chain and
-prices every position. This is the **largest measured performance gap in the
-tree**, and `takumi` is an xz-encode consumer (a 4 MB source tarball takes
-25–57 s). It survived the 2.5.4 throughput pass, so closing it means a **new
-match finder** (BT4 or a hash-chain with skip/`good_length` cutoffs), not
-micro-optimisation. Output need not stay bit-identical (xz encode already isn't,
-and is excluded from the wire-format SIZE gate) — only `xz -d`-decodable and
-within the current ~1–5 % ratio band. Numbers:
-[`docs/benchmarks/2026-07-19-2.5.9-p1-baseline.md`](../benchmarks/2026-07-19-2.5.9-p1-baseline.md).
-Likely several bites (match finder → optimal-parse integration → tuning).
+2.7.0 shipped the *repetitive-data* half of the xz-encode speedup (the `nice_len`
+greedy shortcut — text/zeros now ~44 / ~32 MB/s, within ~1.5× of `xz -6`). What
+remains is the **real-source** regime: the 2.7.0 baseline measured a 314 KB
+Cyrius-source corpus at **0.59 MB/s vs `xz -6`'s 4.4 MB/s (7.3×)**, and profiling
+attributed **~78 % of that to the HC3 hash-chain walk** (23.8M chain-nodes) — a
+3-byte hash produces long, collision-heavy chains on source trigrams. The fix is
+an **HC4 finder**: a 4-byte main hash for purer chains, a 3-byte seed to preserve
+len-3 matches, and a `nice_len` early-out on the chain walk — built on **xz-private
+tables** so DEFLATE's shared 3-byte lz77 is untouched. A full, adversarially-reviewed
+design (data-structure byte sizes, the mask-before-multiply hash, the `best >= maxlen`
+over-read guard, and the load-bearing `dist > WINDOW` reject that keeps distances inside
+the advertised dict for reference `xz -d`) is captured in the 2.7.0 design dossier. Ship
+only if the corpus ratio gate holds (`out ≤ 74132`) and every stream round-trips through
+both sankoch and `xz -d`. Baseline + attribution:
+[`docs/benchmarks/2026-07-20-2.7.0-baseline.md`](../benchmarks/2026-07-20-2.7.0-baseline.md).
+(Deferred further: a larger dictionary + BT4 tree, a *ratio* play — the corpus is +8.7 %
+vs `xz -6` mostly because of the 32 KB window vs xz's 8 MB dict — done only if HC4 leaves
+headroom.)
 
-### 2.7.1 — zstd optimal / 2-pass parse
+### 2.7.2 — zstd optimal / 2-pass parse
 
 The residue after the 2.5.8 priced parse: on *very regular record* data
 (synthetic csv, log lines) zstd's optimal parse finds longer cross-record
@@ -104,10 +108,11 @@ separate codec, not RFC 1951).
   since 2.5.9 — sankoch carries no SHA-256 primitive, so it fails closed rather
   than accept an unverified payload (CRC-32 / CRC-64 checks are verified). The
   legacy `.lzma` alone-format is not handled. xz encode is within ~1–5 % of
-  `xz -6` (optimal parse, not bit-identical to `xz`) but ~400–900× slower — the
-  2.7.0 target above; bzip2 encode is byte-identical to `bzip2 -9`. Neither
-  encoder is in the wire-format SIZE gate — both ship informational ratio lines
-  in `bench`.
+  `xz -6` (optimal parse, not bit-identical to `xz`). Since 2.7.0 the *repetitive*
+  regime is within ~1.5× of `xz -6` (the `nice_len` greedy shortcut); the
+  *real-source* regime is still ~7× slower (0.59 vs 4.4 MB/s) — the 2.7.1 HC4
+  match finder above. bzip2 encode is byte-identical to `bzip2 -9`. Neither encoder
+  is in the wire-format SIZE gate — both ship informational ratio lines in `bench`.
 
 ---
 
@@ -128,7 +133,7 @@ crate." These are simply not yet implemented:
 
 (Zstandard is no longer here — decode shipped 2.5.0, the sovereign encoder
 shipped 2.5.5, and it now beats `zstd -3` on every benchmark fixture. Its one
-remaining ratio residue is the 2.7.1 optimal-parse item above, not a new codec.)
+remaining ratio residue is the 2.7.2 optimal-parse item above, not a new codec.)
 
 ### Primitive sources for future codecs
 
@@ -163,7 +168,7 @@ remaining ratio residue is the 2.7.1 optimal-parse item above, not a new codec.)
 | deflate.cyr      | 2545 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
 | zlib.cyr         |  485 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
 | gzip.cyr         |  650 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
-| xz.cyr           | 1836 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) | full |
+| xz.cyr           | 1939 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) + 2.7.0 rep-only `nice_len` greedy shortcut + interior DP cut (repetitive-data encode ~290–473× faster) | full |
 | bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
 | zstd.cyr         | 2384 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
 | zip.cyr          | 1206 | PKZIP `.zip` container: in-memory reader + writer, methods 0/8, Zip64 (2.6.2), streaming write + data descriptors + Unix metadata/symlinks (2.6.3), CRC-32 verified, per-member ratio cap; 2.6.4 P(-1) hardening — i64-overflow-safe Zip64 bounds (subtraction form), streaming-abandon lock release, mid-stream-add rejection, name-length limit, cross-entry symlink ledger | full |
@@ -172,7 +177,7 @@ remaining ratio residue is the 2.7.1 optimal-parse item above, not a new codec.)
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  265 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **14796** | | |
+| **Total**        | **14899** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -209,7 +214,7 @@ per-bundle roles in [`state.md` § Dist bundles](state.md#dist-bundles).
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; pin is 6.4.67).
+ship with Cyrius ≥ 6.0.1; pin is 6.4.68).
 
 ## Key References
 
@@ -226,11 +231,10 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.67).
 
 ---
 
-*Last Updated: 2026-07-20 (2.6.4 shipped — the P(-1) ZIP-surface audit closed and its
-in-progress block removed; the forward ladder is now the committed **2.7.x
-performance/ratio ladder**. Shipped history lives in CHANGELOG.md and the per-release
-snapshot in state.md. The four formerly-scattered deferred items are promoted into that
-ladder: 2.7.0 xz encoder match finder (the ~400–900× gap) and 2.7.1 zstd optimal/2-pass
-parse are committed; SIMD CRC-32 and the DEFLATE match-finder stay conditional (schedule on
-a consumer profile) inside the same arc. Future codec bucket [Brotli, GPU texture]
-unchanged.)*
+*Last Updated: 2026-07-20 (2.7.0 shipped — the xz-encode `nice_len` greedy shortcut closed the
+*repetitive* half of the encode gap [~290–473× faster, ratio-neutral-or-better]. Profiling had
+split the "match finder" item into two regimes, so the ladder was re-cut: 2.7.0 = the shipped
+repetitive shortcut; **2.7.1 = the HC4 match finder** for the real-source 7.3× gap [was folded
+into the old 2.7.0]; 2.7.2 = zstd optimal/2-pass parse [was 2.7.1]. SIMD CRC-32 and the DEFLATE
+match-finder stay conditional (schedule on a consumer profile). The toolchain pin also moved
+6.4.67 → 6.4.68 with 2.7.0. Future codec bucket [Brotli, GPU texture] unchanged.)*

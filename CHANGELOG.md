@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-07-20 — xz encoder: optimal-parse greedy shortcut (repetitive-data speedup)
+
+The .xz **encoder** was the largest measured performance gap in the tree. Profiling split it
+into two disjoint regimes (baseline + attribution:
+[`docs/benchmarks/2026-07-20-2.7.0-baseline.md`](docs/benchmarks/2026-07-20-2.7.0-baseline.md)):
+on **repetitive** data (300–750× slower than `xz -6`) the cost is the windowed optimal parse
+pricing a ~273-length match at every one of the 4096 window positions; on **real source** data
+(7.3× slower) the HC3 hash-chain walk dominates. 2.7.0 ships the fix for the *repetitive*
+regime — the bigger prize, and the one the roadmap had not named (it assumed "match finder").
+The HC4 match finder for the real-data regime is scheduled as 2.7.1.
+
+Design was research-backed and adversarially reviewed before implementation; the review caught
+that a **normal-match** greedy shortcut would *regress* real-source ratio (the longest recorded
+match sits at the largest distance, so greedy loses to the windowed DP when a shorter-but-nearer
+match exists). The shipped shortcut is therefore **rep-only** and gated on a **saturated** rep.
+
+### Changed — encoder speed
+- **`nice_len` greedy shortcut** (`_xze_lzma2_emit`): at a window start, if a rep match saturates
+  to the full match length (`XZE_NICE = XZE_MATCH_MAX = 273`), emit it as one op instead of
+  running a full DP window over the covered span. A saturated rep has zero distance cost and
+  maximal coverage, so it is unconditionally optimal — safe to take greedily. **Rep-only**: a
+  mid-length or normal-match greedy is not ratio-safe (a full `XZE_NICE`-value sweep 64→192 all
+  lost 4 bytes on real source; the saturated-rep trigger lost none).
+- **Interior DP cut** (`_xze_dp_fill` now returns a cut index): when a rep at a reachable interior
+  slot covers the *entire* remaining window (`crl == avail`), end the window there and let the
+  next iteration's greedy take it. Gated on full-window coverage (not merely ≥ `nice_len`) because
+  an interior cut forces the path through that slot — only safe when the remainder is a single
+  repeated run. A cheap O(1) last-byte quick-reject keeps this check off the real-source hot path.
+- **Result**: text 256K **0.15 → 44.6 MB/s (~290×)**, zeros 256K **0.07 → 31.7 MB/s (~473×)**,
+  each **smaller** than before (240→216, 192→172); real-source corpus exactly neutral in both
+  ratio (74132) and speed. Every stream still decodes via reference `xz -t` / `xz -dc` (xz-utils
+  5.8.3); the 43 gated wire-format SIZE lines are byte-identical (xz encode is informational).
+
+### Changed — toolchain
+- **Toolchain pin 6.4.67 → 6.4.68** — tracks the current Cyrius snapshot. `cyrius deps`
+  re-resolved; clean rebuild + all gates green. No stdlib API surfaced; no source/API/wire-format
+  change from the pin bump itself (all 43 SIZE lines byte-identical across 6.4.67 → 6.4.68).
+
 ## [2.6.4] — 2026-07-20 — P(-1) hardening: first security audit of the ZIP surface
 
 The scaffold-hardening pass (P(-1)) turned its first-ever adversarial audit on the ZIP

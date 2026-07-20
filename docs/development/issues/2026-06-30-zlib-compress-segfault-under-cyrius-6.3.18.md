@@ -15,7 +15,7 @@ The whole suite now passes 0-failed on cycc 6.3.18; the `cyrius.cyml` pin moved 
 
 ## Context
 
-> Historical pre-fix diagnostics. The pin has since moved 6.2.44 → 6.3.18 → **6.4.67**;
+> Historical pre-fix diagnostics. The pin has since moved 6.2.44 → 6.3.18 → **6.4.68**;
 > the root cause was a test-harness `var chunks[4]` undersize, fixed 2026-06-30 (see
 > **Status** above). Present-tense claims below reflect the state at time of the crash.
 
