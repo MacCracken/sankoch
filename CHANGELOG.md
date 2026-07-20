@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-07-20 — xz encoder: BT4 binary-tree match finder (real-source speedup)
+
+2.7.0 closed the *repetitive-data* half of the xz-encode gap. 2.7.1 closes part of the
+*real-source* half. The 2.7.0 baseline measured a source corpus at 0.6 MB/s vs `xz -6`'s 4.4 —
+and profiling had blamed "the match finder" (78 %). That figure counted **operations, not time**:
+the hash-chain nodes are cheap quick-rejects, so an HC4 (4-byte-hash) chain — the first attempt —
+gave only +4 % while regressing repetitive −25 %. The genuine fix is **BT4**: a binary-tree match
+finder that finds the longest match + every shorter length in O(match_len + tree_depth), never
+re-comparing bytes across candidates (it remembers the matched prefix on each tree branch). Design
+was research-backed and adversarially reviewed (three verifiers, all *sound*) before any tree code
+was written; the HC4 detour and BT4 results are recorded in
+[`docs/benchmarks/2026-07-20-2.7.0-baseline.md`](docs/benchmarks/2026-07-20-2.7.0-baseline.md).
+
+### Changed — encoder
+- **BT4 binary-tree match finder** (`_xze_get_matches`, `_xzbt_skip`, `_xzbt_hash4` in `xz.cyr`)
+  on **xz-private** tables (65536-slot son[] tree + hash4/hash3 heads, +1.75 MiB one-time).
+  DEFLATE's shared 3-byte lz77 (`_lz77_head`/`_lz77_prev`/`_lz77_insert`) is **byte-for-byte
+  untouched** (proven by the deflate/gzip/zlib suites). Distances stay ≤ 32768 (65536-slot period
+  + strict `delta > WINDOW` prune) so reference `xz -d` accepts every stream.
+- **Result**: real-source corpus **0.60 → 0.73 MB/s (+21 %)** *and* smaller (58872 → 58704 B); the
+  speed gap to `xz -6` narrows **7.1× → 5.8×**. Repetitive data (text/zeros) is unchanged — the
+  greedy-covered skip range uses a **seed-only O(1) insert** (`_xzbt_skip`) instead of a full tree
+  walk, so BT4's per-insert cost never touches the repetitive path. Full parity is not reached: the
+  residual +7 % ratio vs `xz -6` is mostly the 32 KB window vs xz's 8 MB dictionary (a later item).
+- **Dropped `lz77_init()` from the xz encode path** — BT4 is fully xz-private, so xz no longer
+  allocates/clears DEFLATE's shared tables (saves a 512 KB per-encode clear). DEFLATE still inits
+  them on its own path.
+
+### Changed — toolchain
+- **Toolchain pin 6.4.68 → 6.4.69** — tracks the current Cyrius snapshot (2.7.1 was built and
+  tested on it). Clean rebuild + all gates green; no source/API/wire-format change from the pin
+  (43 gated SIZE lines byte-identical).
+
 ## [2.7.0] — 2026-07-20 — xz encoder: optimal-parse greedy shortcut (repetitive-data speedup)
 
 The .xz **encoder** was the largest measured performance gap in the tree. Profiling split it
