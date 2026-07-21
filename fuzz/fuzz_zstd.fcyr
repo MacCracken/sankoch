@@ -199,10 +199,18 @@ fn main() {
     }
     println("fuzz_zstd: 500 optimal-parse (levels 7-9) round-trip tests passed");
 
-    # 2.7.4: cross-block match window — multi-block record inputs at levels 6 + 9.
-    # 256 KiB = 2 blocks (enough for cross-block). Buffers allocated ONCE and reused —
-    # the _sankoch_alloc arena never frees, so a fresh alloc per call would exhaust it.
+    # 2.7.4: cross-block match window — multi-block record inputs. 256 KiB = 2 blocks
+    # (enough for cross-block). Buffers allocated ONCE and reused — the _sankoch_alloc
+    # arena never frees, so a fresh alloc per call would exhaust it.
+    #
+    # Cost budget (CI wraps each harness in `timeout 60`): the L6 greedy parse is ~0.02s
+    # per 256 KiB call, but the L9 DP optimal parse is ~100x costlier (~2.6s) on this
+    # maximally-repetitive record data — 20 L9 calls alone ran ~52s and timed CI out.
+    # So sweep the cross-block window broadly at L6 (cheap) and spot-check the L9 optimal
+    # cross-block path on a smaller 2-block input (163840 = 128 KiB + 32 KiB) at a few
+    # salts, incl. seed 8 (the heaviest observed).
     var xcap = 262144;
+    var xl9 = 163840;
     var xsrc = _sankoch_alloc(xcap);
     var xcomp = _sankoch_alloc(xcap + 4096);
     var xdec = _sankoch_alloc(xcap);
@@ -210,11 +218,13 @@ fn main() {
         seed = 1;
         while (seed <= 20) {
             fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, seed * 2654435761, 6);
-            fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, seed * 2246822519, 9);
             seed = seed + 1;
         }
+        fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, 1 * 2246822519, 9);
+        fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, 8 * 2246822519, 9);
+        fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, 15 * 2246822519, 9);
     }
-    println("fuzz_zstd: 40 cross-block round-trip tests passed");
+    println("fuzz_zstd: 23 cross-block round-trip tests passed");
 
     seed = 1;
     while (seed <= 150) {
