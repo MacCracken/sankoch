@@ -1,8 +1,8 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.7.5); no committed next release — see Backlog | **Last Updated**: 2026-07-21
+> **Status**: Stable (v2.7.5); **▶ 2.8.x scheduled** (SIMD CRC-32 → GPU texture → P(-1) closeout) | **Last Updated**: 2026-07-21
 
-This file is the **forward** ladder — the one committed next release
+This file is the **forward** ladder — the committed next releases
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
 next arc opens. **Shipped history lives in [`CHANGELOG.md`](../../CHANGELOG.md);
 the live per-release snapshot lives in [`state.md`](state.md).** This file does
@@ -21,26 +21,99 @@ dossier: [`docs/audit/2026-07-20-zip-container.md`](../audit/2026-07-20-zip-cont
 The 2.4.x–2.7.x encoder work closed the largest measured gaps in the tree: the
 xz-encode arc (2.7.0 repetitive speed, 2.7.1 BT4 match finder, 2.7.2 256 KB window),
 then the zstd encoder (2.7.3 DP optimal parse, 2.7.4 cross-block match window —
-which now **beats `zstd -19` on record data**). **There is no committed next
-release.** The forward list is an unscheduled **Backlog** (below), to be
-re-organised into a fresh ladder when a consumer profile or a new arc surfaces. No
-new formats are needed for any current consumer.
+which now **beats `zstd -19` on record data** — 2.7.5 repetitive-record chain-cutoff
+refinement). The encoder ladder is complete.
+
+The **2.8.x line** takes down the two most-ready **Backlog** items as a fresh
+ladder (see **▶ Scheduled** below): **2.8.0 = SIMD CRC-32 (`PCLMULQDQ`)**, then
+**2.8.1 = GPU texture compression**, then a **P(-1) hardening pass** closes out the
+line. It opens **straight into the feature** — no P(-1) pass *leads* 2.8.0
+(deliberate); the P(-1) closeout at the end of 2.8.x audits the un-audited 2.7.x
+encoder surface together with the 2.8.x additions before the next minor opens. The
+remaining Backlog items (DEFLATE match-finder, Brotli) stay parked pending a
+consumer profile.
+
+---
+
+## ▶ Scheduled — 2.8.x
+
+The committed forward ladder: the two most-ready Backlog items, taken down in
+order, then a **P(-1) hardening pass closes out the 2.8.x line**. 2.8.0 opens
+**straight into the feature** — no P(-1) hardening pass *leads* it (deliberate);
+instead the un-audited 2.7.x encoder surface — BT4 `son[]`, the 4 MiB frame-global
+chain, the DP-optimal arrays, the window/cutoff math — is audited together with the
+2.8.0/2.8.1 additions in the **2.8.x-closeout P(-1) pass** (below), before the next
+minor opens.
+
+### 2.8.0 — SIMD CRC-32 via `PCLMULQDQ`
+
+A carryless-multiply (fold-based) CRC-32 on x86_64, beyond the portable
+**slice-by-8** table fold 2.3.4 already banked (~2×, wire-identical, x86_64 +
+aarch64). PCLMULQDQ was off the critical path *because* slice-by-8 covered the
+goal, so this is a further optimisation, not a correctness need — its bar is that
+it must not regress and must be provably bit-exact.
+
+Approach (mirrors the prior arcs' "verify each bite" cadence):
+1. **x86_64 fold** — the 4-way PCLMULQDQ fold from the Intel whitepaper (folding
+   constants per the CRC-32 polynomial), behind a runtime/compile-time gate; keep
+   slice-by-8 as the unconditional fallback so no target loses a working path.
+2. **aarch64** — either a PMULL (crypto-extension) parallel fold or an explicit
+   **fall back to slice-by-8** (no regression on the aarch64 gate — never a scalar
+   byte loop).
+3. **Wire-identical proof** — every gated CRC-32 output must equal the slice-by-8
+   table result **byte-for-byte** across the test corpus, plus a differential fuzz
+   (`fold(x) == table(x)` on random buffers). Hand-assembled CRC-folding carries a
+   silent-corruption risk; this gate is the whole point. `PCLMULQDQ`-off restores
+   the table path.
+- Ref: Intel, "Fast CRC Computation … Using PCLMULQDQ" (whitepaper, 2009).
+
+### 2.8.1 — GPU texture compression (BC1–BC7 / ASTC)
+
+The one genuinely different codec: **lossy** and GPU-format-specific, so it does
+not fit sankoch's "lossless" identity the way every prior codec did.
+
+- **First sub-step is a home decision, not code.** sankoch is the home for *every
+  lossless* codec (modular-by-profile), but a lossy texture codec may instead belong
+  with **mabda** — which already has generic compute dispatch (`compute.cyr`) and the
+  texture-format enums, but no codecs yet. Resolve this before writing a block encoder;
+  it decides the repo, the API shape, and whether the "lossless" framing in `CLAUDE.md`
+  needs qualifying.
+- **Then a first format** — a CPU reference block encoder (BC1/BC7 for desktop or ASTC
+  for mobile, driven by whichever consumer surfaces), block-based, validated against a
+  reference decoder.
+- Needs a consumer to pin *which* formats matter; scheduled as the direction, with the
+  home decision as its gating bite.
+
+### 2.8.x closeout — P(-1) hardening pass
+
+The P(-1) scaffold-hardening pass, run at the **end of the 2.8.x line** (before the next
+minor opens), per [`CLAUDE.md` § P(-1)](../../CLAUDE.md). It ships as its own release, as
+the 2.6.4 ZIP-surface and 2.5.9/2.5.10 audits did. Deferring it to the closeout (rather than
+leading 2.8.0) is the one deviation from "P(-1) before each minor" — recorded deliberately.
+
+Scope — the surface accrued since the last audit (2.6.4, ZIP), audited together:
+- **The un-audited 2.7.x encoder surface** — the BT4 binary-tree finder's `son[]` indexing,
+  the 4 MiB frame-global hash chain (`_ze_prev` + snapshot/restore/fill), the DP-optimal
+  arrays (`_zo_*`, the 4200-entry bounds), and the window / saturation-cutoff math. ~1,000
+  lines of new indexing / OOM / integer-range surface never security-reviewed.
+- **The 2.8.0/2.8.1 additions** — the hand-assembled `PCLMULQDQ` CRC fold (silent-corruption
+  risk is the whole reason it needs the wire-identical gate + an audit), and the new GPU
+  texture codec's block encoder.
+- Plus the standard closeout gates (cleanliness / dead-code / stale-comment sweeps, a fresh
+  benchmark baseline, the security-audit dossier under [`docs/audit/`](../audit/), and a
+  doc-health pass).
+
+Primitive sources for the codec items (Rice/Golomb, range encoder, LPC, GPU
+dispatch) are tabulated under [§ Primitive sources](#primitive-sources-for-future-codecs) below.
 
 ---
 
 ## Backlog — unscheduled (to be re-organised)
 
 Parked items with no committed release. Each has a *sound reason to wait* — the
-cheap win is banked, or the payoff needs a real consumer profile to justify the
-cost/risk. **To be triaged into a fresh ladder** when the next arc opens.
+payoff needs a real consumer profile to justify the cost/risk. **To be triaged
+into a fresh ladder** when a consumer surfaces.
 
-- **SIMD CRC-32 via `PCLMULQDQ`.** 2.3.4 already banked the CRC-32 throughput goal
-  with a portable **slice-by-8** table fold (~2×, x86_64 + aarch64, wire-identical),
-  so PCLMULQDQ is off the critical path. It remains an x86-only further optimisation:
-  the aarch64 gate needs a parallel PMULL path or a scalar fallback, and
-  hand-assembled CRC-folding carries a silent-corruption risk that must clear a high
-  bar over slice-by-8. Revisit only if a consumer's profile shows CRC-32 back on the
-  hot path. Ref: Intel "Fast CRC Computation … Using PCLMULQDQ" (whitepaper, 2009).
 - **DEFLATE match-finder throughput.** The wire-identical mandate (zlib
   byte-for-byte parity is load-bearing) blocks the obvious speedups — `good_match`
   and friends are speed/ratio trade-offs that change output. A genuine win needs an
@@ -49,13 +122,6 @@ cost/risk. **To be triaged into a fresh ladder** when the next arc opens.
   pick up if sit's `zlib_compress(1 MB)` target resurfaces as a priority.
 - **Brotli** (new codec) — DEFLATE-family with a static dictionary + context
   modeling; land it when a web-serving / font consumer needs it.
-- **GPU texture compression** (new codec, BC1-BC7 / ASTC) — the one genuinely
-  different beast (lossy, GPU-format-specific); mabda has generic compute dispatch
-  (`compute.cyr`) and the texture format enums but no codecs yet. May instead live
-  with mabda — decide when a consumer surfaces.
-
-Primitive sources for the new-codec items (Rice/Golomb, range encoder, LPC, GPU
-dispatch) are tabulated under [§ Primitive sources](#primitive-sources-for-future-codecs) below.
 
 ---
 
@@ -112,9 +178,10 @@ a new codec).
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.5.8** — the tree grew from 16 to 19 modules: `runtime.cyr`
-> (the lock + alloc seam, extracted from `lib.cyr` at 2.4.9) plus `zstd.cyr`
-> (sovereign RFC-8878 decoder) and `tar.cyr` (POSIX ustar/v7 cursor) at 2.5.0.
+> Current as of **2.7.5** — the tree is **21 modules**: `runtime.cyr`
+> (the lock + alloc seam, extracted from `lib.cyr` at 2.4.9), `zstd.cyr`
+> (sovereign RFC-8878 codec) and `tar.cyr` (POSIX ustar/v7 cursor) at 2.5.0,
+> then `zip.cyr` (2.6.0) and `zip_methods.cyr` (2.6.1) for the PKZIP container.
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
@@ -156,19 +223,20 @@ coverage *density*, not coverage *breadth*. See
 [`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
-Fuzz: 6,999 iterations across 6 files (`fuzz_lz4` 700, `fuzz_deflate`
-1,629, `fuzz_xz` 1,000, `fuzz_bzip2` 900, `fuzz_zstd` 1,150, `fuzz_zip`
+Fuzz: 7,529 iterations across 6 files (`fuzz_lz4` 700, `fuzz_deflate`
+1,629, `fuzz_xz` 1,000, `fuzz_bzip2` 900, `fuzz_zstd` 1,680 — +500
+DP-optimal (2.7.3) + 30 cross-block (2.7.4/2.7.5), `fuzz_zip`
 1,620 — 300 random + 120 truncation + 300 corruption + 300 hostile-field
 + 200 writer + 200 streaming + 200 Zip64 hostile-offset). Per-file
 breakdown in [`state.md` § Fuzz totals](state.md#fuzz-totals).
 
-Distlib: `dist/sankoch.cyr` at 14,843 lines (full) +
+Distlib: `dist/sankoch.cyr` at 15,792 lines (full) +
 `dist/sankoch-core.cyr` at 332 lines (kernel-safe), plus eight lean
 single-purpose profiles — `sankoch-zlib.cyr` (4,933),
-`sankoch-gzip.cyr` (5,098), `sankoch-xz.cyr` (2,799),
-`sankoch-bzip2.cyr` (2,099), `sankoch-zstd.cyr` (2,514),
-`sankoch-tar.cyr` (11,363), `sankoch-zip.cyr` (5,654, methods 0/8) and
-`sankoch-zipall.cyr` (11,359, every method). Ten profiles total;
+`sankoch-gzip.cyr` (5,098), `sankoch-xz.cyr` (3,074),
+`sankoch-bzip2.cyr` (2,099), `sankoch-zstd.cyr` (3,188),
+`sankoch-tar.cyr` (12,312), `sankoch-zip.cyr` (5,654, methods 0/8) and
+`sankoch-zipall.cyr` (12,308, every method). Ten profiles total;
 per-bundle roles in [`state.md` § Dist bundles](state.md#dist-bundles).
 
 ## Dependencies
@@ -193,13 +261,14 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.69).
 
 ---
 
-*Last Updated: 2026-07-21 (2.7.4 shipped — the zstd **cross-block match window** (512 KiB default),
-the zstd analogue of the 2.7.2 xz window growth. It restructured both parses to frame-global
-coordinates so a block's sequences reference matches in prior blocks; sankoch's zstd now **beats
-`zstd -19` on record data** (record L9 −44.7 %, single-block byte-identical, every stream decodes
-via reference `zstd -d`). This **completes the encoder ladder** — there is no committed next
-release, and the **▶ Scheduled** section was removed: the forward list is now just the **Backlog**
-(SIMD CRC-32, DEFLATE match-finder, Brotli, GPU texture) awaiting a fresh ladder. Recap of the
-shipped ladder: 2.7.0 xz repetitive speed, 2.7.1 xz BT4 (an HC4 attempt was rejected — the "78 %
-match finder" was operation-count, not time), 2.7.2 xz 256 KB window, 2.7.3 zstd optimal parse,
-2.7.4 zstd cross-block window. Toolchain pin 6.4.69 since 2.7.1.)*
+*Last Updated: 2026-07-21 (**2.8.x prep + doc sweep**. The encoder ladder is complete — 2.7.5 shipped
+the zstd L9 hash-chain saturation cutoff (reclaims the repetitive-record cost the 2.7.4 frame-global
+chain had introduced: record L9 2.76 → 1.86 s, ratio Δ ≤ +0.043 %; arch note 001). The **▶ Scheduled**
+section is re-opened for the **2.8.x line** — **2.8.0 SIMD CRC-32 (`PCLMULQDQ`)**, **2.8.1 GPU texture
+compression** — taken down from the Backlog, which now retains DEFLATE match-finder + Brotli. 2.8.x
+opens straight into the feature (no P(-1) lead); a **P(-1) hardening pass closes out the 2.8.x line**
+instead — auditing the un-audited 2.7.x encoder surface + the 2.8.x additions before the next minor. File Summary / fuzz / distlib figures re-counted at the 2.7.5 cut (source 15,745;
+full bundle 15,792; fuzz 7,529). Recap of the shipped ladder: 2.7.0 xz repetitive speed, 2.7.1 xz BT4
+(an HC4 attempt was rejected — the "78 % match finder" was operation-count, not time), 2.7.2 xz 256 KB
+window, 2.7.3 zstd optimal parse, 2.7.4 zstd cross-block window, 2.7.5 zstd chain cutoff. Toolchain pin
+6.4.69 since 2.7.1.)*

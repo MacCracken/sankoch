@@ -98,7 +98,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 
 - **Correctness is the optimum sovereignty** — wrong compression silently corrupts data. Every DEFLATE round-trip must match a known-good zlib output byte-for-byte.
 - **Own the stack** — zero external dependencies; every byte in this tree.
-- **Modular by profile — every lossless codec lives here.** The per-codec distlib profiles (`cyrius distlib <codec>`) let a consumer pull only the closure it needs, so adding a compression format never bloats consumers that don't use it. sankoch is therefore the home for *all* lossless-compression codecs (Zstandard included — decode shipped 2.5.0, encode shipped 2.5.5, competitive across 2.5.6–2.5.8) — no "it deserves its own crate" carve-outs.
+- **Modular by profile — every lossless codec lives here.** The per-codec distlib profiles (`cyrius distlib <codec>`) let a consumer pull only the closure it needs, so adding a compression format never bloats consumers that don't use it. sankoch is therefore the home for *all* lossless-compression codecs (Zstandard included — decode shipped 2.5.0, encode shipped 2.5.5, competitive 2.5.6–2.5.8, then the optimal-parse + cross-block-window ladder 2.7.3–2.7.5 that made it beat `zstd -19` on record data) — no "it deserves its own crate" carve-outs.
 - **Numbers don't lie** — never claim a performance improvement without before/after benchmark numbers.
 - **Test after EVERY change**, not after the feature is done.
 - **ONE change at a time** — never bundle unrelated changes.

@@ -32,7 +32,11 @@ level knob (`zstd_compress_level`, default 6), it **beats `zstd -3`** —
 zstd's default level — by 4–11 % on real code / text / binary (v2.5.7).
 Levels **7–9 add a DP optimal parser** (v2.7.3), gated so the default level 6
 stays fast; a per-block best-of keeps the higher levels a strict ratio
-improvement (real-source −4.9 % vs level 6). The decoder is hardened against
+improvement (real-source −4.9 % vs level 6). A **cross-block match window**
+(v2.7.4) lets a block's sequences reference matches in prior blocks — so on
+record data (CSV / logs) sankoch's zstd now **beats `zstd -19`** (L9 −44.7 %),
+with single-block output byte-identical and every stream decodable by
+reference `zstd -d` (single-segment frames). The decoder is hardened against
 hostile input (v2.5.6, fuzzed).
 
 bzip2 is a **full codec** — decode (`bzip2_decompress` / `FORMAT_BZIP2`,
