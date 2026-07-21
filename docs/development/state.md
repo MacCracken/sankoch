@@ -113,21 +113,21 @@ window. The **zstd** encoder (2.7.3): a DP optimal parser at levels 7–9 with p
 `zstd -d` and covered by +500 fuzz round-trips. DEFLATE's shared lz77 stayed frozen throughout.
 Each release was research-backed and adversarially reviewed via a workflow before code landed.
 
-**Forward: conditional / newly-surfaced** (forward detail in
-[`roadmap.md`](roadmap.md#-conditional--newly-surfaced)):
+**Next: 2.7.4 — zstd encoder window growth** (the one committed forward item; detail in
+[`roadmap.md`](roadmap.md#-scheduled--274-zstd-encoder-window-growth-the-record-data-ratio-gap)).
+On very-regular record data sankoch's zstd is still ~2–3× larger than `zstd -19`; 2.7.3's best-of
+proved the *parse* is not the limit — the **128 KB match window** is. The direct zstd analogue of
+the 2.7.2 xz window growth: advertise the frame `windowLog` to cover the new window first
+(reference `zstd -d` rejects a distance beyond it; sankoch's own decoder is dict-agnostic and would
+not catch the regression), then widen the zstd-private match tables. A ratio play; design +
+adversarial review first, as 2.7.0–2.7.3 did. **No codegen yet** — scheduled, not started.
 
-- **zstd window growth (newly surfaced by 2.7.3).** On very-regular record data sankoch's zstd is
-  still ~2–3× larger than `zstd -19`; 2.7.3's best-of showed the *parse* is not the limit — the
-  128 KB match window is. The zstd analogue of the 2.7.2 xz window growth (private tables; raise
-  the frame `windowLog` to cover the max distance for reference `zstd -d`). Schedule when a
-  record-heavy consumer surfaces.
-- **Conditional (schedule on a consumer profile):** SIMD CRC-32 via `PCLMULQDQ` (slice-by-8
-  already banks ~2× wire-identical; PMULL/scalar-fallback + silent-corruption risk gate the
-  x86 win) and a wire-identical DEFLATE match-finder speedup (the byte-for-byte-parity
-  mandate blocks the obvious knobs).
-
-Not scheduled (unchanged): the Future codec bucket in [`roadmap.md`](roadmap.md) — Brotli,
-GPU texture compression.
+**Backlog (unscheduled, to be re-organised)** — parked in
+[`roadmap.md` § Backlog](roadmap.md#backlog--unscheduled-to-be-re-organised): SIMD CRC-32 via
+`PCLMULQDQ` (slice-by-8 already banks ~2× wire-identical); a wire-identical DEFLATE match-finder
+speedup (byte-for-byte-parity mandate blocks the obvious knobs); and the two not-yet-implemented
+codecs, Brotli and GPU texture compression. To be triaged into a fresh ladder when the next arc
+opens.
 
 ## Consumers
 

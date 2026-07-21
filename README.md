@@ -28,9 +28,12 @@ runtime/mutex — the smallest self-contained profile). The encoder does LZ77
 sequences (repeat-offset codes + per-block adaptive FSE tables) +
 length-limited Huffman literals (FSE-compressed weights for wide alphabets);
 its output decodes byte-identical via reference `zstd -d` v1.5.7. With a 1..9
-level knob (`zstd_compress_level`, default 6), it now **beats `zstd -3`** —
-zstd's default level — by 4–11 % on real code / text / binary (v2.5.7). The
-decoder is hardened against hostile input (v2.5.6, fuzzed).
+level knob (`zstd_compress_level`, default 6), it **beats `zstd -3`** —
+zstd's default level — by 4–11 % on real code / text / binary (v2.5.7).
+Levels **7–9 add a DP optimal parser** (v2.7.3), gated so the default level 6
+stays fast; a per-block best-of keeps the higher levels a strict ratio
+improvement (real-source −4.9 % vs level 6). The decoder is hardened against
+hostile input (v2.5.6, fuzzed).
 
 bzip2 is a **full codec** — decode (`bzip2_decompress` / `FORMAT_BZIP2`,
 v2.4.2+) and encode (`bzip2_compress` / `compress(FORMAT_BZIP2, …)`,
@@ -41,9 +44,28 @@ concatenated streams. The encoder's output is byte-identical to
 xz is a **full codec** — decode (`xz_decompress` / `FORMAT_XZ`, v2.4.0+)
 and encode (`xz_compress` / `compress(FORMAT_XZ, …)`, v2.4.1+). `.xz`
 container + LZMA2 + LZMA range coder both ways, with CRC-32 / CRC-64
-checks. The encoder uses an optimal (price-table) parse; `xz -d` decodes
-its output. Within a few percent of `xz -6` on text/code (it does not
-claim bit-identical parity).
+checks. The encoder uses an optimal (price-table) parse with a **BT4
+binary-tree match finder** (v2.7.1) over a **256 KB window** (v2.7.2);
+`xz -d` decodes its output (not bit-identical to `xz`). Its ratio is
+within **~0.2 % of `xz -6`** on inputs that fit the window (was +7 %); a
+speed gap to xz's optimized C persists. `--check=sha256` streams are
+rejected (no SHA-256 primitive — fails closed rather than accept an
+unverified payload).
+
+## Containers
+
+Beyond the raw codecs, sankoch owns two archive containers so downstream
+consumers need no external tar/zip tooling:
+
+- **tar** (`tar.cyr`, v2.5.0+) — a shared POSIX ustar / pre-POSIX v7 pull-cursor;
+  `tar_open_auto` sniffs the envelope and dispatches to gzip / xz / bzip2 / zstd,
+  with PAX/GNU long-name support and two-layer path-traversal guards.
+- **PKZIP `.zip`** (`zip.cyr` + `zip_methods.cyr`, v2.6.0+) — an in-memory reader +
+  writer for every method sankoch owns (store / DEFLATE / bzip2 / zstd / xz),
+  Zip64, streaming write, and Unix metadata (mode / mtime / symlinks). Output is
+  reference-verified via `unzip` / `bsdtar` / Python `zipfile`. The lean
+  `[lib.zip]` profile carries only store + DEFLATE; `[lib.zipall]` carries all
+  methods. First P(-1) security-audited in v2.6.4.
 
 ## API
 
@@ -152,10 +174,15 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict, ratio-capped decompress (batch + streaming) | full    |
 | zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming + ratio-capped decompress | full    |
 | gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming + ratio-capped decompress | full    |
-| xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder        | full    |
+| xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder + BT4 match finder + 256 KB window | full    |
 | bzip2.cyr      | `.bz2` de/compress — bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 | full  |
+| zstd.cyr       | `.zst` de/compress (RFC 8878) — own FSE/Huffman, LZ77 + repcode parse, DP optimal parse at levels 7–9 | full    |
+| tar.cyr        | Shared POSIX ustar/v7 tar pull-cursor; `tar_open_auto` sniffs gzip/xz/bzip2/zstd; path-traversal guards | full    |
+| zip.cyr        | PKZIP `.zip` container — in-memory reader + writer, methods 0/8, Zip64, streaming, Unix metadata | full    |
+| zip_methods.cyr | ZIP methods 12/93/95 (bzip2/zstd/xz), kept out of the lean `[lib.zip]` profile        | full    |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
-| lib.cyr        | Include chain + public API + `_sankoch_mtx` two-tier lock dispatch (agnos no-op)       | full    |
+| runtime.cyr    | Shared runtime seam — `_sankoch_mtx` two-tier lock (agnos no-op) + `_sankoch_alloc` arena | full    |
+| lib.cyr        | Include chain + public API + format dispatch                                           | full    |
 
 `core` modules form the `[lib.core]` profile → `dist/sankoch-core.cyr` (kernel-safe LZ4 batch decompress; no `alloc`, no syscalls, no mutex). Verified by `programs/core_smoke.cyr` (a CI tripwire that links only the core subset and asserts decompress still works).
 
