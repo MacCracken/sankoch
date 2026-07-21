@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-07-20 — xz encoder: dictionary / window growth (closes the real-source ratio gap)
+
+2.7.1's BT4 finder narrowed the real-source *speed* gap; 2.7.2 closes the residual *ratio* gap.
+sankoch was +7 % vs `xz -6` on real source, almost entirely because its 32 KB match window could
+not reach cross-file matches that xz's multi-MB dictionary finds. 2.7.2 grows the xz match window
+to **256 KB**.
+
+### Changed — encoder
+- **xz match window 32 KB → 256 KB**, via a new **xz-private** `XZE_WINDOW` (262144). DEFLATE's
+  shared `LZ77_WINDOW` (32 KB) is **untouched** (the BT4 finder was already xz-private; proven by
+  the deflate/gzip/zlib suites). The BT4 son[] grows to 2×window (8 MB, allocated lazily on first
+  `xz_compress`, encode-only). `XZE_DICT_CODE` → 12 (advertises a 256 KB LZMA2 dict).
+- **Decodability**: the advertised dict (256 KB) is ≥ the max emitted distance (256 KB), so
+  reference `xz -d` (xz-utils 5.8.3) accepts every stream; sankoch's own decoder is dict-agnostic
+  (it retains the full output as the window). Corpus / 595 KB source / text / zeros all round-trip.
+- **Result**: real-source corpus **58704 → 54976 B (−6.4 %)** — the gap to `xz -6` (54856 B) closes
+  from **+7.0 % to +0.2 %**. Encode speed dips ~10 % (665 vs 727 kBps corpus, deeper trees) but
+  stays above 2.7.0. Repetitive data (text/zeros) unchanged. Window size vs ratio/memory swept in
+  [`docs/benchmarks/2026-07-20-2.7.0-baseline.md`](docs/benchmarks/2026-07-20-2.7.0-baseline.md):
+  256 KB fully closes the representative corpus at a conservative 8 MB; larger windows (512K/1M,
+  for larger inputs) are a one-line constant change.
+
 ## [2.7.1] — 2026-07-20 — xz encoder: BT4 binary-tree match finder (real-source speedup)
 
 2.7.0 closed the *repetitive-data* half of the xz-encode gap. 2.7.1 closes part of the
