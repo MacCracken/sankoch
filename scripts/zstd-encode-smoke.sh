@@ -47,9 +47,14 @@ awk 'BEGIN{for(i=0;i<3000;i++)printf "{\"id\":%d,\"name\":\"item-%04d\",\"tags\"
 # inverted the level ladder (level 2 was 67 % larger than level 1). Exercises the
 # repcode-heavy offset stream the priced parse now produces.
 awk 'BEGIN{for(i=1;i<20000;i++)printf "%d ", i}' > "$WORK/hasc.bin"
+# 2.7.4: a LARGE record fixture (~840 KB, ~6-7 blocks). The record body recurs far
+# beyond the 128 KiB block boundary, so it exercises the cross-block match window
+# (a block's sequences referencing matches in PRIOR blocks) that 2.7.4 added — the
+# case that must decode under reference zstd -d (single-segment window == full content).
+awk 'BEGIN{for(i=0;i<12000;i++)printf "%08d,2026-07-21T%02d:%02d:%02d,user_%04d,GET,/api/v2/resource/%d,200,%d\n",i,i%24,i%60,(i*7)%60,i%1000,i%500,120+i%80}' > "$WORK/bigrec.bin"
 
 rc=0; total=0; pass=0
-for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide hstruct hjsonrec hasc; do
+for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwide hstruct hjsonrec hasc bigrec; do
     src="$WORK/$f.bin"
     [ -f "$src" ] || continue
     total=$((total + 1))

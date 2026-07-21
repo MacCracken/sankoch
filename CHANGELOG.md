@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.4] — 2026-07-21 — zstd encoder: cross-block match window (beats `zstd -19` on records)
+
+The zstd analogue of the 2.7.2 xz window growth. sankoch's zstd encoder emitted data in 128 KiB
+blocks and parsed each block *in isolation* (per-block hash reset, block-relative positions), so
+no sequence could reference a match in a prior block — the effective match window was the 128 KiB
+*block*, not the chain size. On record-structured data (CSV / logs, where records recur far beyond
+128 KiB) this cost ~1.7× vs `zstd -19`. 2.7.4 restructures both parses (greedy + DP-optimal) to
+**frame-global coordinates** with a persistent, window-bounded hash chain, so a block's sequences
+may reference matches in prior blocks. Design + adversarial review ran as a workflow first;
+sweep + decision in
+[`docs/benchmarks/2026-07-21-2.7.4-zstd-window.md`](docs/benchmarks/2026-07-21-2.7.4-zstd-window.md).
+
+### Changed — encoder
+- **Cross-block match window**, default **512 KiB** (`_ze_maxwin`; `_ze_prev` = 4 MiB, one-time
+  encode-only). The hash chain resets once per frame (not per block); each block's parse runs on
+  the global frame base + a persistent chain, snapshot/restored around each parse attempt so the
+  canonical advance (`_ze_chain_fill`) is parse-independent. A block's `literal_length` stays
+  block-local; the match **offset** is a global distance; match bytes clamp to the block boundary.
+- **No frame-header or offset-encoding change.** The encoder already emits **single-segment
+  frames** (`Window_Size == Frame_Content_Size`), so reference `zstd -d` accepts any distance up to
+  the content size, and offset codes 0–31 span multi-GB. (Inputs ≥ 128 MiB trip `zstd -d`'s default
+  windowLog-27 limit at header-parse time — pre-existing, orthogonal to this change; the
+  decodability claim is scoped to `< 128 MiB`.)
+- **The dominant lever is cross-block repcodes.** The 3 recent offsets already carried across blocks
+  but were *unreachable* — the block-relative `ro <= pos` guard failed at each block's start; global
+  positions unlock them (and repcodes are never window-bounded under single-segment).
+- **Result** (level 9): record data **227,721 → 125,886 B (−44.7 %)** — sankoch now **beats
+  `zstd -19`** (131,820 B) and beats it on a 4.3 MB record fixture (278,528 vs 312,714); source
+  **149,200 → 133,590 B (−10.5 %)**. Single-block inputs (≤128 KiB, incl. the whole source/text
+  corpus and the `bench` fixtures) are **byte-identical** to 2.7.3 (the global parse with
+  `bstart = 0` reduces exactly to the block-relative parse) — the 43 gated wire-format SIZE lines
+  are unchanged. Every stream (records / 4.3 MB records / source / large) round-trips through
+  reference `zstd -d` (zstd-utils 1.5.7).
+- Fixed a crash the OOM fault-injection sweep caught: on a partial alloc failure the new
+  `_ze_head_save`/`_ze_prev` could be NULL while the chain ops deref'd them — added M-8 guards
+  (chain ops no-op on OOM; `_ze_try_seq_block` ensures the tables before any snapshot).
+
+### Added
+- `zstd-encode-smoke.sh`: a ~840 KB (~7-block) record fixture (`bigrec`) — the reference `zstd -d`
+  cross-block gate (16 cases now). `fuzz/fuzz_zstd.fcyr`: a 512 KiB multi-block cross-block
+  round-trip strategy (40 cases, levels 6 + 9).
+
 ## [2.7.3] — 2026-07-21 — zstd encoder: DP optimal / 2-pass parse (levels 7–9)
 
 The last item on the 2.7.x ladder. The zstd encoder's greedy+lazy parse leaves ratio on the

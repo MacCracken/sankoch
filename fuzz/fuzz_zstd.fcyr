@@ -127,6 +127,45 @@ fn fuzz_z_corrupt(seed, mode) {
     return 0;
 }
 
+# Strategy 4 (2.7.4): a multi-block record input whose constant fields recur far
+# beyond the 128 KiB block boundary, so the encoder emits CROSS-BLOCK match offsets
+# (a block's sequences referencing prior blocks). The whole stream must round-trip
+# through our own decoder. Heap-allocated (too large for a stack array).
+fn fuzz_z_crossblock(seed, level) {
+    var cap = 524288;   # 512 KiB -> 4 blocks
+    var src = _sankoch_alloc(cap);
+    if (src == 0) { return 0; }
+    var n = 0;
+    var rec = 0;
+    while (n + 64 <= cap) {
+        # 8-digit drifting id (a few varying bytes)...
+        var v = rec;
+        var d = 7;
+        while (d >= 0) { store8(src + n + d, 48 + (v % 10)); v = v / 10; d = d - 1; }
+        # ...a constant body that recurs every record -> cross-block matches...
+        var body = ",const,GET,/api/v2/resource,200,item,tag-a,tag-b,";
+        var bi = 0;
+        while (load8(body + bi) != 0) { store8(src + n + 8 + bi, load8(body + bi)); bi = bi + 1; }
+        # ...a small varying tail + newline.
+        var t = 8 + bi;
+        while (t < 63) { store8(src + n + t, 48 + ((rec / 3 + t) % 10)); t = t + 1; }
+        store8(src + n + 63, 10);
+        n = n + 64;
+        rec = rec + 1;
+    }
+    var comp = _sankoch_alloc(cap + 4096);
+    var dec = _sankoch_alloc(cap);
+    if (comp == 0 || dec == 0) { return 0; }
+    var clen = zstd_compress_level(src, n, comp, cap + 4096, level);
+    assert(clen > 0, "fuzz_zstd crossblock compress");
+    if (clen < 0) { return 0; }
+    var dlen = zstd_decompress(comp, clen, dec, cap);
+    assert(dlen == n, "fuzz_zstd crossblock roundtrip length");
+    var i = 0;
+    while (i < n) { assert(load8(dec + i) == load8(src + i), "fuzz_zstd crossblock content"); i = i + 1; }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -163,6 +202,15 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_zstd: 500 optimal-parse (levels 7-9) round-trip tests passed");
+
+    # 2.7.4: cross-block match window — multi-block record inputs at levels 6 + 9.
+    seed = 1;
+    while (seed <= 20) {
+        fuzz_z_crossblock(seed * 2654435761, 6);
+        fuzz_z_crossblock(seed * 2246822519, 9);
+        seed = seed + 1;
+    }
+    println("fuzz_zstd: 40 cross-block round-trip tests passed");
 
     seed = 1;
     while (seed <= 150) {
