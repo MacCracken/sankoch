@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.5] — 2026-07-21 — zstd L9 optimal parse: hash-chain saturation cutoff (repetitive-data cliff)
+
+2.7.4's frame-global hash chain unlocked cross-block matches but also made the chain span *all*
+prior blocks, so on maximally-repetitive record data (CSV / logs, where a constant field recurs
+thousands of times) the chain for that field's 4-byte hash grew to thousands of links. The L9
+DP optimal parser (`_zo_lz_parse`) calls the match finder (`_zo_getmatches`) roughly **once per
+input byte**, and each call walked the full `chain_max` (512 at L9) — but past the first handful,
+every candidate yielded the *same* saturated match length at an ever-larger, hence strictly
+*worse*, offset. That was **~2.6 s to compress a single 256 KiB record input at L9** (~100× the
+L6 greedy parse), which had forced the cross-block fuzz strategy down to 3 L9 spot-checks to fit
+CI's per-harness `timeout 60`.
+
+### Changed — encoder
+
+- **Hash-chain saturation cutoff** in the L9-optimal match finder (`_zo_getmatches`,
+  `src/zstd.cyr`). The chain walk now bails after `_zo_chain_cut` (**128**) *consecutive*
+  candidates fail to extend the best match — but **only once the best match is already
+  substantial** (`>= _zo_chain_gate`, **32**). Any improvement resets the counter. The length
+  gate is load-bearing: diverse data (text / prose / object code) climbs `best` in small steps
+  and can hold a longer match deep in the chain, so the cutoff must not fire while `best` is
+  short — it only trips once we hold a long match whose deeper same-length duplicates are dead
+  weight. A pure depth-warmup cutoff (no length gate) was measured **10–30× worse** on object
+  code; the *length*, not chain position, is what separates saturated duplicates from useful
+  depth. `_zo_chain_cut = 0` restores the pre-2.7.5 exhaustive walk.
+
+### Performance
+
+- **L9 record data 256 KiB: 2.76 s → 1.86 s (1.48×)**; at the fuzz's 163840-byte 2-block size,
+  **1.64 s → 1.11 s**. Chain-walk iterations on the 256 KiB record input drop **106.6 M → 61.8 M**.
+  (The residual floor is the DP parser's ~1-call-per-byte match-finder invocation, which the
+  chain cutoff cannot reduce — that would require lowering the `_zo_suff` sufficient-match
+  threshold, a ratio trade-off on *all* data, so it is deliberately left alone.)
+- **Ratio impact is negligible.** L9 compressed size vs the exhaustive walk, 256 KiB:
+  records / mixed-English / pure-text / zeros / random / prose all **0 bytes**; real source code
+  **+6 B (+0.010 %)**; a compiled binary (object code, the most search-sensitive corpus)
+  **+17 B (+0.043 %)**. The 43 gated benchmark SIZE lines are unaffected — they are all L6 greedy,
+  which this change does not touch. Config is one-constant-tunable toward more speed (e.g.
+  `cut=64` → 1.63× at binary +0.13 %) if a consumer profile ever wants it.
+
+### Testing
+
+- **Cross-block L9 fuzz coverage restored: 3 → 10 calls** (`fuzz/fuzz_zstd.fcyr`, 8 salts on the
+  163840-byte 2-block input + 2 full 256 KiB exact-2-block runs). The harness now runs ~14 s
+  standalone (was 5 s) — a comfortable margin under the 60 s per-harness timeout.
+
 ## [2.7.4] — 2026-07-21 — zstd encoder: cross-block match window (beats `zstd -19` on records)
 
 The zstd analogue of the 2.7.2 xz window growth. sankoch's zstd encoder emitted data in 128 KiB

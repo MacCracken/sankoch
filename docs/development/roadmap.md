@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.7.4); no committed next release — see Backlog | **Last Updated**: 2026-07-21
+> **Status**: Stable (v2.7.5); no committed next release — see Backlog | **Last Updated**: 2026-07-21
 
 This file is the **forward** ladder — the one committed next release
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
@@ -132,14 +132,14 @@ a new codec).
 | gzip.cyr         |  650 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 2111 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) + 2.7.0 rep-only `nice_len` greedy shortcut + interior DP cut (repetitive encode ~290–473× faster) + 2.7.1 BT4 binary-tree match finder, xz-private, seed-only skip + 2.7.2 xz-private 256 KB window (real-source ratio now within ~0.2 % of `xz -6`) | full |
 | bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
-| zstd.cyr         | 3028 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; priced match selection `_ze_mvalue` 2.5.8; DP optimal parser at levels 7–9 with per-block best-of, 2.7.3; **cross-block frame-global match window (512 KiB), 2.7.4 — beats `zstd -19` on record data**); self-contained bit reader / FSE / Huffman, no runtime | full |
+| zstd.cyr         | 3058 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; priced match selection `_ze_mvalue` 2.5.8; DP optimal parser at levels 7–9 with per-block best-of, 2.7.3; **cross-block frame-global match window (512 KiB), 2.7.4 — beats `zstd -19` on record data**; L9 hash-chain saturation cutoff for repetitive record data, 2.7.5); self-contained bit reader / FSE / Huffman, no runtime | full |
 | zip.cyr          | 1206 | PKZIP `.zip` container: in-memory reader + writer, methods 0/8, Zip64 (2.6.2), streaming write + data descriptors + Unix metadata/symlinks (2.6.3), CRC-32 verified, per-member ratio cap; 2.6.4 P(-1) hardening — i64-overflow-safe Zip64 bounds (subtraction form), streaming-abandon lock release, mid-stream-add rejection, name-length limit, cross-entry symlink ledger | full |
 | zip_methods.cyr  |  150 | The rest of ZIP's methods (2.6.1): 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Kept OUT of `[lib.zip]` so the lean profile never pulls those codecs | full |
 | tar.cyr          |  710 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  265 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **15715** | | |
+| **Total**        | **15745** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no

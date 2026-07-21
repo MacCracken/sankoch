@@ -204,11 +204,13 @@ fn main() {
     # arena never frees, so a fresh alloc per call would exhaust it.
     #
     # Cost budget (CI wraps each harness in `timeout 60`): the L6 greedy parse is ~0.02s
-    # per 256 KiB call, but the L9 DP optimal parse is ~100x costlier (~2.6s) on this
-    # maximally-repetitive record data — 20 L9 calls alone ran ~52s and timed CI out.
-    # So sweep the cross-block window broadly at L6 (cheap) and spot-check the L9 optimal
-    # cross-block path on a smaller 2-block input (163840 = 128 KiB + 32 KiB) at a few
-    # salts, incl. seed 8 (the heaviest observed).
+    # per 256 KiB call. The L9 DP optimal parse was ~2.6s per 256 KiB on this maximally-
+    # repetitive record data — 20 L9 calls ran ~52s and timed CI out, which forced this
+    # sweep down to 3 L9 spot-checks. 2.7.5's chain-walk saturation cutoff (_zo_chain_cut,
+    # see src/zstd.cyr) cut that to ~1.1s per 163840-byte 2-block call with 0% ratio change
+    # on this data, so L9 cross-block coverage is restored from 3 spot-checks to a 10-call
+    # salt sweep (8 at 163840 + 2 full 256 KiB). The whole harness now runs in ~14s locally
+    # (was 5s at 3 L9 calls) — a comfortable margin under the 60s per-harness timeout.
     var xcap = 262144;
     var xl9 = 163840;
     var xsrc = _sankoch_alloc(xcap);
@@ -220,11 +222,18 @@ fn main() {
             fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, seed * 2654435761, 6);
             seed = seed + 1;
         }
-        fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, 1 * 2246822519, 9);
-        fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, 8 * 2246822519, 9);
-        fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, 15 * 2246822519, 9);
+        # L9 optimal cross-block: 8 salts on the 2-block 163840 input (~1.1s each) ...
+        seed = 1;
+        while (seed <= 8) {
+            fuzz_z_crossblock(xsrc, xcomp, xdec, xl9, seed * 2246822519, 9);
+            seed = seed + 1;
+        }
+        # ... plus two full 256 KiB exact-2-block L9 runs (~1.9s each), incl. seed 8
+        # (the heaviest observed distribution).
+        fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, 8 * 2246822519, 9);
+        fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, 15 * 2654435761, 9);
     }
-    println("fuzz_zstd: 23 cross-block round-trip tests passed");
+    println("fuzz_zstd: 30 cross-block round-trip tests passed");
 
     seed = 1;
     while (seed <= 150) {

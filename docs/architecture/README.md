@@ -26,7 +26,9 @@
 
 ## Index
 
-No architecture notes filed yet. Sankoch's current invariants are documented inline in `CLAUDE.md § Key Constraints` and in code comments at the relevant sites:
+- [`001-zstd-optimal-chain-cutoff.md`](001-zstd-optimal-chain-cutoff.md) — the L9 optimal parser's hash-chain saturation cutoff (`_zo_chain_gate` / `_zo_chain_cut`): why the *length* gate is load-bearing and how to retune the speed/ratio trade-off without regressing diverse data.
+
+Further invariants are documented inline in `CLAUDE.md § Key Constraints` and in code comments at the relevant sites:
 
 - **Include order matters** — `src/lib.cyr` is the only file that imports stdlib; domain modules carry zero transitive includes. This makes `cyrius distlib` (strip-include concatenation) produce a compile-clean bundle.
 - **`[lib.core]` profile is alloc/syscall/mutex-free** — verified by the CI tripwire (`programs/core_smoke.cyr`). Any new code added to a `[core]` module must hold to this contract.
