@@ -1466,7 +1466,18 @@ var _ze_prev = 0;   # chain: prev occurrence, indexed by pos & _ze_wmask
 # frame-global hash chain reaches. _ze_maxwin is the 2.7.4 knob (mirrors 2.7.2's
 # XZE_WINDOW); _ze_wsize is the per-call effective window (pow2, floored strictly
 # above BLKMAX so a block's live chain slots never alias its own boundary).
-var _ze_maxwin = 2097152;      # 2 MiB window cap (knob); _ze_prev = _ze_maxwin*8 bytes
+# 2.7.4 window knob. The effective per-call window is min(pow2_ceil(src_len),
+# _ze_maxwin); _ze_prev is sized to _ze_maxwin*8 bytes (a one-time, encode-only,
+# grow-persistent alloc). 512 KiB is the conservative default from the ratio/memory
+# sweep (docs/benchmarks/2026-07-21-*.md): it already beats `zstd -19` on record data
+# (the win is repcode-dominated — cross-block repcodes have UNLIMITED reach regardless
+# of this window, since single_segment makes any distance decodable — so the window
+# mainly closes non-repcode long-range literal matches). Larger windows (1–4 MiB) buy
+# marginal, non-monotonic gains on very-large record data at linear memory cost; raise
+# _ze_maxwin (a one-line change) if a record-heavy multi-MB consumer surfaces. Must stay
+# a power of two; the effective window floor (below) is strictly > BLKMAX so a block's
+# live chain slots never alias its own boundary.
+var _ze_maxwin = 524288;       # 512 KiB window cap (knob); _ze_prev = 4 MiB
 var _ze_wsize = 262144;        # per-call effective window (>= 2*BLKMAX floor)
 var _ze_wmask = 262143;        # _ze_wsize - 1
 var _ze_head_save = 0;         # 64K-bucket head shadow for the best-of snapshot
