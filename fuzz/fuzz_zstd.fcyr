@@ -82,8 +82,9 @@ fn fuzz_z_random(seed, data_len, magic) {
 }
 
 # Strategy 2: encode -> decode round-trip. Encoder output must always decode
-# back byte-for-byte through our own decoder.
-fn fuzz_z_roundtrip(seed, data_len, mode) {
+# back byte-for-byte through our own decoder. `level` selects the parse: 6 = the
+# default greedy+lazy parse; 7-9 = the DP optimal parser (2.7.3).
+fn fuzz_z_roundtrip(seed, data_len, mode, level) {
     _fuzz_seed(seed);
     var src[6144];
     var capped = data_len;
@@ -91,7 +92,7 @@ fn fuzz_z_roundtrip(seed, data_len, mode) {
     _zf_gen(&src, capped, mode, seed);
 
     var comp[16384];
-    var clen = zstd_compress(&src, capped, &comp, 16384);
+    var clen = zstd_compress_level(&src, capped, &comp, 16384, level);
     assert(clen > 0 || capped == 0, "fuzz_zstd compress produced a stream");
     if (clen < 0) { return 0; }
 
@@ -140,14 +141,28 @@ fn main() {
     seed = 1;
     while (seed <= 120) {
         var sz = (seed * 47) % 6144;
-        fuzz_z_roundtrip(seed * 2246822519, sz, 0);
-        fuzz_z_roundtrip(seed * 3266489917, sz, 1);
-        fuzz_z_roundtrip(seed * 668265263, sz, 2);
-        fuzz_z_roundtrip(seed * 374761393, sz, 3);
-        fuzz_z_roundtrip(seed * 2891336453, sz, 4);
+        fuzz_z_roundtrip(seed * 2246822519, sz, 0, 6);
+        fuzz_z_roundtrip(seed * 3266489917, sz, 1, 6);
+        fuzz_z_roundtrip(seed * 668265263, sz, 2, 6);
+        fuzz_z_roundtrip(seed * 374761393, sz, 3, 6);
+        fuzz_z_roundtrip(seed * 2891336453, sz, 4, 6);
         seed = seed + 1;
     }
     println("fuzz_zstd: 600 encode round-trip tests passed");
+
+    # 2.7.3: the DP optimal parser (levels 7-9). Every distribution at each level;
+    # a wrong optimal parse must never crash or produce a stream our decoder rejects.
+    seed = 1;
+    while (seed <= 100) {
+        var sz2 = (seed * 61) % 6144;
+        fuzz_z_roundtrip(seed * 2246822519, sz2, 0, 9);
+        fuzz_z_roundtrip(seed * 3266489917, sz2, 2, 8);
+        fuzz_z_roundtrip(seed * 668265263, sz2, 3, 9);
+        fuzz_z_roundtrip(seed * 374761393, sz2, 4, 7);
+        fuzz_z_roundtrip(seed * 2891336453, sz2, 1, 9);
+        seed = seed + 1;
+    }
+    println("fuzz_zstd: 500 optimal-parse (levels 7-9) round-trip tests passed");
 
     seed = 1;
     while (seed <= 150) {

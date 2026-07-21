@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-07-21 — zstd encoder: DP optimal / 2-pass parse (levels 7–9)
+
+The last item on the 2.7.x ladder. The zstd encoder's greedy+lazy parse leaves ratio on the
+table vs zstd's optimal parse, especially on real source/binary. 2.7.3 adds a **DP optimal
+parser** (a shortest-path over positions pricing literals + matches under an evolving statistics
+model with per-node repcode state — mirroring `ZSTD_compressBlock_opt_generic`), gated behind
+`zstd_compress_level` **7–9** so the default level 6 stays the fast greedy+lazy parse. Benchmarks
++ correctness detail:
+[`docs/benchmarks/2026-07-21-2.7.3-zstd-optimal.md`](docs/benchmarks/2026-07-21-2.7.3-zstd-optimal.md).
+
+### Added — encoder
+- **DP optimal parser** (`_zo_lz_parse` + helpers in `zstd.cyr`, ~540 lines). Writes the same
+  sequence output as the greedy parse, so the FSE/Huffman encoder is unchanged. This is the DP
+  probe built during the 2.5.8 investigation, now integrated and hardened.
+- **Ratio-monotonic via best-of**: the 2.5.8 probe was *worse than greedy on some fixtures*
+  (very-regular records), which would break the `higher level ⇒ better ratio` contract. So at
+  levels 7–9 the encoder runs **both** parses per block and keeps the smaller
+  (`_ze_try_seq_block`, rolling back the losing parse's recent-offset advance). Levels 7–9 are a
+  **strict improvement** over level 6 — never worse.
+- **Result**: real-source corpus **74437 → 70785 B at level 9 (−4.9 %)**; record data is
+  best-of-neutral (−0.9 %). Default level 6 is unchanged (greedy parse).
+
+### Correctness
+- The optimal parse (a DP with known-hard repcode-state / price-model edge cases) is validated
+  against **reference `zstd -d`** (sankoch's own decoder is lenient): 40 adversarial real files
+  across 5 distributions at level 9 all decode byte-identical; 800 sankoch round-trips at levels
+  7–9, 0 failures. **Permanent coverage added**: `fuzz_zstd.fcyr` +500 optimal-parse round-trips
+  (levels 7–9); `zstd-encode-smoke.sh` now reference-decodes every fixture at **both** level 6
+  and level 9 (15/15).
+
 ## [2.7.2] — 2026-07-20 — xz encoder: dictionary / window growth (closes the real-source ratio gap)
 
 2.7.1's BT4 finder narrowed the real-source *speed* gap; 2.7.2 closes the residual *ratio* gap.

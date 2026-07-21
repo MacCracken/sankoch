@@ -13,8 +13,9 @@ CYRIUS_NO_WARN_PIN_DRIFT=1 CYRIUS_NO_WARN_SHADOW_LIB=1 sh -c "cd '$ROOT' && cyri
 WORK="$(mktemp -d /tmp/sankoch-zenc-XXXXXX)"
 IN="/tmp/sankoch-zstd-enc-in"
 ZST="/tmp/sankoch-zstd-enc-out.zst"
+ZST9="/tmp/sankoch-zstd-enc-out9.zst"   # 2.7.3 level-9 DP optimal parse
 OUT="/tmp/sankoch-zstd-enc-dec"
-trap 'rm -rf "$WORK" "$IN" "$ZST" "$OUT"' EXIT
+trap 'rm -rf "$WORK" "$IN" "$ZST" "$ZST9" "$OUT"' EXIT
 
 # --- build a spread of source files (incl. empty, tiny, block-boundary, multi-block) ---
 : 						> "$WORK/empty.bin"
@@ -55,15 +56,16 @@ for f in empty tiny text rand zeros repeat blk128 blk128p1 htext hjson hfib hwid
     cp "$src" "$IN"
     "$BIN"; e=$?
     if [ "$e" -ne 0 ]; then echo "  FAIL $f: encoder exit $e"; rc=1; continue; fi
+    # Reference-decode BOTH the level-6 (greedy) and level-9 (DP optimal) frames.
+    ok=1
     rm -f "$OUT"
-    if zstd -d -q -f -o "$OUT" "$ZST" 2>/dev/null && cmp -s "$OUT" "$src"; then
-        pass=$((pass + 1))
-    else
-        echo "  FAIL $f: reference zstd -d rejected or mismatch ($(stat -c %s "$src" 2>/dev/null || echo 0) B src)"; rc=1
-    fi
+    zstd -d -q -f -o "$OUT" "$ZST" 2>/dev/null && cmp -s "$OUT" "$src" || { echo "  FAIL $f (L6): reference zstd -d rejected or mismatch"; ok=0; }
+    rm -f "$OUT"
+    zstd -d -q -f -o "$OUT" "$ZST9" 2>/dev/null && cmp -s "$OUT" "$src" || { echo "  FAIL $f (L9 opt): reference zstd -d rejected or mismatch"; ok=0; }
+    if [ "$ok" -eq 1 ]; then pass=$((pass + 1)); else rc=1; fi
 done
 
 echo ""
-echo "  $pass/$total cases: sankoch-encoded frame decoded byte-identical by reference zstd -d"
+echo "  $pass/$total cases: sankoch-encoded frame (levels 6 + 9) decoded byte-identical by reference zstd -d"
 [ "$rc" -eq 0 ] && echo "zstd-encode-smoke: PASS — reference zstd -d accepts sankoch's zstd_compress output (store + Huffman literals + LZ77 + Predefined/RLE/adaptive-FSE sequences)" || echo "zstd-encode-smoke: FAIL"
 exit $rc

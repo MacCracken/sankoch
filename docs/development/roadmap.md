@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.7.2) — xz encoder ratio gap to `xz -6` closed (window 256 KB) | **Last Updated**: 2026-07-20
+> **Status**: Stable (v2.7.3) — the 2.7.x performance & ratio ladder is complete | **Last Updated**: 2026-07-21
 
 This file is the **forward** ladder — what is in progress, the committed
 next-release ladder, and the longer-horizon Future bucket. **Shipped history
@@ -17,34 +17,27 @@ audits have run — the pre-2.6.0 pass over the 2.4.x/2.5.x codec surface, and t
 2.6.4 pass over the ZIP surface (0 HIGH · 3 MEDIUM · 1 LOW confirmed, all fixed;
 dossier: [`docs/audit/2026-07-20-zip-container.md`](../audit/2026-07-20-zip-container.md)).
 
-**What remains is performance and ratio polish**, promoted below into a committed
-**2.7.x ladder** — no new formats are needed for any current consumer.
+**The 2.7.x performance & ratio ladder is complete** (2.7.0 xz repetitive speed,
+2.7.1 xz BT4 match finder, 2.7.2 xz 256 KB window, 2.7.3 zstd optimal parse). No
+new formats are needed for any current consumer. What remains is a short
+**conditional** bucket plus one **new measured gap** surfaced during 2.7.3.
 
 ---
 
-## ▶ Scheduled — the 2.7.x performance & ratio ladder
+## ▶ Conditional / newly-surfaced
 
-The 2.6.x line completes the feature surface. 2.7.x is the deferred
-performance/ratio work, promoted into a committed ladder, **highest-value
-first**. Each is a measured gap, not a guess.
+### zstd encoder window growth (the record-data gap) — newly surfaced by 2.7.3
 
-### 2.7.3 — zstd optimal / 2-pass parse
-
-The residue after the 2.5.8 priced parse: on *very regular record* data
-(synthetic csv, log lines) zstd's optimal parse finds longer cross-record
-matches than sankoch's greedy+lazy+repcode hash chain. This was the original
-2.5.8 slot; a **working DP probe was built and measured** before being deferred —
-it reached 251,733 B on the 7-fixture corpus (vs the shipped priced parse's
-251,333 B, i.e. *worse on total*) but **−3.6 % on real source/binary
-specifically** (vs the priced parse's −0.5 %), at ~400 added lines, ~224 KiB of
-DP arrays, and 4–74× encode time. So it is a real win on real data at a real
-cost — worth doing as its own release, gated behind the higher levels
-(`zstd_compress_level` 7–9) so the default stays fast. The probe implementation
-is preserved at `/home/macro/Repos/sankoch-deferred-dp-2.5.8.diff` as the
-starting point. Reference `zstd -d` stays the correctness bar. The DP prices each
-candidate under the current FSE tables and picks the globally cheaper path;
-per-DP-node rep state and a 2-pass statistics refit are the known-hard parts (see
-the 2.5.8 dossier).
+2.7.3 added the zstd optimal parse, but on *very-regular record* data (CSV / log
+lines) sankoch's zstd is still ~2–3× larger than `zstd -19` — and the 2.7.3 best-of
+showed the parse is **not** the limit there. The limit is the **128 KB match
+window** (`_ze_prev` mask 131071) vs zstd's multi-MB window: cross-record matches
+beyond 128 KB are unreachable. This is the zstd analogue of the 2.7.2 xz window
+growth — grow the zstd match window (private tables; the decoder is dict-agnostic,
+retaining the full output as the window, and reference `zstd -d` allocates the
+advertised `windowLog`, so the frame header's `windowLog` must be raised to cover
+the max emitted distance). A ratio play; schedule when a record-heavy consumer
+surfaces (agnova/takumi tarballs are mostly source, not records).
 
 ### Conditional — scheduled only when a consumer profile surfaces it
 
@@ -152,14 +145,14 @@ remaining ratio residue is the 2.7.3 optimal-parse item above, not a new codec.)
 | gzip.cyr         |  650 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 2111 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) + 2.7.0 rep-only `nice_len` greedy shortcut + interior DP cut (repetitive encode ~290–473× faster) + 2.7.1 BT4 binary-tree match finder, xz-private, seed-only skip + 2.7.2 xz-private 256 KB window (real-source ratio now within ~0.2 % of `xz -6`) | full |
 | bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
-| zstd.cyr         | 2384 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; **priced match selection `_ze_mvalue` 2.5.8**); self-contained bit reader / FSE / Huffman, no runtime | full |
+| zstd.cyr         | 2923 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; priced match selection `_ze_mvalue` 2.5.8; **DP optimal parser at levels 7–9 with per-block best-of, 2.7.3**); self-contained bit reader / FSE / Huffman, no runtime | full |
 | zip.cyr          | 1206 | PKZIP `.zip` container: in-memory reader + writer, methods 0/8, Zip64 (2.6.2), streaming write + data descriptors + Unix metadata/symlinks (2.6.3), CRC-32 verified, per-member ratio cap; 2.6.4 P(-1) hardening — i64-overflow-safe Zip64 bounds (subtraction form), streaming-abandon lock release, mid-stream-add rejection, name-length limit, cross-entry symlink ledger | full |
 | zip_methods.cyr  |  150 | The rest of ZIP's methods (2.6.1): 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Kept OUT of `[lib.zip]` so the lean profile never pulls those codecs | full |
 | tar.cyr          |  710 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  265 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **15071** | | |
+| **Total**        | **15610** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -213,11 +206,11 @@ ship with Cyrius ≥ 6.0.1; pin is 6.4.69).
 
 ---
 
-*Last Updated: 2026-07-20 (2.7.2 shipped — the xz match window grew 32 KB → **256 KB** (xz-private
-`XZE_WINDOW`, DEFLATE's window frozen), closing the real-source **ratio** gap to `xz -6` from +7 %
-to **+0.2 %** on inputs that fit the window. This completes the xz-encode arc: 2.7.0 repetitive
-speed, 2.7.1 real-source speed (BT4; an HC4 attempt was rejected — the "78 % match finder" was
-operation-count, not time), 2.7.2 real-source ratio. The ladder is now just **2.7.3 = zstd
-optimal/2-pass parse**; SIMD CRC-32 and the DEFLATE match-finder stay conditional (schedule on a
-consumer profile). The toolchain pin moved 6.4.68 → 6.4.69 at 2.7.1. Future codec bucket [Brotli,
-GPU texture] unchanged.)*
+*Last Updated: 2026-07-21 (2.7.3 shipped — the zstd **DP optimal parser** at levels 7–9 (per-block
+best-of so it is never worse than the greedy default; real-source level 9 −4.9 %). This completes
+the committed **2.7.x performance & ratio ladder**: 2.7.0 xz repetitive speed, 2.7.1 xz BT4 match
+finder (an HC4 attempt was rejected — the "78 % match finder" was operation-count, not time), 2.7.2
+xz 256 KB window, 2.7.3 zstd optimal parse. 2.7.3 surfaced one new measured gap — the zstd 128 KB
+match window limits record-data ratio (the zstd analogue of the 2.7.2 xz window growth), moved to
+the conditional bucket alongside SIMD CRC-32 and the DEFLATE match-finder. The toolchain pin moved
+6.4.68 → 6.4.69 at 2.7.1. Future codec bucket [Brotli, GPU texture] unchanged.)*
