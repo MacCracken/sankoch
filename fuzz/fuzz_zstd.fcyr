@@ -130,13 +130,12 @@ fn fuzz_z_corrupt(seed, mode) {
 # Strategy 4 (2.7.4): a multi-block record input whose constant fields recur far
 # beyond the 128 KiB block boundary, so the encoder emits CROSS-BLOCK match offsets
 # (a block's sequences referencing prior blocks). The whole stream must round-trip
-# through our own decoder. Heap-allocated (too large for a stack array).
-fn fuzz_z_crossblock(seed, level) {
-    var cap = 524288;   # 512 KiB -> 4 blocks
-    var src = _sankoch_alloc(cap);
-    if (src == 0) { return 0; }
+# through our own decoder. Buffers are passed in and REUSED across calls — the
+# _sankoch_alloc arena never frees, so allocating fresh per call would exhaust it.
+fn fuzz_z_crossblock(src, comp, dec, cap, seed, level) {
     var n = 0;
     var rec = 0;
+    var salt = seed & 15;   # per-call variation so the calls test different data
     while (n + 64 <= cap) {
         # 8-digit drifting id (a few varying bytes)...
         var v = rec;
@@ -148,14 +147,11 @@ fn fuzz_z_crossblock(seed, level) {
         while (load8(body + bi) != 0) { store8(src + n + 8 + bi, load8(body + bi)); bi = bi + 1; }
         # ...a small varying tail + newline.
         var t = 8 + bi;
-        while (t < 63) { store8(src + n + t, 48 + ((rec / 3 + t) % 10)); t = t + 1; }
+        while (t < 63) { store8(src + n + t, 48 + ((rec / 3 + t + salt) % 10)); t = t + 1; }
         store8(src + n + 63, 10);
         n = n + 64;
         rec = rec + 1;
     }
-    var comp = _sankoch_alloc(cap + 4096);
-    var dec = _sankoch_alloc(cap);
-    if (comp == 0 || dec == 0) { return 0; }
     var clen = zstd_compress_level(src, n, comp, cap + 4096, level);
     assert(clen > 0, "fuzz_zstd crossblock compress");
     if (clen < 0) { return 0; }
@@ -204,11 +200,19 @@ fn main() {
     println("fuzz_zstd: 500 optimal-parse (levels 7-9) round-trip tests passed");
 
     # 2.7.4: cross-block match window — multi-block record inputs at levels 6 + 9.
-    seed = 1;
-    while (seed <= 20) {
-        fuzz_z_crossblock(seed * 2654435761, 6);
-        fuzz_z_crossblock(seed * 2246822519, 9);
-        seed = seed + 1;
+    # 256 KiB = 2 blocks (enough for cross-block). Buffers allocated ONCE and reused —
+    # the _sankoch_alloc arena never frees, so a fresh alloc per call would exhaust it.
+    var xcap = 262144;
+    var xsrc = _sankoch_alloc(xcap);
+    var xcomp = _sankoch_alloc(xcap + 4096);
+    var xdec = _sankoch_alloc(xcap);
+    if (xsrc != 0 && xcomp != 0 && xdec != 0) {
+        seed = 1;
+        while (seed <= 20) {
+            fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, seed * 2654435761, 6);
+            fuzz_z_crossblock(xsrc, xcomp, xdec, xcap, seed * 2246822519, 9);
+            seed = seed + 1;
+        }
     }
     println("fuzz_zstd: 40 cross-block round-trip tests passed");
 
