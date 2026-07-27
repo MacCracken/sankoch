@@ -1,6 +1,6 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.7.5); **▶ 2.8.x scheduled** (SIMD CRC-32 → GPU texture → P(-1) closeout) | **Last Updated**: 2026-07-21
+> **Status**: Stable (v2.7.5) with **one open Critical** (see ▶ 2.7.6); **▶ 2.7.6 patch**, then **2.8.x** (SIMD CRC-32 → GPU texture → P(-1) closeout) | **Last Updated**: 2026-07-26
 
 This file is the **forward** ladder — the committed next releases
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
@@ -32,6 +32,36 @@ line. It opens **straight into the feature** — no P(-1) pass *leads* 2.8.0
 encoder surface together with the 2.8.x additions before the next minor opens. The
 remaining Backlog items (DEFLATE match-finder, Brotli) stay parked pending a
 consumer profile.
+
+---
+
+## ▶ Next — 2.7.6 (patch, preempts 2.8.x)
+
+### One-shot DEFLATE compress re-encodes bytes at every 1 MiB block boundary
+
+**Critical, open, reproduced on `main` @ `68052c1`.** Filed 2026-07-26 by stiva:
+[`docs/development/issues/2026-07-26-deflate-one-shot-multi-block-reencodes-boundary-bytes.md`](issues/2026-07-26-deflate-one-shot-multi-block-reencodes-boundary-bytes.md).
+
+`_deflate_compress_level_inner` (`src/deflate.cyr:1869`) resumes each block at `sp = block_end`
+(`:1891`), but the per-block encoders match against the full `src` and can overshoot `sp_end` by
+up to 257 bytes without reporting it. The overshot bytes are then emitted a second time as the
+head of the next block, so the stream decodes **longer than the input** — ~257 bytes per
+boundary, i.e. per `DEFLATE_BLOCK_SIZE` (1 MiB, `:1847`). Levels 1–9, both the fixed
+(`:1900`) and dynamic (`:2155`) paths. `deflate_compress` returns the wrong bytes with **no
+error** (no container checksum); `zlib`/`gzip` produce streams that sankoch's own decoder and
+zlib both reject. The **streaming `*_enc_*` path is correct** and is the consumer workaround.
+
+Why it survived to 2.7.5: no one-shot fixture in `tests/tcyr/` or `fuzz/` crosses 1 MiB (largest
+~424 KB against a 4 MiB harness heap), so every one-shot compress test has run as a single block.
+`fuzz_deflate.fcyr` does go bigger, but through the streaming path.
+
+Scope for the patch:
+1. Clamp matches at `sp_end` (minimal — leaves the outer loop and `bfinal` untouched), or resume
+   at the true stop position (better ratio, but `bfinal` is decided before the block runs, so an
+   overshoot that consumes the tail would emit no final block at all).
+2. Multi-block regression fixtures — 1 048 576 / 1 048 577 / 2 097 152 / 3 145 728 of compressible
+   input, round-trip length asserted for deflate/zlib/gzip at levels 1, 3, 6, 9.
+3. Consider raising the one-shot ceiling in the fuzz corpus so the boundary is in range.
 
 ---
 

@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.6] — 2026-07-26 — batch deflate/gzip: block-boundary byte duplication (silent corruption)
+
+**Severity: High — silent data corruption.** Any input larger than `DEFLATE_BLOCK_SIZE` (1 MiB)
+compressed with the BATCH API (`deflate_compress`, `deflate_compress_level`, `gzip_compress`)
+produced a stream that did not decode back to the input. Reported by **stiva**, where it meant every
+container image over ~1 MiB was written to disk corrupt: `stiva import` succeeded and `stiva run`
+then failed with `layer unpack error`, arbitrarily far from the cause. 849 KB worked; 1.69 MB did
+not. GNU `gunzip` rejected the same streams at the same offset, confirming an encoder defect rather
+than a decoder disagreement.
+
+### Fixed — encoder
+
+- **The outer chunker discarded the per-block encoder's overshoot.** Both block encoders
+  (`_deflate_compress_fixed_block`, levels 1-3; `_deflate_compress_dynamic_block`, levels 4-9)
+  deliberately match against the **full** `src` rather than just their slice — back-refs spanning
+  blocks is what keeps the ratio — so a match beginning just below `block_end` can extend up to
+  `LZ77_MAX_MATCH` (258) bytes **past** it. `_deflate_compress_level_inner` then resumed the next
+  block at `block_end` regardless, so every byte of that overshoot was encoded a **second** time:
+  the stream decoded longer than the input and the gzip trailer's CRC-32 no longer matched. Both
+  Huffman paths were affected, so lowering the compression level was never an escape.
+
+  Each block encoder now publishes the offset it actually consumed (`_deflate_block_reached`) and
+  the chunker resumes **there**. This is the contract the STREAMING encoder always had —
+  `_denc_consume` stores the offset its LZ77 loop reached back into the encoder context, which is
+  exactly why `deflate_enc_*` never had this bug.
+
+  The fixed path's trailing lazy-match flush needed care: that match *starts* at `sp - 1`, so the
+  consumed end is `sp - 1 + prev_match`, not `sp`. Getting only that case wrong would have left the
+  duplication for lazy-matched input alone — the hardest variant to notice.
+
+- **Empty final block when the overshoot reaches the end.** `BFINAL` is decided from `block_end`
+  *before* the block is encoded, so a block with `block_end < src_len` (hence `BFINAL = 0`) can now
+  consume through to `src_len` when the tail is shorter than a max match. Every byte is encoded but
+  no block carries `BFINAL`, leaving the stream truncated from a decoder's point of view. The
+  chunker now closes it with an empty final fixed block (header + EOB, ~10 bits) — legal regardless
+  of the block types used above, since DEFLATE permits mixing.
+
+### Added — tests
+
+- `tests/tcyr/deflate_block_boundary.tcyr` — 21 assertions: byte-exact round-trip at levels 1 / 6 /
+  9 over 2 MB, plus exactly-one-block, one-block-plus-short-tail (the empty-final-block path), three
+  blocks, and the `gzip_compress` wrapper (which adds the CRC-32 that turned the duplication into a
+  hard failure). Asserts **byte-exactness, not just length** — a length-only check would pass on a
+  stream that duplicated N bytes and dropped N others.
+
+  **Why the suite missed this:** every pre-existing deflate/gzip test used an input *smaller* than
+  `DEFLATE_BLOCK_SIZE` — the largest was 80000 bytes — so the outer chunker never took a second
+  iteration and the boundary was never crossed. ~160K assertions, none over 1 MiB.
+
+  Mutation-proven: restoring `sp = block_end` turns these red with `decoded length 2000153, expected
+  2000000` and first divergence at offset **1048729**, just past the boundary.
+
+- Externally validated: a 2 MB `gzip_compress` stream is now accepted by **GNU `gunzip`** and its
+  output is byte-exact against the original (previously `differ: char 1048797`).
+
+
 ## [2.7.5] — 2026-07-21 — zstd L9 optimal parse: hash-chain saturation cutoff (repetitive-data cliff)
 
 2.7.4's frame-global hash chain unlocked cross-block matches but also made the chain span *all*

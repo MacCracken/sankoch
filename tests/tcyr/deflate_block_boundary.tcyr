@@ -1,0 +1,90 @@
+# sankoch — deflate/gzip — outer-chunker block-boundary round-trip
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/deflate_block_boundary.tcyr
+#
+# REGRESSION GATE for the v2.7.6 corruption (issue: "batch gzip encoder duplicates
+# bytes at every 1 MiB block boundary"). The per-block encoders deliberately match
+# against the FULL src — back-refs spanning blocks is what keeps the ratio — so a
+# match beginning just below DEFLATE_BLOCK_SIZE could extend up to LZ77_MAX_MATCH
+# (258) bytes past it. The outer chunker then resumed the next block at `block_end`
+# regardless, re-encoding the overshoot: the stream decoded LONGER than the input
+# and failed its own CRC-32.
+#
+# WHY THE SUITE MISSED IT FOR SO LONG: every pre-existing deflate/gzip test used an
+# input SMALLER than DEFLATE_BLOCK_SIZE (the largest was 80000 bytes), so the outer
+# chunker never took its second iteration and the boundary was never crossed. 160K
+# assertions, none of them >1 MiB. That is the gap this file closes — the shipping
+# consumer (stiva) found it instead, after writing every container image >1 MiB to
+# disk corrupt.
+#
+# Mutation-proven: restore `sp = block_end` in _deflate_compress_level_inner and
+# these go red with `decoded length 2000153, expected 2000000` and first
+# divergence at offset 1048729 — just past the 1 MiB boundary.
+
+include "tests/tcyr/_harness.tcyr"
+
+# Round-trip N bytes at `level` and assert byte-exactness, not just length —
+# a length-only check would pass on a stream that duplicated N bytes and dropped
+# N others.
+fn _bb_roundtrip(N, level) {
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 41 + j / 5) % 95); j = j + 1; }
+    var cap = N + (N / 2) + 4096;
+    var out = alloc(cap);
+    var clen = deflate_compress_level(src, N, out, cap, level);
+    assert_eq(clen > 0, 1, "compress returns a stream");
+    var dcap = N * 2 + 4096;
+    var dec = alloc(dcap);
+    var dlen = deflate_decompress(out, clen, dec, dcap);
+    assert_eq(dlen, N, "decoded length == input length");
+    var k = 0;
+    var bad = 0 - 1;
+    while (k < N) { if (load8(dec + k) != load8(src + k)) { bad = k; k = N; } k = k + 1; }
+    assert_eq(bad, 0 - 1, "byte-exact round-trip");
+}
+
+# Levels 1-3 take the fixed-Huffman path, 4-9 the dynamic one; BOTH overshoot, so
+# lowering the level was never an escape. Cover one of each plus the max.
+fn test_block_boundary_fixed_l1()   { _bb_roundtrip(2000000, 1); }
+fn test_block_boundary_dynamic_l6() { _bb_roundtrip(2000000, 6); }
+fn test_block_boundary_dynamic_l9() { _bb_roundtrip(2000000, 9); }
+
+# Boundary shapes: exactly one block (must NOT regress), one block + a short tail
+# (the case where the overshoot can reach src_len while BFINAL was already decided
+# as 0 — the empty-final-block path), and three blocks (multiple boundaries).
+fn test_exactly_one_block()   { _bb_roundtrip(1048576, 6); }
+fn test_one_block_plus_tail() { _bb_roundtrip(1048576 + 300, 6); }
+fn test_three_blocks()        { _bb_roundtrip(3000000, 6); }
+
+# gzip wrapper too — it is the API stiva used, and it adds the CRC-32 that turned
+# the duplication into a hard decode failure.
+fn test_gzip_wrapper_over_block() {
+    var N = 2000000;
+    var src = alloc(N);
+    var j = 0;
+    while (j < N) { store8(src + j, 32 + (j * 41 + j / 5) % 95); j = j + 1; }
+    var cap = N + (N / 2) + 4096;
+    var out = alloc(cap);
+    var clen = gzip_compress(src, N, out, cap);
+    assert_eq(clen > 0, 1, "gzip_compress returns a stream");
+    var dcap = N * 2 + 4096;
+    var dec = alloc(dcap);
+    var dlen = gzip_decompress(out, clen, dec, dcap);
+    assert_eq(dlen, N, "gzip decoded length == input (CRC-32 matched)");
+    var k = 0;
+    var bad = 0 - 1;
+    while (k < N) { if (load8(dec + k) != load8(src + k)) { bad = k; k = N; } k = k + 1; }
+    assert_eq(bad, 0 - 1, "gzip byte-exact round-trip");
+}
+
+test_block_boundary_fixed_l1();
+test_block_boundary_dynamic_l6();
+test_block_boundary_dynamic_l9();
+test_exactly_one_block();
+test_one_block_plus_tail();
+test_three_blocks();
+test_gzip_wrapper_over_block();
+
+var r = assert_summary();
