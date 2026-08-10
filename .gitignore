@@ -26,9 +26,13 @@ lib/*.cyr
 !lib/k*.cyr
 
 # Lockfile policy: track when git-deps are present, otherwise omit.
-# sankoch has zero git deps so cyrius.lock is not generated; the line
-# below is the recipe for when it might be (uncomment to ignore).
-# cyrius.lock
+# sankoch has zero git deps, so a lock pins nothing the `cyrius = "X.Y.Z"` pin
+# in cyrius.cyml does not already pin. Through 6.4.69 no lock was generated at
+# all; 6.5.16 locks the stdlib snapshot too, so one appears whether or not it
+# says anything — 107 lines rewritten on every toolchain bump, for no
+# reproducibility the manifest lacks. Ignored, which is the recipe this comment
+# already described.
+cyrius.lock
 
 # Release / toolchain artifacts
 cyrius-*.tar.gz

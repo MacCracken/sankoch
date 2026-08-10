@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Toolchain pin 6.4.69 → 6.5.16.** No source change; `src/` is untouched.
+  Verified rather than assumed:
+  - `cyrius tests tests/tcyr` — **23 suites, 4,484,515 assertions, 0 failures**.
+  - `cyrius bench` — the full suite runs, including every SIZE row.
+  - fmt / lint / doc / vet / deny clean across `src/`.
+  - **`cyrius distlib` regenerates `dist/sankoch.cyr` BYTE-IDENTICAL**, so no
+    consumer's vendored bundle changes and nothing needs to ship for this.
+- **`cyrius.lock` is now gitignored.** sankoch has zero git deps, so a lock pins
+  nothing the `cyrius = "X.Y.Z"` manifest pin does not already pin. Through
+  6.4.69 `cyrius deps` generated no lock at all; 6.5.16 locks the stdlib
+  snapshot too, so one appears whether or not it says anything — 107 lines
+  rewritten on every toolchain bump. `.gitignore` already carried the recipe for
+  exactly this case as a commented line; it is now uncommented, with the reason.
+
+### Added
+
+- `docs/development/issues/2026-08-09-zip-consumer-report-from-agnosai.md` — a
+  consumer report from agnosai's `.agpkg` port off the Rust `zip` crate onto
+  `zip_*`. Three findings, each with the workaround the consumer shipped:
+  **no writer sizing API** (so every caller re-derives the record layout to size
+  `dst`, which is only possible at all because DEFLATE degrades to STORE);
+  **no `zip_close`/`zip_writer_free`**, so `zip_open` burns ~12 KB per call on a
+  100-entry archive and leaks on malformed input too, which is the rate an
+  attacker controls; and **`zip_open` collapsing ~20 distinct failures into `0`**,
+  including an encrypted member, which left the consumer unable to reproduce the
+  Rust crate's skip-one-member behaviour and forced an ADR. The report also
+  records three properties the consumer now depends on — `_zip_path_safe` on the
+  read path, CRC-and-declared-size always verified, and the STORE fallback — so
+  they do not get changed by accident.
+
 ## [2.7.6] — 2026-07-26 — batch deflate/gzip: block-boundary byte duplication (silent corruption)
 
 **Severity: High — silent data corruption.** Any input larger than `DEFLATE_BLOCK_SIZE` (1 MiB)
