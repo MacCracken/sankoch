@@ -1,6 +1,11 @@
 # ZIP consumer report from agnosai — no writer sizing API, no reader teardown, one-value open failure
 
-**Status:** 🔴 OPEN — filed by a consumer, not fixed here.
+**Status:** ✅ **FIXED in 2.7.7** — all three findings, plus both "smaller things" that
+had a code answer. `zip_bound`/`zip_bound_member` for §1, `zip_open_a`/`zip_writer_init_a`
+for §2 (an allocator seam rather than the `zip_close` this asked for — on a bump
+allocator a close can only be a no-op that reads like a reclaim), `zip_last_error()` for
+§3, and `zip_find`'s hoisted `strlen`. `zip_count`'s missing null guard and `zip_find`'s
+first-vs-last contract are now documented as deliberate rather than changed.
 **Filed:** 2026-08-09, against sankoch 2.7.6 as vendored in cyrius 6.5.16.
 **Consumer:** `agnosai/src/definitions/packaging.cyr` — `.agpkg` bundle export/import,
 a port of `rust-old/src/definitions/packaging.rs` off the Rust `zip` crate onto

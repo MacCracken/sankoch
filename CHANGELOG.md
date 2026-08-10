@@ -7,37 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [2.7.7] — 2026-08-09 — ZIP: a sizing API, reclaimable readers, and discriminated open failures
 
-- **Toolchain pin 6.4.69 → 6.5.16.** No source change; `src/` is untouched.
-  Verified rather than assumed:
-  - `cyrius tests tests/tcyr` — **23 suites, 4,484,515 assertions, 0 failures**.
-  - `cyrius bench` — the full suite runs, including every SIZE row.
-  - fmt / lint / doc / vet / deny clean across `src/`.
-  - **`cyrius distlib` regenerates `dist/sankoch.cyr` BYTE-IDENTICAL**, so no
-    consumer's vendored bundle changes and nothing needs to ship for this.
-- **`cyrius.lock` is now gitignored.** sankoch has zero git deps, so a lock pins
-  nothing the `cyrius = "X.Y.Z"` manifest pin does not already pin. Through
-  6.4.69 `cyrius deps` generated no lock at all; 6.5.16 locks the stdlib
-  snapshot too, so one appears whether or not it says anything — 107 lines
-  rewritten on every toolchain bump. `.gitignore` already carried the recipe for
-  exactly this case as a commented line; it is now uncommented, with the reason.
+All three from a consumer report filed by agnosai while porting `.agpkg` off the Rust
+`zip` crate — `docs/development/issues/2026-08-09-zip-consumer-report-from-agnosai.md`.
+Every one of them was a consumer working around a gap in production code.
 
 ### Added
 
-- `docs/development/issues/2026-08-09-zip-consumer-report-from-agnosai.md` — a
-  consumer report from agnosai's `.agpkg` port off the Rust `zip` crate onto
-  `zip_*`. Three findings, each with the workaround the consumer shipped:
-  **no writer sizing API** (so every caller re-derives the record layout to size
-  `dst`, which is only possible at all because DEFLATE degrades to STORE);
-  **no `zip_close`/`zip_writer_free`**, so `zip_open` burns ~12 KB per call on a
-  100-entry archive and leaks on malformed input too, which is the rate an
-  attacker controls; and **`zip_open` collapsing ~20 distinct failures into `0`**,
-  including an encrypted member, which left the consumer unable to reproduce the
-  Rust crate's skip-one-member behaviour and forced an ADR. The report also
-  records three properties the consumer now depends on — `_zip_path_safe` on the
-  read path, CRC-and-declared-size always verified, and the STORE fallback — so
-  they do not get changed by accident.
+- **`zip_bound(count, total_name_bytes, total_payload_bytes)` and
+  `zip_bound_member(nlen, ulen)`.** The writer never allocates and never grows `dst`, and
+  there was no way to ask how big `dst` had to be — so a consumer either guessed and
+  retried, or re-derived the record layout. agnosai did the latter, reproducing the
+  30/46/22-byte header arithmetic and the Zip64 extra sizes in its own source: a consumer
+  maintaining a private copy of this file's internals. Retrying is worse than it sounds,
+  because there is no resize, a partly written `dst` is not reusable, and a retry
+  re-compresses every member.
+
+  ⚠ **The bound is computable only because DEFLATE degrades to STORE when it does not
+  shrink.** That makes the stored payload never larger than its input, and everything
+  else fixed-size headers. If that fallback ever goes, so does this contract — stated in
+  the source next to the constants.
+
+- **`zip_open_a(a, buf, len)` and `zip_writer_init_a(a, dst, dst_cap)`**, plus
+  `zip_allocator(z)`. The reader's context, entry table, per-entry name copies and
+  symlink ledger — and the writer's context, record table and name copies — now come
+  from a caller-supplied allocator, so an arena reclaims either in one `reset_via`.
+  `a == 0` is the process allocator and the bare forms are byte-identical to what they
+  were.
+
+  ⚠ **The filing asked for `zip_close`. That would have been the wrong answer**: on a
+  bump allocator it can only be a no-op that reads like a reclaim. This actually frees,
+  and it is the shape the rest of the ecosystem already uses. The leak it closes was
+  real — ~12 KB per `zip_open` on a 100-entry archive, including on a **malformed**
+  archive, which is the rate an attacker controls.
+
+  ⚠ `buf` is still not copied and must outlive the reader; entry names are copied and
+  survive it. Pinned by a test that resets an arena between two opens and asserts the
+  second reader lands on the same address — proof the first was reclaimed rather than
+  merely abandoned.
+
+- **`zip_last_error()`.** `zip_open` answered a bare `0` for two dozen distinct reasons —
+  truncated, multi-disk, bad central directory, an **encrypted** member, or OOM — so a
+  caller could not tell "not a zip" from "out of memory". agnosai had to collapse every
+  failure into one error variant and record the encrypted case as a deliberate
+  divergence, because there was nothing to branch on. Now `ERR_INVALID_INPUT`,
+  `ERR_CORRUPT_DATA`, `ERR_UNSUPPORTED_FORMAT` (multi-disk and encrypted) and `ERR_OOM`
+  are distinguishable. `zip_open` still returns 0; the reason is read after, as with
+  `bayan_json_last_error`.
+
+### Performance
+
+- **`zip_find` computes the needle's `strlen` once**, not three times per entry. Looking
+  up N names in an N-member archive — the shape a name-keyed reader encourages —
+  re-scanned the needle O(N²) times.
+
+### Changed
+
+- `ZIP_R_CTX` names the reader context size, which was a bare `alloc(40)` at its one call
+  site; it is 48 now, for the allocator slot.
+- The **writer's 128-byte slot map is written down** next to `ZIP_W_CTX`. Adding the
+  allocator required grepping `w + N` across two files to find the one free slot, and a
+  wrong guess would have silently aliased the streamed-member encoder's state.
+- `zip_find`'s **first-match** contract and `zip_count`'s **absent null guard** are now
+  documented as choices rather than left as omissions. Name-keyed readers elsewhere
+  (Rust's `zip`, Python's `zipfile`) answer with the LAST record for a duplicated name;
+  a consumer reproducing one has to walk the indices itself.
+
+### Changed — toolchain
+
+- **Pin 6.4.69 → 6.5.16.** No source change came with the bump itself; it was verified
+  rather than assumed, and `cyrius distlib` regenerated `dist/sankoch.cyr`
+  **byte-identical** under the new toolchain, so nothing downstream moved for it.
+- **`cyrius.lock` is now gitignored.** sankoch has zero git deps, so a lock pins nothing
+  the `cyrius = "X.Y.Z"` manifest pin does not already pin. Through 6.4.69 `cyrius deps`
+  generated no lock at all; 6.5.16 locks the stdlib snapshot too, so one appears whether
+  or not it says anything — 107 lines rewritten on every toolchain bump. `.gitignore`
+  already carried the recipe for exactly this case as a commented line.
+
+### Verified
+
+- 23 suites, **4,484,562 assertions, 0 failures** (zip's own suite 135 → 253).
+- `cyrius bench` runs clean; fmt / lint / doc / vet / deny clean.
+- **All ten `dist/` bundles regenerated** — the umbrella plus the nine `[lib.*]`
+  profiles. ⚠ A bare `cyrius distlib` writes only `dist/sankoch.cyr`; each profile needs
+  its own `cyrius distlib <name>`, and skipping them ships a bundle stamped with the
+  previous version and none of the fixes.
 
 ## [2.7.6] — 2026-07-26 — batch deflate/gzip: block-boundary byte duplication (silent corruption)
 

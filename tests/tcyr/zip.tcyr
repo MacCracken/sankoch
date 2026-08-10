@@ -735,8 +735,184 @@ fn test_zip_zip64_overflow_bounds() {
     return 0;
 }
 
+# --- 2.7.7: zip_bound, zip_last_error, allocator threading -------------------------
+
+# The bound must hold in the WORST case, which is every member STORED — DEFLATE degrades
+# to STORE when it does not shrink, and that is the whole reason a closed-form bound is
+# possible at all. Checking it against a compressed archive proves almost nothing: a
+# bound that dropped every per-member header still clears one.
+fn test_zip_bound() {
+    var names = vec_new();
+    vec_push(names, "manifest.json");
+    vec_push(names, "definitions/a-very-long-member-name-that-appears-in-both-headers.json");
+    vec_push(names, "x");
+
+    var payload = alloc(4096);
+    _zt_fill(payload, 4096, 65);
+
+    var name_bytes = 0;
+    var i = 0;
+    while (i < vec_len(names)) { name_bytes = name_bytes + strlen(vec_get(names, i)); i = i + 1; }
+
+    var bound = zip_bound(vec_len(names), name_bytes, 4096 * vec_len(names));
+    assert(bound > 0, "zip_bound answers a positive size");
+
+    # Every member STORED, into exactly the bound. Nothing may fail for space.
+    var dst = alloc(bound);
+    var w = zip_writer_init(dst, bound);
+    assert(w != 0, "a writer inits at exactly the bound");
+    var j = 0;
+    while (j < vec_len(names)) {
+        assert(zip_add(w, vec_get(names, j), payload, 4096, ZIP_STORE) == 0,
+        "a STORED member fits inside the bound");
+        j = j + 1;
+    }
+    var total = zip_writer_finish(w);
+    assert(total > 0, "and the archive closes");
+    assert(total <= bound, "within the bound it was sized to");
+
+    # It really is reopenable — the bound did not just avoid an error, it produced a
+    # valid archive.
+    var z = zip_open(dst, total);
+    assert(z != 0, "the bounded archive reopens");
+    assert(zip_count(z) == 3, "with all three members");
+
+    # The per-member form agrees with the aggregate form exactly.
+    var sum = ZIP_BOUND_TRAILER;
+    var k = 0;
+    while (k < vec_len(names)) {
+        sum = sum + zip_bound_member(strlen(vec_get(names, k)), 4096);
+        k = k + 1;
+    }
+    assert(sum == bound, "zip_bound_member sums to zip_bound");
+
+    # An empty archive still needs the trailer.
+    assert(zip_bound(0, 0, 0) == ZIP_BOUND_TRAILER, "an empty archive costs the trailer");
+    var edst = alloc(zip_bound(0, 0, 0));
+    var ew = zip_writer_init(edst, zip_bound(0, 0, 0));
+    assert(ew != 0, "which is enough to init");
+    assert(zip_writer_finish(ew) > 0, "and to finish an empty archive");
+
+    # Negative arguments are refused rather than producing a small bound.
+    assert(zip_bound(0 - 1, 0, 0) == 0 - ERR_INVALID_INPUT, "a negative count is refused");
+    assert(zip_bound(1, 0 - 1, 0) == 0 - ERR_INVALID_INPUT, "and negative name bytes");
+    assert(zip_bound(1, 0, 0 - 1) == 0 - ERR_INVALID_INPUT, "and a negative payload");
+    assert(zip_bound_member(0 - 1, 0) == 0 - ERR_INVALID_INPUT, "and on the per-member form");
+
+    # One byte short of the bound is NOT a guarantee — the point of the bound is that at
+    # it, nothing fails. Below it, failure is allowed and must be an error, not a
+    # truncated archive.
+    var tiny = alloc(64);
+    var tw = zip_writer_init(tiny, 64);
+    assert(tw != 0, "a 64-byte writer still inits");
+    assert(zip_add(tw, "manifest.json", payload, 4096, ZIP_STORE) < 0,
+    "and refuses a member that does not fit, rather than truncating");
+    return 0;
+}
+
+# `zip_open` used to answer a bare 0 for two dozen reasons. Each class is now
+# distinguishable, which is what a consumer needs to tell "not a zip" from "OOM" from
+# "this archive is fine but a member is encrypted".
+fn test_zip_last_error() {
+    # Not an archive at all.
+    var junk = "this is not a zip file at all, not even close";
+    assert(zip_open(junk, strlen(junk)) == 0, "junk does not open");
+    assert(zip_last_error() == 0 - ERR_CORRUPT_DATA, "and reports CORRUPT_DATA");
+
+    # Empty / negative input is a caller error, not a corrupt archive.
+    assert(zip_open(junk, 0) == 0, "a zero length does not open");
+    assert(zip_last_error() == 0 - ERR_INVALID_INPUT, "and reports INVALID_INPUT");
+    assert(zip_open(junk, 0 - 5) == 0, "nor a negative one");
+    assert(zip_last_error() == 0 - ERR_INVALID_INPUT, "also INVALID_INPUT");
+
+    # ⚠ The two classes really are distinguishable — that is the whole point, and a
+    # `_zip_fail` that stored one constant everywhere would pass every assertion above
+    # taken singly.
+    zip_open(junk, strlen(junk));
+    var corrupt = zip_last_error();
+    zip_open(junk, 0);
+    assert(corrupt != zip_last_error(), "malformed and invalid-input are DIFFERENT codes");
+
+    # A well-formed archive with an ENCRYPTED member: flag bit 0 in the central
+    # directory. Build a clean archive, then set the bit — every length and CRC stays
+    # valid, so this is exactly the archive a consumer would receive.
+    var dst = alloc(4096);
+    var w = zip_writer_init(dst, 4096);
+    zip_add(w, "secret.txt", "hello", 5, ZIP_STORE);
+    var total = zip_writer_finish(w);
+    assert(zip_open(dst, total) != 0, "the archive opens before tampering");
+
+    # Locate the central-directory record and set the general-purpose flag's bit 0.
+    var p = 0;
+    var found = 0;
+    while (p + 4 <= total) {
+        if (_zip_le32(dst + p) == ZIP_SIG_CD) { found = p; }
+        p = p + 1;
+    }
+    assert(found > 0, "the central directory record is locatable");
+    _zip_put16(dst + found + 8, 1);
+    assert(zip_open(dst, total) == 0, "an encrypted member refuses the whole archive");
+    assert(zip_last_error() == 0 - ERR_UNSUPPORTED_FORMAT,
+    "reporting UNSUPPORTED_FORMAT, not corruption — the archive is well-formed");
+
+    # OOM is its own class, through the fault-injection seam.
+    _sankoch_alloc_set_fail_at(0);
+    assert(zip_open(dst, total) == 0, "an allocation failure does not open");
+    assert(zip_last_error() == 0 - ERR_OOM, "and reports OOM, distinct from corruption");
+    _sankoch_alloc_set_fail_at(0 - 1);
+    return 0;
+}
+
+# The reader and writer can be placed in a caller-supplied arena, so everything they
+# allocate is reclaimable in one call. Before 2.7.7 there was no way to free any of it.
+fn test_zip_allocator_threading() {
+    var src = alloc(2048);
+    _zt_fill(src, 2048, 97);
+
+    var a = arena_allocator(1 << 20);
+    var dst = alloc(zip_bound(2, 20, 4096));
+
+    var w = zip_writer_init_a(a, dst, zip_bound(2, 20, 4096));
+    assert(w != 0, "an arena-backed writer inits");
+    assert(zip_add(w, "one.bin", src, 2048, ZIP_DEFLATE) == 0, "and takes a member");
+    assert(zip_add(w, "two.bin", src, 2048, ZIP_STORE) == 0, "and another");
+    var total = zip_writer_finish(w);
+    assert(total > 0, "and closes");
+
+    var z = zip_open_a(a, dst, total);
+    assert(z != 0, "an arena-backed reader opens it");
+    assert(zip_count(z) == 2, "with both members");
+    assert(zip_allocator(z) == a, "and remembers which allocator it came from");
+    assert(zip_find(z, "two.bin") == 1, "names survive — they are COPIED, not aliased");
+
+    var out = alloc(2048);
+    assert(zip_extract(z, 0, out, 2048) == 2048, "and a member extracts");
+
+    # ⚠ The whole reader and writer are reclaimed by ONE reset. The archive bytes are
+    # NOT — `dst` is the caller's and outlives the arena, which is the contract.
+    reset_via(a);
+    var z2 = zip_open(dst, total);
+    assert(z2 != 0, "the archive bytes survive the arena reset");
+    assert(zip_count(z2) == 2, "intact");
+    assert(zip_allocator(z2) == 0, "and the default reader reports the process allocator");
+
+    # An arena that is reset between two opens hands the second one the same memory —
+    # proof that the first really was reclaimed rather than merely abandoned.
+    var b = arena_allocator(1 << 16);
+    var r1 = zip_open_a(b, dst, total);
+    assert(r1 != 0, "a small arena opens the archive");
+    reset_via(b);
+    var r2 = zip_open_a(b, dst, total);
+    assert(r2 != 0, "and opens it again after a reset");
+    assert(r1 == r2, "reusing the SAME address, so the first was genuinely reclaimed");
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_zip_bound();
+    test_zip_last_error();
+    test_zip_allocator_threading();
     test_zip_roundtrip();
     test_zip_store_method();
     test_zip_empty_archive();
