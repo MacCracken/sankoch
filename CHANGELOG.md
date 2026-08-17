@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.8] — 2026-08-18 — toolchain catch-up to 6.5.26; backlog cleared
+
+Housekeeping. **No source change** — every one of the ten `dist/` bundles regenerates
+**byte-identical** to 2.7.7, which is the evidence that the toolchain move is behaviour-neutral
+rather than merely untested.
+
+### Changed
+
+- **Toolchain pin 6.5.16 → 6.5.26** (nine patch releases; supersedes the unreleased 6.5.17
+  bump this entry replaces). Source needed no change to build or pass.
+
+### Verified
+
+- **4,484,562 assertions / 0 failures** across the full `.tcyr` set.
+- **6 fuzz harnesses / 0 failures**, including the zstd optimal-parse, cross-block and
+  corruption sweeps.
+- **All ten `dist/` bundles byte-identical** to 2.7.7 apart from the version stamp
+  (`cyrius distlib --all` → 10 regenerated, 0 drift).
+- Clean `rm -rf build lib && cyrius deps && cyrius build`.
+
+### Housekeeping
+
+- **Issue queue emptied.** Both remaining open issues were already resolved in-place and had
+  simply never been archived — `2026-06-30-zlib-compress-segfault-under-cyrius-6.3.18`
+  (✅ resolved 2026-06-30; the defect was a 4-byte-vs-4-slot array declaration in the *test
+  harness*, not the library) and `2026-08-09-zip-consumer-report-from-agnosai`
+  (✅ fixed in 2.7.7 — `zip_bound`, `zip_open_a`, `zip_last_error`). Moved to
+  `docs/development/issues/archived/`; the open queue is now **0**.
+
 ## [2.7.7] — 2026-08-09 — ZIP: a sizing API, reclaimable readers, and discriminated open failures
 
 All three from a consumer report filed by agnosai while porting `.agpkg` off the Rust
