@@ -1,6 +1,10 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (v2.7.5) with **one open Critical** (see ▶ 2.7.6); **▶ 2.7.6 patch**, then **2.8.x** (SIMD CRC-32 → GPU texture → P(-1) closeout) | **Last Updated**: 2026-07-26
+> **Status**: Stable (**v2.7.8**); no open Critical — 2.7.6 shipped the batch-deflate
+> block-boundary corruption fix, 2.7.7 the ZIP sizing/reclaim work, 2.7.8 the
+> toolchain catch-up. Next: **2.8.x** (SIMD CRC-32 → GPU texture → P(-1) closeout).
+> ⚠ The **DEFLATE match-finder** backlog item is no longer speculative — sit has
+> measured it as its single worst benchmark row; see Backlog. | **Last Updated**: 2026-08-20
 
 This file is the **forward** ladder — the committed next releases
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
@@ -144,12 +148,38 @@ Parked items with no committed release. Each has a *sound reason to wait* — th
 payoff needs a real consumer profile to justify the cost/risk. **To be triaged
 into a fresh ladder** when a consumer surfaces.
 
-- **DEFLATE match-finder throughput.** The wire-identical mandate (zlib
-  byte-for-byte parity is load-bearing) blocks the obvious speedups — `good_match`
-  and friends are speed/ratio trade-offs that change output. A genuine win needs an
-  optimisation that finds the *same* matches faster (tighter chain-walk scheduling,
-  a better hash, or a provably output-preserving lazy-match restructure). Open-ended;
-  pick up if sit's `zlib_compress(1 MB)` target resurfaces as a priority.
+- **DEFLATE match-finder throughput.** ⚠ **The trigger has fired — this is no
+  longer speculative.** The entry used to end "pick up if sit's
+  `zlib_compress(1 MB)` target resurfaces as a priority". It has, repeatedly, and
+  sit has measured it.
+
+  **Evidence (sit v1.4.8–1.5.x, `docs/benchmarks/2026-08-19-v1.4.8.md`):**
+
+  | measurement | value |
+  |---|---:|
+  | `add-1MB`, sit vs git | **6.37×** (104.27 ms vs 16.38 ms) |
+  | of which `zlib_compress` | **~100 ms — the dominant term** |
+  | `blob-hash-1048576B` (sigil SHA-256, same 1 MB) | 4.73 ms |
+  | `zlib-compress-65536B` | 1.067 ms |
+  | `zlib-compress-1024B` | 123.7 µs |
+
+  **`add-1MB` is sit's single worst benchmark row**, and compression is
+  essentially all of it — hashing the same megabyte costs 4.7 ms against
+  compression's ~100 ms, a 21× gap. sit has driven every other row it controls
+  to parity or better (`init` 0.64×, `commit` 0.59×, `fetch` 0.24×, `status`
+  1.38×), so this is the largest remaining gap that is *not* sit's own code.
+
+  **The constraint stands and is the hard part.** zlib byte-for-byte parity is
+  load-bearing for sankoch's consumers, so `good_match` and friends are off the
+  table — they are speed/ratio trade-offs that change output. A genuine win has
+  to find the *same* matches faster: tighter chain-walk scheduling, a better
+  hash, or a provably output-preserving lazy-match restructure. **Any candidate
+  must be gated on a byte-identical-output test across a real corpus before a
+  benchmark number is quoted.**
+
+  Open-ended and large. Pairs naturally with the 2.8.0 SIMD work already
+  scheduled, but note that CRC-32 via `PCLMULQDQ` does **not** touch this — the
+  cost here is match finding in `lz77.cyr`, not checksumming.
 - **Brotli** (new codec) — DEFLATE-family with a static dictionary + context
   modeling; land it when a web-serving / font consumer needs it.
 
