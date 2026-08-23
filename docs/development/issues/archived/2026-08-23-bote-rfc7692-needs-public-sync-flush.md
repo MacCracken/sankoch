@@ -1,6 +1,8 @@
 # 2026-08-23 — bote needs a public DEFLATE **sync-flush** for RFC 7692 (WebSocket `permessage-deflate`)
 
-**Status**: **OPEN — confirmed absent in sankoch 2.7.8** (verified 2026-08-23 against `dist/sankoch.cyr` at that tag).
+**Status**: ✅ **RESOLVED in 2.7.9** (2026-08-23). Shipped `deflate_enc_flush`, plus the
+`deflate_enc_reset_context` nice-to-have and `deflate_dec_produced` — the second gap this
+filing flagged as worth confirming, which turned out to be real. See the Log.
 **Reporter**: bote 3.3.7 blocker re-derivation. bote audited its "Blocked on cyrius / external" table item by item and found six of seven premises had expired; this one flipped from *"blocked on stdlib"* to *"sankoch already has 95% of it"*.
 **Side**: bote is a prospective **consumer** — it does not declare sankoch today.
 **Severity**: enhancement. Nothing is broken; a feature is unreachable.
@@ -88,3 +90,51 @@ Decoder side appears already sufficient: `deflate_dec_write` can be fed the payl
 ## Log
 
 - **2026-08-23** — Filed. Verified against `dist/sankoch.cyr` @ 2.7.8: public encoder surface is `deflate_enc_init` / `_init_dict` / `_write` / `_finish` only; no flush/sync entry point (`grep -nE '^fn .*(flush|sync)'` returns only private helpers `_dyn_flush_subblock`, `_xze_flush`, `_bze_flush_bits`, `_zew_flush`, `_zo_sync_insert`). `deflate_enc_finish` confirmed to emit BFINAL=1 at `:5502-5506`.
+
+- **2026-08-23** — ✅ **Resolved in 2.7.9.** All three asks shipped, plus the decode-side gap
+  this filing asked to confirm.
+
+  **`deflate_enc_flush(ctx)`** — exactly the proposed shape and semantics. Returns the
+  *cumulative* bytes written to `dst` rather than this call's delta; a sync flush leaves the
+  stream byte-aligned, so the figure is exact and you slice `dst[prev..cur)` as the frame you
+  just closed. `_dyn_flush_subblock(bw, 0)` on the dynamic path, EOB + header-latch reset on
+  the fixed one, then the empty stored block either way.
+
+  **`deflate_enc_reset_context(ctx)`** — shipped, not deferred. It is checked, not merely
+  documented: pending symbols, an open fixed block, or unconsumed input each return
+  `-ERR_INVALID_INPUT` and leave the ctx untouched, so a mid-block reset cannot silently
+  produce a stream referencing discarded history. Call it immediately after a flush.
+
+  **The decoder gap was real.** `deflate_dec_write` does *not* buffer until end-of-stream —
+  it emits into `dst` incrementally, so that half of the concern is unfounded. But there was
+  no public way to read how much it had emitted: `deflate_dec_finish` demands a BFINAL=1
+  block **and** releases the mutex. Added **`deflate_dec_produced(ctx)`**.
+  ⚠ You still call `deflate_dec_finish` to release `_sankoch_mtx` when done with a ctx, and
+  must **ignore its `-ERR_CORRUPT_DATA` return** — a `permessage-deflate` stream never
+  terminates, so "incomplete" is the correct and expected verdict.
+
+  **Ratio — the part worth reading before you adopt it.** Exposing the flush immediately
+  showed it was expensive: sankoch's level ≥ 4 path emitted a dynamic Huffman block
+  unconditionally, which is free across a 16 K-symbol batch sub-block but not when a flush
+  closes a sub-block per message. A ~60-byte JSON-RPC frame shipped a ~70-byte header to
+  describe itself. On a 31,980-byte repetitive JSON-RPC corpus at 200-byte messages that was
+  4,764 bytes against reference zlib's 2,905 — **+64 %**. 2.7.9 therefore also prices dynamic
+  against fixed per block and emits the cheaper one, as zlib always has: now **2,908 bytes,
+  +0.1 %** against the reference, and +0.0/+0.1 % at 1000/4000-byte messages.
+
+  So: **use level 6.** Through 2.7.8's behaviour level 1 would have beaten it on small
+  frames; it no longer does.
+
+  ⚠ Sync flush still costs ratio by construction — each flush forces a block boundary
+  matches cannot cross. The same corpus as one un-flushed stream is 1,819 bytes. That gap is
+  RFC 7692's, and it shrinks as messages get larger.
+
+  **Verification.** Self-consistency was explicitly not trusted. `scripts/deflate-flush-smoke.sh`
+  runs both directions against Python `zlib`: `zlib.decompressobj(-15)` decodes every sankoch
+  frame at levels 1 and 6, and sankoch's streaming decoder reproduces Python's
+  `Z_SYNC_FLUSH` frames byte-for-byte. Plus `tests/tcyr/deflate_sync_flush.tcyr` (2,543
+  assertions, including the §7.2.1 wire algorithm end to end) and 60 new fuzz cases.
+
+  **Your caveat stands.** This does not unblock bote on its own — cyrius's `lib/ws_server.cyr`
+  still exposes no `Sec-WebSocket-Extensions` handshake hook. That half remains an upstream
+  ask against cyrius. This is the half sankoch owns, and it is done.

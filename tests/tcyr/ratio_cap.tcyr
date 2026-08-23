@@ -97,7 +97,7 @@ fn test_rc_deflate_bomb_and_pass() {
     assert(clen > 0, "rc deflate: compress");
     var d = alloc(n);
     assert(deflate_decompress_with_ratio_cap(c, clen, d, n, 2) == 0 - ERR_RATIO_LIMIT,
-    "rc deflate: cap=2 rejected");
+      "rc deflate: cap=2 rejected");
     var r = deflate_decompress_with_ratio_cap(c, clen, d, n, 100000);
     assert(r == n, "rc deflate: generous cap full length");
     _rc_assert_zeros(d, n, "rc deflate: content all zeros");
@@ -114,7 +114,7 @@ fn test_rc_gzip_bomb_and_pass() {
     assert(clen > 0, "rc gzip: compress");
     var d = alloc(n);
     assert(gzip_decompress_with_ratio_cap(c, clen, d, n, 2) == 0 - ERR_RATIO_LIMIT,
-    "rc gzip: cap=2 rejected");
+      "rc gzip: cap=2 rejected");
     var r = gzip_decompress_with_ratio_cap(c, clen, d, n, 100000);
     assert(r == n, "rc gzip: generous cap full length");
     _rc_assert_zeros(d, n, "rc gzip: content all zeros");
@@ -245,7 +245,7 @@ fn test_rc_gzip_concatenated_cumulative() {
     assert(rc == 0 - ERR_RATIO_LIMIT, "rc gzip cat: cumulative cap trips on member 2");
     # And a hard bomb cap rejects within member 1.
     assert(gzip_decompress_with_ratio_cap(cat, catlen, d, n * 2, 2) == 0 - ERR_RATIO_LIMIT,
-    "rc gzip cat: cap=2 rejects in member 1");
+      "rc gzip cat: cap=2 rejects in member 1");
     return 0;
 }
 
@@ -260,13 +260,13 @@ fn test_rc_invalid_args() {
     assert(clen > 0, "rc args: compress");
     var d = alloc(n);
     assert(zlib_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
-    "rc args: zlib max_ratio=0 rejected");
+      "rc args: zlib max_ratio=0 rejected");
     assert(zlib_decompress_with_ratio_cap(c, clen, d, n, 0 - 5) == 0 - ERR_INVALID_INPUT,
-    "rc args: zlib negative max_ratio rejected");
+      "rc args: zlib negative max_ratio rejected");
     assert(deflate_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
-    "rc args: deflate max_ratio=0 rejected");
+      "rc args: deflate max_ratio=0 rejected");
     assert(gzip_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
-    "rc args: gzip max_ratio=0 rejected");
+      "rc args: gzip max_ratio=0 rejected");
     return 0;
 }
 
@@ -363,9 +363,9 @@ fn test_rc_xz_invalid_args() {
     assert(clen > 0, "rc xz args: compress");
     var d = alloc(n);
     assert(xz_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
-    "rc xz args: max_ratio=0 rejected");
+      "rc xz args: max_ratio=0 rejected");
     assert(xz_decompress_with_ratio_cap(c, clen, d, n, 0 - 5) == 0 - ERR_INVALID_INPUT,
-    "rc xz args: negative max_ratio rejected");
+      "rc xz args: negative max_ratio rejected");
     return 0;
 }
 
@@ -455,9 +455,9 @@ fn test_rc_bzip2_invalid_args() {
     assert(clen > 0, "rc bzip2 args: compress");
     var d = alloc(n);
     assert(bzip2_decompress_with_ratio_cap(c, clen, d, n, 0) == 0 - ERR_INVALID_INPUT,
-    "rc bzip2 args: max_ratio=0 rejected");
+      "rc bzip2 args: max_ratio=0 rejected");
     assert(bzip2_decompress_with_ratio_cap(c, clen, d, n, 0 - 5) == 0 - ERR_INVALID_INPUT,
-    "rc bzip2 args: negative max_ratio rejected");
+      "rc bzip2 args: negative max_ratio rejected");
     return 0;
 }
 

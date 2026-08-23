@@ -79,7 +79,7 @@ fn test_err_zlib_cinfo_overflow() {
     store8(src + 2, 3); store8(src + 3, 0); store8(src + 4, 0); store8(src + 5, 0);
     var dst = alloc(64);
     assert(zlib_decompress(src, 6, dst, 64) < 0,
-    "zlib CINFO>7 must reject");
+      "zlib CINFO>7 must reject");
     return 0;
 }
 

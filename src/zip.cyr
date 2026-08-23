@@ -1257,7 +1257,7 @@ fn zip_enc_end(w) {
     pos = pos + 16;
 
     var rr = _zip_record(w, load64(w + 56), method, crc, csize, ulen, hdr,
-    load64(w + 112), load64(w + 120));
+      load64(w + 112), load64(w + 120));
     if (rr < 0) { return rr; }
     store64(w + 16, pos);
     store64(w + 56, 0);      # no member open

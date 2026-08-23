@@ -21,7 +21,7 @@ fn test_deflate_enc_smoke() {
     var dlen = deflate_decompress(c, clen, d, 64);
     assert(dlen == 5, "enc rt dlen");
     assert(load8(d + 0) == 72 && load8(d + 1) == 101 && load8(d + 2) == 108
-    && load8(d + 3) == 108 && load8(d + 4) == 111, "enc rt content");
+      && load8(d + 3) == 108 && load8(d + 4) == 111, "enc rt content");
     return 0;
 }
 
@@ -247,6 +247,14 @@ fn test_levels_deflate() {
 }
 
 fn test_dynamic_huffman_rt() {
+    # 2.7.9: the level >= 4 path prices dynamic against fixed and emits the
+    # cheaper block, so BTYPE is now input-dependent — through 2.7.8 it was
+    # unconditionally dynamic. Both branches are asserted below.
+    #
+    # 256 bytes over a 10-symbol alphabet: the dynamic Huffman header costs
+    # more than the tighter codes save, so fixed wins. Reference zlib picks
+    # BTYPE=01 for this exact input at level 6, which is what settles that
+    # the choice is right rather than merely different.
     var src = alloc(256);
     var i = 0;
     while (i < 256) { store8(src + i, 65 + (i % 10)); i = i + 1; }
@@ -254,10 +262,30 @@ fn test_dynamic_huffman_rt() {
     var d = alloc(512);
     var clen = deflate_compress_level(src, 256, c, 512, 6);
     assert(clen > 0 && clen < 256, "dynamic huffman compresses");
-    assert((load8(c) & 7) == 5, "BTYPE=10 dynamic block");
+    assert((load8(c) & 7) == 3, "BTYPE=01 fixed block wins on a tiny block");
     assert(deflate_decompress(c, clen, d, 512) == 256, "dynamic huffman rt");
     i = 0;
     while (i < 256) { assert(load8(d + i) == load8(src + i), "dynamic content"); i = i + 1; }
+
+    # 8 KB with a strongly skewed byte distribution: enough symbols to
+    # amortise the header, and frequencies lopsided enough that the optimal
+    # tree beats the universal fixed one. Dynamic must still win here, or
+    # the pricing has collapsed to always-fixed and the tree code is dead.
+    var big = alloc(8192);
+    i = 0;
+    while (i < 8192) {
+        if ((i % 17) == 0) { store8(big + i, 65 + (i % 60)); }
+        else { store8(big + i, 97 + (i % 3)); }
+        i = i + 1;
+    }
+    var cb = alloc(16384);
+    var db = alloc(8192);
+    var blen = deflate_compress_level(big, 8192, cb, 16384, 6);
+    assert(blen > 0, "skewed block compresses");
+    assert((load8(cb) & 7) == 5, "BTYPE=10 dynamic block wins on a skewed block");
+    assert(deflate_decompress(cb, blen, db, 8192) == 8192, "skewed block rt");
+    i = 0;
+    while (i < 8192) { assert(load8(db + i) == load8(big + i), "skewed content"); i = i + 1; }
     return 0;
 }
 

@@ -409,7 +409,7 @@ fn _z_huff_tree(p, end) {
         var wt = _z_pool_wtab;
         store64(wt + 24, wlog);
         if (_z_fse_build(wdist, wnum, wlog,
-        load64(wt + 0), load64(wt + 8), load64(wt + 16)) < 0) { return 0 - 60; }
+            load64(wt + 0), load64(wt + 8), load64(wt + 16)) < 0) { return 0 - 60; }
         # decode weights from the backward bitstream over p+1+nc .. p+1+hb
         var bstart = p + 1 + nc;
         var blen = hb - nc;
@@ -783,7 +783,7 @@ fn _z_seq_table(mode, pdist, numSym, plog, p, which, end) {
         if (t2 == 0) { return 0; }
         store64(t2 + 24, load64(log_out));   # the pooled arrays are max-sized; set the real log
         if (_z_fse_build(d, load64(nsym_out), load64(log_out),
-        load64(t2 + 0), load64(t2 + 8), load64(t2 + 16)) < 0) { return 0; }
+            load64(t2 + 0), load64(t2 + 8), load64(t2 + 16)) < 0) { return 0; }
         if (which == 0) { _z_fse_ll = t2; } elif (which == 1) { _z_fse_of = t2; } else { _z_fse_ml = t2; }
         return t2;
     }
@@ -1009,7 +1009,7 @@ fn zstd_content_size(src, src_len) {
 fn zstd_frame_content_size(src, src_len) {
     if (src_len < 5) { return 0 - 1; }
     if ((load8(src) & 0xFF) != 0x28 || (load8(src + 1) & 0xFF) != 0xB5
-    || (load8(src + 2) & 0xFF) != 0x2F || (load8(src + 3) & 0xFF) != 0xFD) { return 0 - 1; }
+      || (load8(src + 2) & 0xFF) != 0x2F || (load8(src + 3) & 0xFF) != 0xFD) { return 0 - 1; }
     var end = src + src_len;
     var fhd = load8(src + 4) & 0xFF;
     var fcs_flag = (fhd >> 6) & 3;
@@ -1122,8 +1122,8 @@ fn _ze_huff_alloc() {
     _ze_hw = _sankoch_alloc(512 * 8); _ze_hp = _sankoch_alloc(512 * 8);
     _ze_ha = _sankoch_alloc(512 * 8); _ze_hsym = _sankoch_alloc(256 * 8);
     if (_ze_cnt == 0 || _ze_nb == 0 || _ze_wt == 0 || _ze_code == 0 || _ze_tmp == 0
-    || _ze_tmp2 == 0
-    || _ze_hw == 0 || _ze_hp == 0 || _ze_ha == 0 || _ze_hsym == 0) {
+      || _ze_tmp2 == 0
+      || _ze_hw == 0 || _ze_hp == 0 || _ze_ha == 0 || _ze_hsym == 0) {
         _ze_oom = 1;
         return 0 - 1;
     }
@@ -1561,8 +1561,8 @@ fn _ze_lz_alloc() {
     _ze_prev = _sankoch_alloc(_ze_maxwin * 8);    # 2.7.4 frame-global chain (window*8 bytes)
     _ze_head_save = _sankoch_alloc((1 << 16) * 8); # best-of head shadow (512 KiB)
     if (_zs_ll == 0 || _zs_ml == 0 || _zs_off == 0 || _zs_ofv == 0 || _zs_llc == 0
-    || _zs_ofc == 0 || _zs_mlc == 0 || _zs_lit == 0 || _ze_head == 0 || _ze_prev == 0
-    || _ze_head_save == 0) {
+      || _zs_ofc == 0 || _zs_mlc == 0 || _zs_lit == 0 || _ze_head == 0 || _ze_prev == 0
+      || _ze_head_save == 0) {
         _ze_oom = 1;
         return 0 - 1;
     }
@@ -1598,7 +1598,7 @@ fn _ze_find(src, pos, n, chain_max) {
             # Quick reject: a candidate can only beat best_len if it matches at
             # index best_len — skip the full scan otherwise (keeps the chain cheap).
             if (best_len == 0 || (best_len < lim
-            && load8(src + cand + best_len) == load8(src + pos + best_len))) {
+                && load8(src + cand + best_len) == load8(src + pos + best_len))) {
                 var l = 0;
                 while (l < lim && load8(src + cand + l) == load8(src + pos + l)) { l = l + 1; }
                 if (l > best_len) { best_len = l; best_off = off; }
@@ -1765,9 +1765,9 @@ fn _ze_lz_parse(g, bstart, bend) {
         var use_rep = 0;
         if (_ze_lazy == 1) {
             if (_ze_replen >= 3
-            && (blen < 3
-            || _ze_mvalue(_ze_replen, _ze_pr_offval_peek(_ze_repoff, ll00))
-            >= _ze_mvalue(blen, _ze_pr_offval_peek(boff, ll00)))) {
+              && (blen < 3
+                || _ze_mvalue(_ze_replen, _ze_pr_offval_peek(_ze_repoff, ll00))
+                >= _ze_mvalue(blen, _ze_pr_offval_peek(boff, ll00)))) {
                 blen = _ze_replen; boff = _ze_repoff; use_rep = 1;
             }
         } elif (_ze_replen >= 3 && _ze_replen + 2 >= blen) {
@@ -1792,9 +1792,9 @@ fn _ze_lz_parse(g, bstart, bend) {
                 # that pays on record-structured data — was unreachable.
                 _ze_rep_search(g, pos + 1, bend, ll0 + 1);
                 if (_ze_replen >= 3
-                && (nlen < 3
-                || _ze_mvalue(_ze_replen, _ze_pr_offval_peek(_ze_repoff, ll0 + 1))
-                > _ze_mvalue(nlen, _ze_pr_offval_peek(noff, ll0 + 1)))) {
+                  && (nlen < 3
+                    || _ze_mvalue(_ze_replen, _ze_pr_offval_peek(_ze_repoff, ll0 + 1))
+                    > _ze_mvalue(nlen, _ze_pr_offval_peek(noff, ll0 + 1)))) {
                     nlen = _ze_replen; noff = _ze_repoff;
                 }
                 # Defer only when the later match is worth MORE than the current one
@@ -1803,8 +1803,8 @@ fn _ze_lz_parse(g, bstart, bend) {
                 var rep_locked = 0;
                 if (use_rep == 1 && _ze_pr_offval_peek(noff, ll0 + 1) > 3) { rep_locked = 1; }
                 if (rep_locked == 0 && nlen >= 3
-                && _ze_mvalue(nlen, _ze_pr_offval_peek(noff, ll0 + 1))
-                > _ze_mvalue(blen, _ze_pr_offval_peek(boff, ll0)) + 8) {
+                  && _ze_mvalue(nlen, _ze_pr_offval_peek(noff, ll0 + 1))
+                  > _ze_mvalue(blen, _ze_pr_offval_peek(boff, ll0)) + 8) {
                     _ze_insert(g, pos + 1, _ze_glen);   # defer -> pos+1 is the match position
                     pos = pos + 1;
                     blen = nlen; boff = noff;
@@ -2217,7 +2217,7 @@ fn _zo_lz_parse(src, bstart, bend) {
                     store64(_zo_price + cur * 8, lprice);
                     # (a2) with1literal rescue
                     if (_zo_optlevel >= 1 && pm_litlen == 0 && pm_mlen > 0
-                    && (_zo_ll_price(1) - _zo_ll_price(0)) < 0 && ip + cur < iend) {
+                      && (_zo_ll_price(1) - _zo_ll_price(0)) < 0 && ip + cur < iend) {
                         var nb = _zo_lit_price(load8(src + ip + cur) & 255);
                         var w1 = pm_price + nb + (_zo_ll_price(1) - _zo_ll_price(0));
                         var wm = lprice + nb + (_zo_ll_price(l + 1) - _zo_ll_price(l));
@@ -2225,7 +2225,7 @@ fn _zo_lz_parse(src, bstart, bend) {
                             var pv = cur - pm_mlen;
                             var pll0 = 0; if (load64(_zo_litlen + pv * 8) == 0) { pll0 = 1; }
                             _zo_newrep(load64(_zo_rep0 + pv * 8), load64(_zo_rep1 + pv * 8),
-                            load64(_zo_rep2 + pv * 8), pm_off, pll0);
+                              load64(_zo_rep2 + pv * 8), pm_off, pll0);
                             store64(_zo_mlen + (cur + 1) * 8, pm_mlen);
                             store64(_zo_off + (cur + 1) * 8, pm_off);
                             store64(_zo_bof + (cur + 1) * 8, pm_bof);
@@ -2243,7 +2243,7 @@ fn _zo_lz_parse(src, bstart, bend) {
                     var pv2 = cur - load64(_zo_mlen + cur * 8);
                     var p2ll0 = 0; if (load64(_zo_litlen + pv2 * 8) == 0) { p2ll0 = 1; }
                     _zo_newrep(load64(_zo_rep0 + pv2 * 8), load64(_zo_rep1 + pv2 * 8),
-                    load64(_zo_rep2 + pv2 * 8), load64(_zo_off + cur * 8), p2ll0);
+                      load64(_zo_rep2 + pv2 * 8), load64(_zo_off + cur * 8), p2ll0);
                     store64(_zo_rep0 + cur * 8, _zo_nr0);
                     store64(_zo_rep1 + cur * 8, _zo_nr1);
                     store64(_zo_rep2 + cur * 8, _zo_nr2);
@@ -2253,7 +2253,7 @@ fn _zo_lz_parse(src, bstart, bend) {
                 if (ip + cur > ilimit) { cur = cur + 1; continue; }
                 # (d) speed short-circuit
                 if (_zo_optlevel == 0
-                && load64(_zo_price + (cur + 1) * 8) <= load64(_zo_price + cur * 8) + 128) {
+                  && load64(_zo_price + (cur + 1) * 8) <= load64(_zo_price + cur * 8) + 128) {
                     cur = cur + 1; continue;
                 }
                 # (e) match candidates at cur
@@ -2267,7 +2267,7 @@ fn _zo_lz_parse(src, bstart, bend) {
                 if (nm2 == 0) { cur = cur + 1; continue; }
                 var longestML = load64(_zo_mt_len + (nm2 - 1) * 8);
                 if (longestML > _zo_suff || cur + longestML >= 4096
-                || ip + cur + longestML >= iend) {
+                  || ip + cur + longestML >= iend) {
                     ls_mlen = longestML; ls_off = load64(_zo_mt_ofb + (nm2 - 1) * 8);
                     ls_bof = load64(_zo_mt_boff + (nm2 - 1) * 8);
                     ls_litlen = 0;
@@ -2448,7 +2448,7 @@ fn _ze_fse_ctable(dist, numSym, log, slot) {
         dfs = load64(b + 24); cumul = load64(b + 32); dt = load64(b + 40);
         store64(dt + 24, log);
         if (_z_fse_build(dist, numSym, log,
-        load64(dt + 0), load64(dt + 8), load64(dt + 16)) < 0) { return 0; }
+            load64(dt + 0), load64(dt + 8), load64(dt + 16)) < 0) { return 0; }
     } else {
         dt = _z_fse_from_dist(dist, numSym, log);   # decode table; sym[] is the spread
         if (dt == 0) { return 0; }
@@ -2676,8 +2676,8 @@ fn _ze_seq_plan_alloc() {
     store64(_ze_pnorm + 16, _sankoch_alloc(64 * 8));
     _ze_ncbuf = _sankoch_alloc(512);
     if (_ze_pmode == 0 || _ze_pct == 0 || _ze_plog == 0 || _ze_pnorm == 0 || _ze_palpha == 0
-    || _ze_prle == 0 || _ze_phist == 0 || _ze_ncbuf == 0
-    || load64(_ze_pnorm + 0) == 0 || load64(_ze_pnorm + 8) == 0 || load64(_ze_pnorm + 16) == 0) {
+      || _ze_prle == 0 || _ze_phist == 0 || _ze_ncbuf == 0
+      || load64(_ze_pnorm + 0) == 0 || load64(_ze_pnorm + 8) == 0 || load64(_ze_pnorm + 16) == 0) {
         _ze_oom = 1;
         return 0 - 1;
     }

@@ -163,7 +163,7 @@ fn _gzip_decompress_inner(src, src_len, dst, dst_cap, ratio_max): i64 {
         }
 
         var dlen = _gzip_decompress_member(src + pos, src_len - pos,
-        dst + total, member_cap, member_ratio);
+          dst + total, member_cap, member_ratio);
         if (dlen < 0) {
             if (starved == 1 && dlen == 0 - ERR_BUFFER_TOO_SMALL) { return 0 - ERR_RATIO_LIMIT; }
             return dlen;
@@ -511,7 +511,7 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
                 var dp_after = load64(inner + 8);
                 if (dp_after > dp_before) {
                     crc32_update(load64(ctx + 16),
-                    dst_p + dp_before, dp_after - dp_before);
+                      dst_p + dp_before, dp_after - dp_before);
                 }
                 cp = cp + rc;
                 if (load64(inner + 24) == DDEC_STATE_DONE) {

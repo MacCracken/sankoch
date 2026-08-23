@@ -16,7 +16,7 @@ fn test_lz4f_enc_roundtrip() {
     assert(ctx != 0, "lz4f_enc init");
     # Magic 0x184D2204 little-endian = 04 22 4D 18
     assert(load8(c) == 4 && load8(c + 1) == 34 && load8(c + 2) == 77 && load8(c + 3) == 24,
-    "lz4f_enc magic");
+      "lz4f_enc magic");
     var fed = 0;
     while (fed < N) {
         var take = 3000;

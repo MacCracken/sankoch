@@ -656,7 +656,7 @@ fn _ldec_emit_block(ctx): i64 {
         emitted = bsv;
     } else {
         var dlen = lz4_decompress(load64(ctx + 56), bsv,
-        dst_b + dp_b, dst_cap_b - dp_b);
+          dst_b + dp_b, dst_cap_b - dp_b);
         if (dlen < 0) { return _ldec_poison(ctx, dlen); }
         emitted = dlen;
     }

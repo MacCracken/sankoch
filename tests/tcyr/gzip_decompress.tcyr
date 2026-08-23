@@ -75,7 +75,7 @@ fn test_err_gzip_reserved_flg() {
     while (i < 18) { store8(src + i, 0); i = i + 1; }
     var dst = alloc(64);
     assert(gzip_decompress(src, 18, dst, 64) < 0,
-    "gzip reserved FLG bit set must reject");
+      "gzip reserved FLG bit set must reject");
     return 0;
 }
 

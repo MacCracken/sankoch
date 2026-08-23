@@ -63,15 +63,18 @@ jobs:
           [ $fail -eq 0 ] || { echo "lint: warnings present"; exit 1; }
 
       - name: Format check
-        # `cyrius fmt <file>` (no flag) prints the formatted source to
-        # stdout; diff against the committed file to enforce no drift.
-        # Pre-2.2.4 this used `--check` but cyrius's `--check` mode is
-        # exit-code-only and emits no stdout, so the diff always fired
-        # spuriously — bumped to canonical invocation at 2.2.4 ship.
+        # `cyrius fmt --check <file>` is exit-code-only: 0 = clean, 1 = drift.
+        # 2.2.4–2.7.8 used the stdout form (`diff <(cyrius fmt "$f") "$f"`)
+        # because `--check` then emitted nothing AND exited 0, so it caught
+        # nothing. Cyrius 6.5.35 changed both halves: `--check` now reports
+        # drift through the exit code, and the bare `cyrius fmt <file>` form
+        # REWRITES THE FILE IN PLACE and prints nothing. Under 6.5.35 the old
+        # gate diffed empty-vs-file — drift on every file — while silently
+        # mutating the checkout. Do not reintroduce the stdout form.
         run: |
           fail=0
           for f in src/*.cyr programs/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr; do
-            if ! diff -q <(cyrius fmt "$f" 2>/dev/null) "$f" > /dev/null; then
+            if ! cyrius fmt --check "$f" > /dev/null 2>&1; then
               echo "needs fmt: $f"
               fail=1
             fi

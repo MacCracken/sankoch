@@ -60,7 +60,7 @@ fn xxhash32(data, len): i64 {
         }
 
         h = (_xxh32_rotl(v1, 1) + _xxh32_rotl(v2, 7) +
-        _xxh32_rotl(v3, 12) + _xxh32_rotl(v4, 18)) & m;
+          _xxh32_rotl(v3, 12) + _xxh32_rotl(v4, 18)) & m;
     } else {
         h = XXH32_PRIME5;
     }

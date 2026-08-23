@@ -95,7 +95,7 @@ fn test_err_deflate_stored_oob() {
     store8(src + 4, 255);             # NLEN high (~0   & 0xFF = 0xFF = 255)
     var dst = alloc(256);
     assert(deflate_decompress(src, 5, dst, 256) < 0,
-    "deflate stored len>remaining must reject");
+      "deflate stored len>remaining must reject");
     return 0;
 }
 
@@ -113,7 +113,7 @@ fn test_err_deflate_hlit_overflow() {
     while (i < 8) { store8(src + i, 0); i = i + 1; }
     var dst = alloc(64);
     assert(deflate_decompress(src, 8, dst, 64) < 0,
-    "deflate hlit>29 (count>286) must reject");
+      "deflate hlit>29 (count>286) must reject");
     return 0;
 }
 
@@ -197,7 +197,7 @@ fn test_dec_stream_multi_block_stored() {
     var n = deflate_dec_finish(ctx);
     assert(n == 4, "multi-block len");
     assert(load8(dst + 0) == 65 && load8(dst + 1) == 66
-    && load8(dst + 2) == 67 && load8(dst + 3) == 68, "multi-block content");
+      && load8(dst + 2) == 67 && load8(dst + 3) == 68, "multi-block content");
     return 0;
 }
 
@@ -473,7 +473,7 @@ fn test_dec_stream_fixed_1kb_roundtrip() {
         var step = 16;
         if (off + step > clen) { step = clen - off; }
         assert(deflate_dec_write(ctx, c + off, step) >= 0,
-        "fixed 1kb chunk write");
+          "fixed 1kb chunk write");
         off = off + step;
     }
     var n = deflate_dec_finish(ctx);
@@ -611,7 +611,7 @@ fn test_dec_stream_dynamic_1kb_chunked() {
         var step = 8;
         if (off + step > clen) { step = clen - off; }
         assert(deflate_dec_write(ctx, c + off, step) >= 0,
-        "dyn 1kb chunk write");
+          "dyn 1kb chunk write");
         off = off + step;
     }
     var n = deflate_dec_finish(ctx);

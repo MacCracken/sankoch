@@ -84,7 +84,13 @@ fn _sankoch_reset_tables(): i64 {
     _hcl_ws = 0;
     _deflate_enc_fixed_built = 0;
     _deflate_enc_lit_codes = 0; _deflate_enc_lit_lens = 0;
-    _deflate_enc_dist_codes = 0;
+    _deflate_enc_dist_codes = 0; _deflate_enc_dist_lens = 0;
+    # 2.7.9 fixed-vs-dynamic chooser. `_dyn_cost_bw` must be cleared with its
+    # buffer: the lazy-init guard keys on `_dyn_cost_buf`, so a reset that
+    # zeroed only one of the pair would leave `_dyn_header_bits` writing
+    # through a stale bitwriter — which is exactly how it was found (the
+    # detect_error OOM sweep segfaulted).
+    _dyn_cost_buf = 0; _dyn_cost_bw = 0;
     _deflate_len_lookup_built = 0; _deflate_len_lookup = 0;
     _deflate_dist_lookup_built = 0; _deflate_dist_lookup = 0;
     _dh_ws = 0;
@@ -228,7 +234,7 @@ fn detect_format(src, src_len): i64 {
     if (b0 == 0xFD) {
         if (b1 == 0x37 && src_len >= 6) {
             if (load8(src + 2) == 0x7A && load8(src + 3) == 0x58
-            && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
+              && load8(src + 4) == 0x5A && load8(src + 5) == 0x00) {
                 return FORMAT_XZ;
             }
         }

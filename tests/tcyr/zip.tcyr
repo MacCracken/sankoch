@@ -158,7 +158,7 @@ fn test_zip_ratio_cap() {
     var out = alloc(n + 16);
     # A tight cap must trip; no cap must decode.
     assert(zip_extract_capped(z, 0, out, n + 16, 10) == 0 - ERR_RATIO_LIMIT,
-    "ratio cap trips on a high-expansion member");
+      "ratio cap trips on a high-expansion member");
     assert(zip_extract_capped(z, 0, out, n + 16, 0) == n, "uncapped extract succeeds");
     return 0;
 }
@@ -181,7 +181,7 @@ fn test_zip_crc_detects_corruption() {
     var z1 = zip_open(arc, total);
     assert(z1 != 0, "archive still parses after payload corruption");
     assert(zip_extract(z1, 0, out, n + 16) == 0 - ERR_CHECKSUM_MISMATCH,
-    "CRC-32 catches a flipped stored byte");
+      "CRC-32 catches a flipped stored byte");
     return 0;
 }
 
@@ -236,7 +236,7 @@ fn test_zip_dst_too_small() {
     var z = zip_open(arc, total);
     var small = alloc(64);
     assert(zip_extract(z, 0, small, 64) == 0 - ERR_BUFFER_TOO_SMALL,
-    "extract into an undersized buffer is refused");
+      "extract into an undersized buffer is refused");
     return 0;
 }
 
@@ -316,9 +316,9 @@ fn test_zip_lean_refuses_extra_methods() {
     var z = zip_open(arc, total);
     var out = alloc(n + 64);
     assert(zip_extract(z, 0, out, n + 64) == 0 - ERR_UNSUPPORTED_FORMAT,
-    "zip_extract refuses a method zip.cyr does not carry");
+      "zip_extract refuses a method zip.cyr does not carry");
     assert(zip_extract_any(z, 0, out, n + 64) == n,
-    "zip_extract_any handles it");
+      "zip_extract_any handles it");
     return 0;
 }
 
@@ -336,7 +336,7 @@ fn test_zip_method_support() {
     var arc = alloc(4096);
     var w = zip_writer_init(arc, 4096);
     assert(zip_add_any(w, "x.txt", d, 16, 14) == 0 - ERR_UNSUPPORTED_FORMAT,
-    "writer refuses method 14");
+      "writer refuses method 14");
     return 0;
 }
 
@@ -349,15 +349,15 @@ fn test_zip_any_guards() {
     var arc = alloc(262144);
     var w = zip_writer_init(arc, 262144);
     assert(zip_add_any(w, "../evil", src, 16, ZIP_BZIP2) == 0 - ERR_UNSAFE_PATH,
-    "zip_add_any rejects an unsafe name");
+      "zip_add_any rejects an unsafe name");
     assert(zip_add_any(w, "bomb.bin", src, n, ZIP_XZ) == 0, "add xz bomb");
     var total = zip_writer_finish(w);
     var z = zip_open(arc, total);
     var out = alloc(n + 64);
     assert(zip_extract_any_capped(z, 0, out, n + 64, 10) == 0 - ERR_RATIO_LIMIT,
-    "ratio cap trips on the extra-method path");
+      "ratio cap trips on the extra-method path");
     assert(zip_extract_any_capped(z, 0, out, n + 64, 0) == n,
-    "uncapped extra-method extract succeeds");
+      "uncapped extra-method extract succeeds");
     return 0;
 }
 
@@ -521,7 +521,7 @@ fn test_zip_streaming_guards() {
     assert(zip_enc_begin(w, "a.txt", ZIP_STORE, 0, 0) == 0, "stream: begin ok");
     # nested begin
     assert(zip_enc_begin(w, "b.txt", ZIP_STORE, 0, 0) == 0 - ERR_INVALID_INPUT,
-    "stream: nested begin refused");
+      "stream: nested begin refused");
     # Finishing with a member still open is refused AND abandons that member — releasing
     # its encoder lock (for DEFLATE) so the refusal can never deadlock the library (2.6.4).
     # The half-written member is dropped; a following zip_enc_end sees nothing open.
@@ -531,9 +531,9 @@ fn test_zip_streaming_guards() {
     # unsafe names and unsupported methods are refused at begin
     var w2 = zip_writer_init(alloc(4096), 4096);
     assert(zip_enc_begin(w2, "../evil", ZIP_STORE, 0, 0) == 0 - ERR_UNSAFE_PATH,
-    "stream: begin rejects unsafe name");
+      "stream: begin rejects unsafe name");
     assert(zip_enc_begin(w2, "x.txt", ZIP_BZIP2, 0, 0) == 0 - ERR_UNSUPPORTED_FORMAT,
-    "stream: begin rejects a non-streamable method");
+      "stream: begin rejects a non-streamable method");
     return 0;
 }
 
@@ -564,9 +564,9 @@ fn test_zip_symlink_chain_escape() {
     assert(zip_extract(z, ei, out, 64) == 2, "slip: the symlink member extracts");
     # but a member written THROUGH it must be refused
     assert(zip_extract_any(z, pi, out, 64) == 0 - ERR_UNSAFE_PATH,
-    "slip: member through an escaping symlink is refused");
+      "slip: member through an escaping symlink is refused");
     assert(zip_extract(z, pi, out, 64) == 0 - ERR_UNSAFE_PATH,
-    "slip: refused on the lean path too");
+      "slip: refused on the lean path too");
     return 0;
 }
 
@@ -659,9 +659,9 @@ fn test_zip_add_while_streaming() {
     _zt_fill(d, 16, 65);
     assert(zip_enc_begin(w, "s.txt", ZIP_STORE, 0, 0) == 0, "mix: begin");
     assert(zip_add(w, "p.txt", d, 16, ZIP_STORE) == 0 - ERR_INVALID_INPUT,
-    "mix: zip_add refused while a streamed member is open");
+      "mix: zip_add refused while a streamed member is open");
     assert(zip_add_any(w, "q.txt", d, 16, ZIP_BZIP2) == 0 - ERR_INVALID_INPUT,
-    "mix: zip_add_any refused while a streamed member is open");
+      "mix: zip_add_any refused while a streamed member is open");
     # Closing the member re-enables batch adds.
     assert(zip_enc_end(w) == 0, "mix: end");
     assert(zip_add(w, "p.txt", d, 16, ZIP_STORE) == 0, "mix: zip_add works after end");
@@ -764,7 +764,7 @@ fn test_zip_bound() {
     var j = 0;
     while (j < vec_len(names)) {
         assert(zip_add(w, vec_get(names, j), payload, 4096, ZIP_STORE) == 0,
-        "a STORED member fits inside the bound");
+          "a STORED member fits inside the bound");
         j = j + 1;
     }
     var total = zip_writer_finish(w);
@@ -806,7 +806,7 @@ fn test_zip_bound() {
     var tw = zip_writer_init(tiny, 64);
     assert(tw != 0, "a 64-byte writer still inits");
     assert(zip_add(tw, "manifest.json", payload, 4096, ZIP_STORE) < 0,
-    "and refuses a member that does not fit, rather than truncating");
+      "and refuses a member that does not fit, rather than truncating");
     return 0;
 }
 
@@ -853,7 +853,7 @@ fn test_zip_last_error() {
     _zip_put16(dst + found + 8, 1);
     assert(zip_open(dst, total) == 0, "an encrypted member refuses the whole archive");
     assert(zip_last_error() == 0 - ERR_UNSUPPORTED_FORMAT,
-    "reporting UNSUPPORTED_FORMAT, not corruption — the archive is well-formed");
+      "reporting UNSUPPORTED_FORMAT, not corruption — the archive is well-formed");
 
     # OOM is its own class, through the fault-injection seam.
     _sankoch_alloc_set_fail_at(0);

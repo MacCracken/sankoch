@@ -232,20 +232,20 @@ fn test_stream_dec_inc_mode_mismatch() {
     var ictx = stream_decompress_init_inc(FORMAT_GZIP, d, 16);
     assert(ictx != 0, "mode mismatch INC init");
     assert(stream_decompress_finish(ictx, d, 16) == 0 - ERR_INVALID_INPUT,
-    "legacy finish on INC ctx");
+      "legacy finish on INC ctx");
     # Drain the inner so the lock is released cleanly.
     stream_decompress_finish_inc(ictx);
 
     # 2. INC finish on a legacy ctx → error.
     var lctx = stream_decompress_init(FORMAT_GZIP);
     assert(stream_decompress_finish_inc(lctx) == 0 - ERR_INVALID_INPUT,
-    "INC finish on legacy ctx");
+      "INC finish on legacy ctx");
 
     # 3. INC finish on a compress ctx → error.
     var c = alloc(64);
     var cctx = stream_compress_init(FORMAT_GZIP, 6, c, 64);
     assert(stream_decompress_finish_inc(cctx) == 0 - ERR_INVALID_INPUT,
-    "INC finish on compress ctx");
+      "INC finish on compress ctx");
     stream_compress_finish(cctx);
     return 0;
 }

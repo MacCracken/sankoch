@@ -1,0 +1,197 @@
+# deflate_flush_smoke.cyr — interop harness for the 2.7.9 DEFLATE sync flush
+# (RFC 7692 `permessage-deflate`). Driven by scripts/deflate-flush-smoke.sh,
+# which pairs it against Python's zlib — the reference implementation for
+# Z_SYNC_FLUSH framing.
+#
+# Two directions, both against the same message corpus:
+#
+#   1. SEND — read /tmp/sankoch-flush-in, split into MSG_SIZE-byte messages,
+#      and frame each one the RFC 7692 §7.2.1 way: `deflate_enc_write`,
+#      `deflate_enc_flush`, drop the trailing `00 00 FF FF`. Emit the frames
+#      to /tmp/sankoch-flush-ours as u32le-length-prefixed records. The driver
+#      hands each to `zlib.decompressobj(-15)` and cmps against the original.
+#
+#   2. RECV — read /tmp/sankoch-flush-py (the same record format, produced by
+#      Python's `compressobj(...,-15)` + `flush(Z_SYNC_FLUSH)`), re-append the
+#      four stripped bytes, and drive ONE `deflate_dec_*` ctx across every
+#      frame — the stream never ends, so `deflate_dec_produced` is what reads
+#      each message's length back out. Concatenated output goes to
+#      /tmp/sankoch-flush-pydec for the driver to cmp.
+#
+# Direction 1 is the new code; direction 2 proves our decoder eats the
+# reference encoder's sync-flushed stream with context takeover intact.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+enum FLUSH_SMOKE {
+    MSG_SIZE = 200;        # bytes per simulated WebSocket message
+    LEN_HDR = 4;           # u32le record-length prefix
+    SYNC_TAIL = 4;         # the `00 00 FF FF` RFC 7692 strips
+}
+
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(8, fd, 0, 2);
+    syscall(8, fd, 0, 0);
+    var buf = alloc(sz + 16);
+    var off = 0;
+    while (off < sz) {
+        var n = sys_read(fd, buf + off, sz - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+fn write_all(path, buf, n) {
+    var fd = sys_open(path, 577, 420);   # O_WRONLY|O_CREAT|O_TRUNC, 0644
+    if (fd < 0) { return 0 - 1; }
+    var off = 0;
+    while (off < n) {
+        var w = sys_write(fd, buf + off, n - off);
+        if (w <= 0) { break; }
+        off = off + w;
+    }
+    sys_close(fd);
+    if (off != n) { return 0 - 1; }
+    return 0;
+}
+
+fn put_u32le(buf, off, v) {
+    store8(buf + off + 0, v & 255);
+    store8(buf + off + 1, (v >> 8) & 255);
+    store8(buf + off + 2, (v >> 16) & 255);
+    store8(buf + off + 3, (v >> 24) & 255);
+    return 0;
+}
+
+fn get_u32le(buf, off) {
+    return load8(buf + off + 0) | (load8(buf + off + 1) << 8) |
+    (load8(buf + off + 2) << 16) | (load8(buf + off + 3) << 24);
+}
+
+# --- direction 1: sankoch frames, Python decodes -------------------------
+#
+# `level` picks the encoder path: 1 is fixed-Huffman, 6 the dynamic one.
+# Both must produce a stream the reference decoder accepts, because a flush
+# closes each path differently (EOB + latch reset vs. a BFINAL=0 sub-block).
+fn emit_frames(src, dst, dst_cap, rec, rec_cap, level, path) {
+    var ctx = deflate_enc_init(level, dst, dst_cap);
+    if (ctx == 0) { return 2; }
+
+    var rp = 0;
+    var prev = 0;
+    var sp = 0;
+    while (sp < g_len) {
+        var take = g_len - sp;
+        if (take > MSG_SIZE) { take = MSG_SIZE; }
+        if (deflate_enc_write(ctx, src + sp, take) != 0) {
+            deflate_enc_finish(ctx);
+            return 3;
+        }
+        var cur = deflate_enc_flush(ctx);
+        if (cur < 0) {
+            deflate_enc_finish(ctx);
+            return 4;
+        }
+        # RFC 7692 §7.2.1 step 3: drop the trailing 00 00 FF FF.
+        var flen = cur - prev - SYNC_TAIL;
+        if (flen < 0) { deflate_enc_finish(ctx); return 5; }
+        if (rp + LEN_HDR + flen > rec_cap) { deflate_enc_finish(ctx); return 6; }
+        put_u32le(rec, rp, flen);
+        rp = rp + LEN_HDR;
+        var i = 0;
+        while (i < flen) {
+            store8(rec + rp + i, load8(dst + prev + i));
+            i = i + 1;
+        }
+        rp = rp + flen;
+        prev = cur;
+        sp = sp + take;
+    }
+    if (deflate_enc_finish(ctx) < 0) { return 7; }
+
+    if (write_all(path, rec, rp) != 0) { return 8; }
+    return 0;
+}
+
+# --- direction 2: Python frames, sankoch decodes -------------------------
+fn consume_frames(rec, rec_len, tail, out, out_cap, path) {
+    var dctx = deflate_dec_init(out, out_cap);
+    if (dctx == 0) { return 10; }
+
+    var rp = 0;
+    var prev_produced = 0;
+    while (rp + LEN_HDR <= rec_len) {
+        var flen = get_u32le(rec, rp);
+        rp = rp + LEN_HDR;
+        if (flen < 0 || rp + flen > rec_len) { deflate_dec_finish(dctx); return 11; }
+        if (deflate_dec_write(dctx, rec + rp, flen) != flen) {
+            deflate_dec_finish(dctx);
+            return 12;
+        }
+        # RFC 7692 §7.2.1 receive: append the four bytes the sender dropped.
+        if (deflate_dec_write(dctx, tail, SYNC_TAIL) != SYNC_TAIL) {
+            deflate_dec_finish(dctx);
+            return 13;
+        }
+        # The stream never ends, so dec_finish cannot be the length oracle.
+        var p = deflate_dec_produced(dctx);
+        if (p < 0) { deflate_dec_finish(dctx); return 14; }
+        if (p <= prev_produced) { deflate_dec_finish(dctx); return 15; }
+        prev_produced = p;
+        rp = rp + flen;
+    }
+    # Releases _sankoch_mtx; returns -ERR_CORRUPT_DATA because the stream was
+    # deliberately never terminated. That is the documented contract.
+    deflate_dec_finish(dctx);
+
+    if (write_all(path, out, prev_produced) != 0) { return 16; }
+    return 0;
+}
+
+fn run() {
+    var src = read_all("/tmp/sankoch-flush-in");
+    if (src == 0) { return 1; }
+    var src_len = g_len;
+
+    var cap = src_len * 2 + 65536;
+    var dst = alloc(cap);
+    var rec = alloc(cap);
+
+    var e = emit_frames(src, dst, cap, rec, cap, 6, "/tmp/sankoch-flush-ours");
+    if (e != 0) { return e; }
+
+    g_len = src_len;
+    e = emit_frames(src, dst, cap, rec, cap, 1, "/tmp/sankoch-flush-ours-l1");
+    if (e != 0) { return 20 + e; }
+
+    var pyrec = read_all("/tmp/sankoch-flush-py");
+    if (pyrec == 0) { return 9; }
+    var pyrec_len = g_len;
+
+    var tail = alloc(4);
+    store8(tail + 0, 0);
+    store8(tail + 1, 0);
+    store8(tail + 2, 255);
+    store8(tail + 3, 255);
+
+    var out = alloc(src_len + 65536);
+    return consume_frames(pyrec, pyrec_len, tail, out, src_len + 65536,
+      "/tmp/sankoch-flush-pydec");
+}
+
+fn main() {
+    alloc_init();
+    return run();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

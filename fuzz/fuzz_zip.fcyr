@@ -134,7 +134,7 @@ fn fuzz_zip_fields(seed) {
     var e = total - 22;
     while (e >= 0) {
         if ((load8(&arc + e) & 0xFF) == 80 && (load8(&arc + e + 1) & 0xFF) == 75
-        && (load8(&arc + e + 2) & 0xFF) == 5 && (load8(&arc + e + 3) & 0xFF) == 6) { break; }
+          && (load8(&arc + e + 2) & 0xFF) == 5 && (load8(&arc + e + 3) & 0xFF) == 6) { break; }
         e = e - 1;
     }
     if (e < 0) { return 0; }

@@ -71,8 +71,14 @@ fixed; decoder now fuzzed). Forward ladder in
 
 | Version | Supported |
 |---------|-----------|
-| 2.5.x   | Yes       |
-| 2.4.x   | Security fixes only |
-| < 2.4.0 | No — upgrade |
+| 2.7.x   | Yes       |
+| 2.6.x   | Security fixes only |
+| < 2.6.0 | No — upgrade |
 
-**Last Updated**: 2026-07-18
+⚠ If you compress inputs larger than 1 MiB through the one-shot
+`deflate_compress` / `zlib_compress` / `gzip_compress` path, upgrade to
+**2.7.6 or later** regardless of the table above: earlier releases
+re-encoded up to 257 bytes at every 1 MiB block boundary and returned a
+stream longer than the input, with no error raised.
+
+**Last Updated**: 2026-08-23

@@ -116,17 +116,17 @@ fn test_enc_dict_invalid_args() {
     var dst = alloc(64);
     # dict_len > DEFLATE_WINDOW_SIZE (32768) — reject
     assert(deflate_enc_init_dict(6, dst, 64, dict, 32769) == 0,
-    "deflate dict_len>32768 rejected");
+      "deflate dict_len>32768 rejected");
     assert(zlib_enc_init_dict(6, dst, 64, dict, 32769) == 0,
-    "zlib dict_len>32768 rejected");
+      "zlib dict_len>32768 rejected");
     assert(gzip_enc_init_dict(6, dst, 64, dict, 32769) == 0,
-    "gzip dict_len>32768 rejected");
+      "gzip dict_len>32768 rejected");
     # dict_len < 0 — reject
     assert(deflate_enc_init_dict(6, dst, 64, dict, 0 - 1) == 0,
-    "deflate dict_len<0 rejected");
+      "deflate dict_len<0 rejected");
     # dict == 0 with dict_len > 0 — reject
     assert(deflate_enc_init_dict(6, dst, 64, 0, 5) == 0,
-    "deflate null dict + nonzero len rejected");
+      "deflate null dict + nonzero len rejected");
     return 0;
 }
 

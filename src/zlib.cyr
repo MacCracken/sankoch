@@ -394,7 +394,7 @@ fn zlib_dec_write(ctx, input, in_len): i64 {
                 var dp_after = load64(inner + 8);
                 if (dp_after > dp_before) {
                     adler32_update(load64(ctx + 16),
-                    dst_p + dp_before, dp_after - dp_before);
+                      dst_p + dp_before, dp_after - dp_before);
                 }
                 cp = cp + rc;
                 if (load64(inner + 24) == DDEC_STATE_DONE) {

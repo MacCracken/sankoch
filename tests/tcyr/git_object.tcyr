@@ -224,7 +224,7 @@ fn test_tree_shape_sweep_roundtrip() {
             var i = 0;
             while (i < n) {
                 assert(load8(decompressed + i) == load8(src + i),
-                "tree-sweep: byte-for-byte match");
+                  "tree-sweep: byte-for-byte match");
                 i = i + 1;
             }
             entries = entries + 1;
@@ -253,7 +253,7 @@ fn test_tree_751_byte_regression() {
     var i = 0;
     while (i < 751) {
         assert(load8(decompressed + i) == load8(src + i),
-        "751-byte regression: byte-for-byte match");
+          "751-byte regression: byte-for-byte match");
         i = i + 1;
     }
     return 0;
@@ -282,7 +282,7 @@ fn test_tree_1504_byte_regression() {
         var i = 0;
         while (i < n) {
             assert(load8(decompressed + i) == load8(src + i),
-            "1504-byte: byte match per level");
+              "1504-byte: byte match per level");
             i = i + 1;
         }
         level = level + 1;
@@ -309,7 +309,7 @@ fn test_tree_2021_byte_regression() {
         var i = 0;
         while (i < n) {
             assert(load8(decompressed + i) == load8(src + i),
-            "2021-byte: byte match per level");
+              "2021-byte: byte match per level");
             i = i + 1;
         }
         level = level + 1;
@@ -361,7 +361,7 @@ fn test_real_sit_tree_1504_byte_roundtrip() {
         var i = 0;
         while (i < n) {
             assert(load8(decompressed + i) == load8(src + i),
-            "real-sit-1504: byte match per level");
+              "real-sit-1504: byte match per level");
             i = i + 1;
         }
         level = level + 1;
@@ -387,7 +387,7 @@ fn test_real_sit_tree_2021_byte_roundtrip() {
         var i = 0;
         while (i < n) {
             assert(load8(decompressed + i) == load8(src + i),
-            "real-sit-2021: byte match per level");
+              "real-sit-2021: byte match per level");
             i = i + 1;
         }
         level = level + 1;
@@ -414,7 +414,7 @@ fn test_tree_513_byte_regression() {
         var i = 0;
         while (i < n) {
             assert(load8(decompressed + i) == load8(src + i),
-            "513-byte: byte match per level");
+              "513-byte: byte match per level");
             i = i + 1;
         }
         level = level + 1;

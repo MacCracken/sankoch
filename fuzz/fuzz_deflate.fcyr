@@ -346,7 +346,7 @@ fn fuzz_tree_shape_roundtrip(seed, num_entries) {
         var k = 0;
         while (k < n) {
             assert(load8(_fuzz_d + k) == load8(src + k),
-            "tree-shape: byte mismatch");
+              "tree-shape: byte mismatch");
             k = k + 1;
         }
         level = level + 1;
@@ -395,7 +395,7 @@ fn fuzz_skewed_freq_roundtrip(seed, n) {
         var k = 0;
         while (k < n) {
             assert(load8(_fuzz_d + k) == load8(src + k),
-            "skewed: byte mismatch");
+              "skewed: byte mismatch");
             k = k + 1;
         }
         level = level + 1;
@@ -462,12 +462,12 @@ fn fuzz_ratio_cap(seed, data_len) {
 
     # Invalid ratio rejected before any parsing.
     assert(zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 0) == 0 - ERR_INVALID_INPUT,
-    "ratio-cap fuzz: cap=0 rejected");
+      "ratio-cap fuzz: cap=0 rejected");
 
     # When the data genuinely expands >= 3x, a 2:1 cap must reject it.
     if (clen > 0 && capped / clen >= 3) {
         assert(zlib_decompress_with_ratio_cap(&compressed, clen, &decompressed, 2048, 2) == 0 - ERR_RATIO_LIMIT,
-        "ratio-cap fuzz: 2:1 cap rejects bomb");
+          "ratio-cap fuzz: 2:1 cap rejects bomb");
     }
     return 0;
 }
@@ -548,6 +548,142 @@ fn fuzz_stream_ratio_cap_malformed(seed, data_len) {
     return 0;
 }
 
+# 2.7.9 sync flush (RFC 7692 `permessage-deflate`). Random writes with
+# random flush points, and a `deflate_enc_reset_context` on a subset of
+# those flushes — legal only there, with the block sequence closed. However
+# the flushes fall, the finished stream must still decode to exactly the
+# input: a flush that mis-closes a block, or a reset that strands symbols
+# referencing discarded history, shows up here as a length or content
+# mismatch.
+fn fuzz_deflate_sync_flush(seed, data_len, level) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    var capped = data_len;
+    if (capped > 65536) { capped = 65536; }
+    _fuzz_fill(_fuzz_src, capped);
+
+    var ctx = deflate_enc_init(level, _fuzz_c, 262144);
+    if (ctx == 0) { assert(0 == 1, "sync flush init failed"); }
+    var fed = 0;
+    while (fed < capped) {
+        var chunk = (_fuzz_next() | (_fuzz_next() << 8)) & 2047;
+        if (chunk == 0) { chunk = 1; }
+        if (chunk > capped - fed) { chunk = capped - fed; }
+        if (deflate_enc_write(ctx, _fuzz_src + fed, chunk) < 0) {
+            assert(0 == 1, "sync flush write error");
+        }
+        fed = fed + chunk;
+        var roll = _fuzz_next();
+        if (roll < 96) {
+            if (deflate_enc_flush(ctx) < 0) { assert(0 == 1, "sync flush error"); }
+            # A flush drains every buffered byte, so cptr == wptr and the
+            # reset preconditions always hold here. If they ever do not,
+            # that is the bug this assert is for.
+            if (roll < 24) {
+                assert(deflate_enc_reset_context(ctx) == 0, "sync flush reset rejected");
+            }
+        }
+    }
+    var clen = deflate_enc_finish(ctx);
+    if (clen < 0) { assert(0 == 1, "sync flush finish error"); }
+
+    var dlen = deflate_decompress(_fuzz_c, clen, _fuzz_d, 200000);
+    assert(dlen == capped, "sync flush size mismatch");
+    var i = 0;
+    while (i < capped) {
+        assert(load8(_fuzz_d + i) == load8(_fuzz_src + i), "sync flush content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
+var _fuzz_off = 0;    # per-frame cumulative dst offsets
+var _fuzz_tail = 0;   # the `00 00 FF FF` RFC 7692 strips
+
+# 2.7.9 RFC 7692 §7.2.1 framing under fuzz. Every message is closed by a
+# flush and shipped with its trailing `00 00 FF FF` stripped; the receiver
+# re-appends those four bytes and replays every frame through ONE decoder
+# ctx that never reaches a BFINAL=1 block. `deflate_dec_produced` is the
+# only length oracle available on such a stream, so it is checked per
+# frame — a flush that leaked bytes into the next frame, or held bytes
+# back from this one, moves that cursor off the message boundary.
+fn fuzz_deflate_rfc7692_frames(seed, msg_size, count, level) {
+    _fuzz_seed(seed);
+    if (_fuzz_src == 0) {
+        _fuzz_src = alloc(200000);
+        _fuzz_c = alloc(262144);
+        _fuzz_d = alloc(200000);
+    }
+    if (_fuzz_off == 0) {
+        _fuzz_off = alloc(256);
+        _fuzz_tail = alloc(4);
+        store8(_fuzz_tail + 0, 0);
+        store8(_fuzz_tail + 1, 0);
+        store8(_fuzz_tail + 2, 255);
+        store8(_fuzz_tail + 3, 255);
+    }
+    var n = count;
+    if (n > 32) { n = 32; }
+    var msz = msg_size;
+    if (msz < 1) { msz = 1; }
+    if (msz > 2048) { msz = 2048; }
+    var total = msz * n;
+    _fuzz_fill(_fuzz_src, total);
+
+    var ctx = deflate_enc_init(level, _fuzz_c, 262144);
+    if (ctx == 0) { assert(0 == 1, "rfc7692 fuzz init failed"); }
+    var m = 0;
+    while (m < n) {
+        if (deflate_enc_write(ctx, _fuzz_src + m * msz, msz) < 0) {
+            assert(0 == 1, "rfc7692 fuzz write error");
+        }
+        var cur = deflate_enc_flush(ctx);
+        if (cur < 0) { assert(0 == 1, "rfc7692 fuzz flush error"); }
+        store64(_fuzz_off + m * 8, cur);
+        m = m + 1;
+    }
+    # Releases _sankoch_mtx so the decoder below can take it; the frames
+    # themselves stop at the last flush offset, so the BFINAL=1 terminator
+    # this appends is never fed to the decoder.
+    if (deflate_enc_finish(ctx) < 0) { assert(0 == 1, "rfc7692 fuzz finish error"); }
+
+    var dctx = deflate_dec_init(_fuzz_d, 200000);
+    if (dctx == 0) { assert(0 == 1, "rfc7692 fuzz dec init failed"); }
+    var prev = 0;
+    m = 0;
+    while (m < n) {
+        var cur = load64(_fuzz_off + m * 8);
+        var body = cur - prev - 4;
+        assert(body >= 0, "rfc7692 fuzz frame shorter than its marker");
+        assert(load8(_fuzz_c + cur - 4) == 0, "rfc7692 fuzz marker byte 0");
+        assert(load8(_fuzz_c + cur - 3) == 0, "rfc7692 fuzz marker byte 1");
+        assert(load8(_fuzz_c + cur - 2) == 255, "rfc7692 fuzz marker byte 2");
+        assert(load8(_fuzz_c + cur - 1) == 255, "rfc7692 fuzz marker byte 3");
+        assert(deflate_dec_write(dctx, _fuzz_c + prev, body) == body,
+          "rfc7692 fuzz body not consumed");
+        assert(deflate_dec_write(dctx, _fuzz_tail, 4) == 4,
+          "rfc7692 fuzz tail not consumed");
+        assert(deflate_dec_produced(dctx) == (m + 1) * msz,
+          "rfc7692 fuzz frame boundary drift");
+        prev = cur;
+        m = m + 1;
+    }
+    # -ERR_CORRUPT_DATA by design (the stream was never terminated); the
+    # call is here to release _sankoch_mtx.
+    deflate_dec_finish(dctx);
+
+    var i = 0;
+    while (i < total) {
+        assert(load8(_fuzz_d + i) == load8(_fuzz_src + i), "rfc7692 fuzz content mismatch");
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -580,6 +716,27 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_deflate: 100 malformed input tests passed");
+
+    # 2.7.9 sync flush: random flush points + context resets, levels 1/6/9
+    # (fixed path, dynamic path, deepest chain).
+    seed = 1;
+    while (seed <= 12) {
+        fuzz_deflate_sync_flush(seed * 4271, (seed * 3701) % 40000, 1);
+        fuzz_deflate_sync_flush(seed * 4273, (seed * 3719) % 40000, 6);
+        fuzz_deflate_sync_flush(seed * 4283, (seed * 3727) % 40000, 9);
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 36 sync-flush round-trip tests passed");
+
+    # 2.7.9 RFC 7692 framing: per-message flush, trailer stripped and
+    # re-appended, replayed through one never-terminated decoder ctx.
+    seed = 1;
+    while (seed <= 12) {
+        fuzz_deflate_rfc7692_frames(seed * 5387, (seed * 131) % 600 + 1, 8, 1);
+        fuzz_deflate_rfc7692_frames(seed * 5393, (seed * 137) % 600 + 1, 8, 6);
+        seed = seed + 1;
+    }
+    println("fuzz_deflate: 24 RFC 7692 framing tests passed");
 
     # zlib round-trip
     seed = 1;
@@ -627,8 +784,8 @@ fn main() {
             var li = 0;
             while (li < 4) {
                 fuzz_deflate_stream(seed * 4001 + si * 17 + li,
-                load64(&stream_sizes + si * 8),
-                load64(&levels + li * 8));
+                  load64(&stream_sizes + si * 8),
+                  load64(&levels + li * 8));
                 li = li + 1;
             }
             si = si + 1;
@@ -656,11 +813,11 @@ fn main() {
             var li = 0;
             while (li < 3) {
                 fuzz_zlib_stream(seed * 5003 + si * 13 + li,
-                load64(&sm_sizes + si * 8),
-                load64(&sm_levels + li * 8));
+                  load64(&sm_sizes + si * 8),
+                  load64(&sm_levels + li * 8));
                 fuzz_gzip_stream(seed * 6007 + si * 13 + li,
-                load64(&sm_sizes + si * 8),
-                load64(&sm_levels + li * 8));
+                  load64(&sm_sizes + si * 8),
+                  load64(&sm_levels + li * 8));
                 li = li + 1;
             }
             fuzz_lz4f_stream(seed * 7001 + si * 17, load64(&sm_sizes + si * 8));
@@ -694,7 +851,7 @@ fn main() {
         var ti = 0;
         while (ti < 11) {
             fuzz_tree_shape_roundtrip(seed * 8009 + ti,
-            load64(&tree_entries + ti * 8));
+              load64(&tree_entries + ti * 8));
             ti = ti + 1;
         }
         seed = seed + 1;
@@ -716,7 +873,7 @@ fn main() {
         var sk = 0;
         while (sk < 5) {
             fuzz_skewed_freq_roundtrip(seed * 9011 + sk,
-            load64(&skewed_sizes + sk * 8));
+              load64(&skewed_sizes + sk * 8));
             sk = sk + 1;
         }
         seed = seed + 1;

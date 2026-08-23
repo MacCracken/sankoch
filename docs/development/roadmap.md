@@ -1,10 +1,12 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.7.8**); no open Critical — 2.7.6 shipped the batch-deflate
-> block-boundary corruption fix, 2.7.7 the ZIP sizing/reclaim work, 2.7.8 the
-> toolchain catch-up. Next: **2.8.x** (SIMD CRC-32 → GPU texture → P(-1) closeout).
+> **Status**: Stable (**v2.7.9**); no open Critical, open issue queue **0** — 2.7.6 shipped
+> the batch-deflate block-boundary corruption fix, 2.7.7 the ZIP sizing/reclaim work,
+> 2.7.8 the toolchain catch-up, 2.7.9 the RFC 7692 DEFLATE sync flush (+ the
+> fixed-vs-dynamic block chooser measuring it forced). Next: **2.8.x** (SIMD CRC-32 →
+> GPU texture → P(-1) closeout).
 > ⚠ The **DEFLATE match-finder** backlog item is no longer speculative — sit has
-> measured it as its single worst benchmark row; see Backlog. | **Last Updated**: 2026-08-20
+> measured it as its single worst benchmark row; see Backlog. | **Last Updated**: 2026-08-23
 
 This file is the **forward** ladder — the committed next releases
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
@@ -39,33 +41,22 @@ consumer profile.
 
 ---
 
-## ▶ Next — 2.7.6 (patch, preempts 2.8.x)
+## ▶ Next — 2.8.0
 
-### One-shot DEFLATE compress re-encodes bytes at every 1 MiB block boundary
+Nothing preempts the 2.8.x ladder. The open issue queue is **0**: the last two
+consumer filings — agnosai's ZIP report (2.7.7) and bote's RFC 7692 sync-flush
+report (2.7.9) — are both closed and archived.
 
-**Critical, open, reproduced on `main` @ `68052c1`.** Filed 2026-07-26 by stiva:
-[`docs/development/issues/2026-07-26-deflate-one-shot-multi-block-reencodes-boundary-bytes.md`](issues/2026-07-26-deflate-one-shot-multi-block-reencodes-boundary-bytes.md).
-
-`_deflate_compress_level_inner` (`src/deflate.cyr:1869`) resumes each block at `sp = block_end`
-(`:1891`), but the per-block encoders match against the full `src` and can overshoot `sp_end` by
-up to 257 bytes without reporting it. The overshot bytes are then emitted a second time as the
-head of the next block, so the stream decodes **longer than the input** — ~257 bytes per
-boundary, i.e. per `DEFLATE_BLOCK_SIZE` (1 MiB, `:1847`). Levels 1–9, both the fixed
-(`:1900`) and dynamic (`:2155`) paths. `deflate_compress` returns the wrong bytes with **no
-error** (no container checksum); `zlib`/`gzip` produce streams that sankoch's own decoder and
-zlib both reject. The **streaming `*_enc_*` path is correct** and is the consumer workaround.
-
-Why it survived to 2.7.5: no one-shot fixture in `tests/tcyr/` or `fuzz/` crosses 1 MiB (largest
-~424 KB against a 4 MiB harness heap), so every one-shot compress test has run as a single block.
-`fuzz_deflate.fcyr` does go bigger, but through the streaming path.
-
-Scope for the patch:
-1. Clamp matches at `sp_end` (minimal — leaves the outer loop and `bfinal` untouched), or resume
-   at the true stop position (better ratio, but `bfinal` is decided before the block runs, so an
-   overshoot that consumes the tail would emit no final block at all).
-2. Multi-block regression fixtures — 1 048 576 / 1 048 577 / 2 097 152 / 3 145 728 of compressible
-   input, round-trip length asserted for deflate/zlib/gzip at levels 1, 3, 6, 9.
-3. Consider raising the one-shot ceiling in the fuzz corpus so the boundary is in range.
+⚠ 2.7.9 shipped an **unaudited** addition to the DEFLATE encoder: the
+fixed-vs-dynamic block chooser in `_dyn_flush_subblock`, its scratch-bitwriter
+header pricer, and the three new public entry points. It joins the 2.7.x encoder
+surface already queued for the **2.8.x-closeout P(-1) pass** below. Two specific
+things to look at there: `_dyn_header_bits` writes a header into a fixed 512-byte
+buffer on the argument that a header cannot exceed 281 bytes — an argument, not a
+runtime bound, though `bw_write` does fail closed on overflow — and the chooser
+made `_deflate_build_enc_fixed` reachable from the level >= 4 path, which is how
+its latent M-8 OOM latch surfaced. Assume siblings of that latch exist on paths
+the sweeps do not yet reach.
 
 ---
 
@@ -238,7 +229,7 @@ a new codec).
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.7.5** — the tree is **21 modules**: `runtime.cyr`
+> Current as of **2.7.9** — the tree is **21 modules**: `runtime.cyr`
 > (the lock + alloc seam, extracted from `lib.cyr` at 2.4.9), `zstd.cyr`
 > (sovereign RFC-8878 codec) and `tar.cyr` (POSIX ustar/v7 cursor) at 2.5.0,
 > then `zip.cyr` (2.6.0) and `zip_methods.cyr` (2.6.1) for the PKZIP container.
@@ -254,7 +245,7 @@ a new codec).
 | lz77.cyr         |  184 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  181 | LZ4 block + frame decompress (incl. per-block checksum) + LZ4F enum (kernel-safe) | core |
 | lz4.cyr          |  935 | LZ4 block + frame compress + `lz4f_enc_*` (configurable block-max + checksum) + `lz4f_dec_*` streaming | full |
-| deflate.cyr      | 2545 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling` | full |
+| deflate.cyr      | 2855 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling`; **2.7.9 RFC 7692 sync flush** (`deflate_enc_flush` / `deflate_enc_reset_context` / `deflate_dec_produced`) + the fixed-vs-dynamic block chooser and its exact scratch-bitwriter header pricer (`_dyn_header_bits`) | full |
 | zlib.cyr         |  485 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
 | gzip.cyr         |  650 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 2111 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) + 2.7.0 rep-only `nice_len` greedy shortcut + interior DP cut (repetitive encode ~290–473× faster) + 2.7.1 BT4 binary-tree match finder, xz-private, seed-only skip + 2.7.2 xz-private 256 KB window (real-source ratio now within ~0.2 % of `xz -6`) | full |
@@ -265,7 +256,7 @@ a new codec).
 | tar.cyr          |  710 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
-| lib.cyr          |  265 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
+| lib.cyr          |  273 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
 | **Total**        | **15745** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
@@ -304,7 +295,7 @@ per-bundle roles in [`state.md` § Dist bundles](state.md#dist-bundles).
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; pin is 6.4.69).
+ship with Cyrius ≥ 6.0.1; pin is 6.5.35).
 
 ## Key References
 
@@ -327,8 +318,8 @@ chain had introduced: record L9 2.76 → 1.86 s, ratio Δ ≤ +0.043 %; arch not
 section is re-opened for the **2.8.x line** — **2.8.0 SIMD CRC-32 (`PCLMULQDQ`)**, **2.8.1 GPU texture
 compression** — taken down from the Backlog, which now retains DEFLATE match-finder + Brotli. 2.8.x
 opens straight into the feature (no P(-1) lead); a **P(-1) hardening pass closes out the 2.8.x line**
-instead — auditing the un-audited 2.7.x encoder surface + the 2.8.x additions before the next minor. File Summary / fuzz / distlib figures re-counted at the 2.7.5 cut (source 15,745;
-full bundle 15,792; fuzz 7,529). Recap of the shipped ladder: 2.7.0 xz repetitive speed, 2.7.1 xz BT4
+instead — auditing the un-audited 2.7.x encoder surface + the 2.8.x additions before the next minor. File Summary / fuzz / distlib figures re-counted at the 2.7.9 cut (source 16,265;
+full bundle 16,312; fuzz 7,589). Recap of the shipped ladder: 2.7.0 xz repetitive speed, 2.7.1 xz BT4
 (an HC4 attempt was rejected — the "78 % match finder" was operation-count, not time), 2.7.2 xz 256 KB
 window, 2.7.3 zstd optimal parse, 2.7.4 zstd cross-block window, 2.7.5 zstd chain cutoff. Toolchain pin
-6.4.69 since 2.7.1.)*
+6.5.35 since 2.7.9 (6.4.69 at 2.7.1 → 6.5.16 → 6.5.26 at 2.7.8).)*

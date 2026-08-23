@@ -130,6 +130,43 @@ DEFLATE, zlib (incl. FDICT preset-dict, v2.3.6+), gzip (incl.
 concatenated members, v2.3.5+), and LZ4F. xz and bzip2 are batch-only
 (no streaming path).
 
+### DEFLATE sync flush — RFC 7692 `permessage-deflate` (v2.7.9+)
+
+```cyr
+var total = deflate_enc_flush(ctx)        # end the block sequence, BFINAL=0
+deflate_enc_reset_context(ctx)            # drop the window, keep the stream
+var so_far = deflate_dec_produced(ctx)    # output cursor, stream still open
+```
+
+`deflate_enc_flush` closes the current block sequence at a byte boundary
+**without ending the stream**, emitting the RFC 1951 sync-flush marker —
+`00 00 FF FF` on the wire — and retaining the LZ77 window, so the next
+message keeps compressing against the previous one. That is RFC 7692
+§7.2.1: compress, sync flush, strip the trailing four bytes; the receiver
+appends them back. It returns the *cumulative* `dst` length, which a
+byte-aligned flush makes exact, so you slice `dst[prev..cur)` as the frame
+you just framed.
+
+`deflate_enc_reset_context` honours the negotiated
+`client_no_context_takeover` / `server_no_context_takeover` parameters
+without rebuilding the encoder. Call it with the block sequence closed —
+i.e. right after a flush; a mid-block call returns `-ERR_INVALID_INPUT`
+rather than producing a stream that references discarded history.
+
+On the receive side the stream deliberately never ends, so
+`deflate_dec_finish` — which requires a BFINAL=1 block *and* releases the
+API lock — cannot be the length oracle. `deflate_dec_produced` is.
+⚠ You do still call `deflate_dec_finish` to release the lock when done
+with a ctx, and must ignore its `-ERR_CORRUPT_DATA` return.
+
+⚠ A sync flush forces a block boundary matches cannot cross, so it costs
+ratio on small messages. That is inherent to RFC 7692. Use level 6: since
+v2.7.9 the level ≥ 4 path prices a dynamic Huffman block against a fixed
+one per block and emits the cheaper — without that, a per-message flush
+made every small frame carry a full Huffman header, and level 1 would beat
+level 6. Reference-verified against Python `zlib` in both directions
+(`scripts/deflate-flush-smoke.sh`).
+
 ### Format-agnostic dispatch (in `stream.cyr`)
 
 ```cyr
@@ -175,7 +212,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | huffman.cyr    | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes                | full    |
 | lz77.cyr       | Sliding window match-finder, 8-byte word-compare match extend, rebase                  | full    |
 | lz4.cyr        | LZ4 block + frame compress + `lz4f_enc_*` + `lz4f_dec_*` streaming                     | full    |
-| deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict, ratio-capped decompress (batch + streaming) | full    |
+| deflate.cyr    | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*`, dict, ratio-capped decompress (batch + streaming), RFC 7692 sync flush + fixed-vs-dynamic block pricing (v2.7.9) | full    |
 | zlib.cyr       | RFC 1950 wrapper + FDICT batch + `zlib_enc_*` + `zlib_dec_*` streaming + ratio-capped decompress | full    |
 | gzip.cyr       | RFC 1952 wrapper + concatenated batch + `gzip_enc_*` + `gzip_dec_*` streaming + ratio-capped decompress | full    |
 | xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder + BT4 match finder + 256 KB window | full    |

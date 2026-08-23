@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.9] — 2026-08-23 — DEFLATE sync flush for RFC 7692; toolchain catch-up to 6.5.35
+
+Closes the bote consumer report
+([`docs/development/issues/2026-08-23-bote-rfc7692-needs-public-sync-flush.md`](docs/development/issues/2026-08-23-bote-rfc7692-needs-public-sync-flush.md)):
+the machinery for a sync flush already existed, only the exposure was missing. Measuring the
+newly-exposed path immediately showed it shipping **+64 % over reference zlib**, so this
+release also changes how the level ≥ 4 encoder picks a block type. Both halves are
+reference-verified against Python `zlib` in each direction.
+
+### Added
+
+- **`deflate_enc_flush(ctx)` — public DEFLATE sync flush.** Ends the current block sequence
+  at a byte boundary with **BFINAL=0** and emits the RFC 1951 sync-flush marker (an empty
+  stored block — `00 00 FF FF` on the wire), leaving the stream open and the LZ77 window
+  intact. Returns the **cumulative** bytes written to `dst`, which a sync flush makes exact
+  because the stream is byte-aligned, so a caller slices `dst[prev..cur)` as the frame it
+  just closed.
+
+  This is the RFC 7692 §7.2.1 send algorithm verbatim: compress, sync flush, strip the
+  trailing four bytes. Before it, `deflate_enc_finish` was the only public way to close out
+  a message and it emits BFINAL=1 — so a consumer got a fresh stream per message
+  (`no_context_takeover` at best) with the wrong trailer bytes. Not ending the stream is
+  what "context takeover" means, and it is where the ratio on repetitive JSON-RPC comes from.
+
+- **`deflate_enc_reset_context(ctx)`** — drop the LZ77 history without ending the stream,
+  for RFC 7692's negotiated `client_no_context_takeover` / `server_no_context_takeover`.
+  Without it a consumer would rebuild the encoder per message, and since the encoder holds
+  `_sankoch_mtx` for its lifetime that is a lock cycle and a fresh `dst`, not just an
+  allocation. Must be called with the block sequence closed; pending symbols, an open fixed
+  block, or unconsumed input each return `-ERR_INVALID_INPUT` and leave the ctx untouched —
+  checked rather than documented, because resetting mid-block would strand symbols
+  referencing the history being discarded.
+
+- **`deflate_dec_produced(ctx)`** — bytes emitted so far, the second gap the report flagged
+  as worth confirming. The decoder already emitted incrementally, but `deflate_dec_finish`
+  was the only way to read the length and it demands a BFINAL=1 block **and** releases the
+  mutex — both wrong for a stream that deliberately never ends. ⚠ A `permessage-deflate`
+  consumer still calls `deflate_dec_finish` to release the lock and must ignore its
+  `-ERR_CORRUPT_DATA` return; `deflate_dec_produced` is the length oracle.
+
+### Changed
+
+- **The level ≥ 4 path now prices dynamic against fixed and emits the cheaper block.**
+  Through 2.7.8 `_dyn_flush_subblock` always emitted BTYPE=10. Across a 16 K-symbol
+  sub-block a dynamic Huffman header is noise — but `deflate_enc_flush` closes a sub-block
+  per message, so a ~60-byte WebSocket frame was shipping a ~70-byte header to describe
+  itself. Reference zlib has always priced both.
+
+  The dynamic header's cost is measured **exactly**, by writing it into a scratch bitwriter
+  and reading the bit count off, rather than re-deriving it: the size is decided by the
+  code-length RLE and CL tree inside `_deflate_write_dynamic_header`, and any drift between
+  an independent estimate and that code would silently mis-price every block. Extra bits are
+  identical under both encodings and cancel.
+
+  On the RFC 7692 corpus at 200-byte messages: **4,764 → 2,908 bytes (−39.0 %)**, closing a
+  **+64 %** gap against reference zlib to **+0.1 %**, and to +0.0/+0.1 % at 1000/4000-byte
+  messages. On the batch path, 3 of 43 gated SIZE rows improve (1 KB text: deflate 58→55,
+  zlib 64→61, gzip 76→73) and **40 are unchanged** — only the 1 K rows move, because above
+  that the header already amortises. The chooser can never inflate a block: fixed is emitted
+  only when `fix_bits <= hdr_bits + dyn_bits`.
+
+  ⚠ Costs ~3 % throughput on 4 KB batch compresses (one extra header write per sub-block,
+  O(hlit + hdist) not O(symbols)) and ~0 % on the 128 KB streaming path. Accepted
+  deliberately; numbers in
+  [`docs/benchmarks/2026-08-23-2.7.9-sync-flush.md`](docs/benchmarks/2026-08-23-2.7.9-sync-flush.md).
+
+- **Toolchain pin 6.5.26 → 6.5.35** (nine patch releases).
+
+- **CI format gate moved to `cyrius fmt --check`.** 6.5.35 changed both halves of the
+  invocation this gate was built on: `--check` now reports drift through its exit code
+  (2.2.4 moved *off* it because it then emitted nothing and exited 0), and the bare
+  `cyrius fmt <file>` form **rewrites the file in place** instead of printing to stdout.
+  The 2.2.4–2.7.8 gate — `diff <(cyrius fmt "$f") "$f"` — therefore diffed empty-vs-file
+  under 6.5.35, reporting drift on every file *while silently mutating the checkout*. A
+  comment in `ci.yml` now says not to reintroduce the stdout form.
+
+- **Tree-wide reformat under 6.5.35's cyrfmt** — 24 files, continuation-line indentation
+  only (`+2` relative rather than a flat 4/8 spaces). Mechanical and verified idempotent;
+  no semantic change.
+
+### Fixed
+
+- **OOM latch in `_deflate_build_enc_fixed` (the M-8 class, 2.5.9).** When the second of its
+  two allocations failed, `_deflate_enc_lit_codes` stayed set with `_deflate_enc_lit_lens`
+  NULL, so a retry skipped the init block and stored through a NULL pointer. Latent since the
+  function was written: the fixed tables were only ever built from the level 1–3 path, which
+  the OOM sweep reaches with both allocations unfaulted. The fixed-vs-dynamic chooser calls
+  it from the level ≥ 4 path too, and `detect_error.tcyr`'s `_oom_retry_path` sweep found it
+  immediately — **SIGSEGV**, caught before the release rather than after.
+
+- **`_sankoch_reset_tables` now clears the three new lazy globals** (`_deflate_enc_dist_lens`,
+  `_dyn_cost_buf`, `_dyn_cost_bw`). The chooser's scratch bitwriter latches on
+  `_dyn_cost_buf`, so a reset clearing only one of the pair would leave `_dyn_header_bits`
+  writing through a stale bitwriter.
+
+### Removed
+
+- **`lib/keccak.cyr` and `lib/unicode/`** — vendored stdlib nothing in the tree references.
+  `.gitignore`'s `lib/*.cyr` glob missed subdirectories (so `lib/unicode/` was committed by
+  accident at `c93cefe`) and a `!lib/k*.cyr` un-ignore kept keccak tracked. 6.5.35's dep
+  resolution no longer materialises either — neither is in `[deps] stdlib` — and `lib/` is
+  now ignored wholesale, since `cyrius deps` owns it.
+
+### Added (tests)
+
+- **`tests/tcyr/deflate_sync_flush.tcyr`** — 24th suite, 2,543 assertions. Marker bytes,
+  running totals, flush-then-finish across levels 1–9, empty and repeated flushes, buffer
+  overflow, the reset-context guards, and `deflate_dec_produced` monotonicity. The
+  load-bearing case runs the RFC 7692 §7.2.1 wire algorithm end to end against a decoder ctx
+  that never reaches a BFINAL=1 block.
+- **`scripts/deflate-flush-smoke.sh` + `programs/deflate_flush_smoke.cyr`** — reference
+  interop both ways against Python `zlib`. A sync flush that sankoch both writes and reads
+  can be wrong in the same direction twice and still round-trip; only the reference decoder
+  settles it (the 1.6.1 xxHash32 bug is the precedent).
+- **`fuzz_deflate.fcyr`** gains 36 sync-flush round-trips (random flush points and context
+  resets, levels 1/6/9) and 24 RFC 7692 framing cases (per-message flush, trailer stripped
+  and re-appended, replayed through one never-terminated decoder ctx).
+- `test_dynamic_huffman_rt` was asserting BTYPE=10 on a 256-byte input — an
+  implementation detail of the always-dynamic encoder, not a spec requirement. Reference
+  zlib picks BTYPE=01 for that exact input at level 6. Now asserts **both** branches of the
+  pricing: fixed on the tiny block, dynamic on an 8 KB skewed one.
+
+### Verified
+
+- **4,495,197 assertions / 0 failures** across 24 `.tcyr` suites.
+- **6 fuzz harnesses / 0 failures**, including the new sync-flush and RFC 7692 sweeps.
+- **Reference interop both directions** — `zlib.decompressobj(-15)` decodes every sankoch
+  frame at levels 1 and 6; sankoch's streaming decoder reproduces Python's `Z_SYNC_FLUSH`
+  frames byte-for-byte.
+- All ten `dist/` bundles regenerate cleanly; `[lib.core]` correctly excludes the new API.
+- `cyrius lint` 0 warnings per file; `cyrius fmt --check` clean tree-wide; `cyrius vet` clean.
+- Kernel-safe tripwire + aarch64 cross-build pass; clean
+  `rm -rf build lib && cyrius deps && cyrius build`.
+
+
 ## [2.7.8] — 2026-08-18 — toolchain catch-up to 6.5.26; backlog cleared
 
 Housekeeping. **No source change** — every one of the ten `dist/` bundles regenerates
