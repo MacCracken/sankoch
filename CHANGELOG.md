@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.10] — 2026-08-24 — surviving a caller's `alloc_reset()`
+
+Closes a consumer report from **chitra**, which reproduced it as "calling
+`alloc_reset()` between decodes breaks the next PNG decode". The decode error
+was the benign symptom; the defect is a wild write.
+
+**Every lazy global in this library is a raw pointer into the stdlib bump
+arena, memoized behind an `if (ptr == 0)` guard** — the CRC-32 table, the
+Huffman tables, the LZ77/LZ4 hash tables, and **`_sankoch_mtx` itself**.
+`alloc_reset()` rewinds that arena without telling anyone, so every one of those
+pointers goes dangling while staying non-zero. The guards read "already built",
+and sankoch then reads and writes through memory a different owner holds.
+
+Measured at this library's own boundary, against 2.7.9:
+
+- A caller that allocated 32 KB after `alloc_reset()` and made **one ordinary
+  `crc32_init_table()` call** had **16,351 of its own bytes overwritten**.
+- A `zlib_compress` / `zlib_decompress` round-trip after `alloc_reset()`
+  returned `clen = -2`, `dlen = -1` — and kept failing on every subsequent
+  call.
+
+The mutex is the worst of them: `mutex_lock()` on re-owned memory.
+
+### Fixed
+
+- **sankoch now detects that its arena was reset, and rebuilds.** The detection
+  is exact rather than heuristic, and it works because `alloc_reset()` already
+  **zeroes the span it rewinds** (an information-leak mitigation it performs for
+  its own reasons). A canary allocated from that arena and stamped with a magic
+  is therefore guaranteed to read back as zero afterwards. Checking it costs one
+  load and one compare.
+
+  The check runs at the top of `_sankoch_lock()` — **before `_sankoch_mtx` is
+  touched**, since that pointer is dangling too — and again inside
+  `crc32_init_table()`, which consumers call directly without going through the
+  lock. When it fires, every memoized pointer is dropped (the existing
+  `_sankoch_reset_tables()`, no longer test-only) and the canary re-arms, so the
+  ordinary lazy-init guards rebuild from scratch.
+
+  Residual, named rather than left implicit: a caller could reset, take the
+  canary's address, and happen to write exactly the magic at exactly that
+  offset. That is a 1-in-2^64 coincidence and the same bargain every guard value
+  in systems software makes.
+
+- **`crc32_init_table()` is now idempotent.** It allocated once but **rebuilt
+  the 16 KB table on every call**, which is why a consumer calling it per decode
+  (as chitra does per PNG) was both wasting the work and driving the wild write.
+  It now returns immediately when the table is already built.
+
+### Added
+
+- `tests/tcyr/arena_reset.tcyr` — 21 assertions, all of which **fail against
+  2.7.9**: caller memory intact across a reset, CRCs still correct afterwards
+  (detection must *rebuild*, not merely decline to write — a table that is
+  neither would produce silently wrong checksums), a full public-API round-trip
+  across two resets, and eight consecutive resets to prove the guard re-arms
+  rather than firing once.
+
+### Notes
+
+- No public API changed and no format behaviour changed. A caller that never
+  calls `alloc_reset()` sees one extra load and compare per API entry.
+- This makes the arena boundary usable again for consumers that decode in a
+  loop — which for a bump allocator with no per-block free is the only
+  reclamation story there is.
+
+
 ## [2.7.9] — 2026-08-23 — DEFLATE sync flush for RFC 7692; toolchain catch-up to 6.5.35
 
 Closes the bote consumer report

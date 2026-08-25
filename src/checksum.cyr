@@ -182,10 +182,13 @@ var crc32_table = 0;  # heap-allocated: slice-by-8 table, 8 × 256 entries × 8 
 # is the classic reflected-0xEDB88320 table (also used by the scalar
 # tail); slices 1..7 are derived. Same CRC output — wire-identical.
 fn crc32_init_table(): i64 {
-    if (crc32_table == 0) {
-        crc32_table = _sankoch_alloc(16384);   # 8 × 256 × 8
-        if (crc32_table == 0) { return 0 - ERR_OOM; }
-    }
+    # This entry point is called directly by consumers (chitra re-inits per PNG
+    # decode), so it carries its own arena guard rather than relying on the one
+    # in _sankoch_lock.
+    _sankoch_arena_guard();
+    if (crc32_table != 0) { return 0; }
+    crc32_table = _sankoch_alloc(16384);   # 8 × 256 × 8
+    if (crc32_table == 0) { return 0 - ERR_OOM; }
     # Slice 0: standard reflected CRC-32 table.
     var i = 0;
     while (i < 256) {

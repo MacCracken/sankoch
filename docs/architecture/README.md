@@ -26,6 +26,7 @@
 
 ## Index
 
+- [`002-lazy-globals-and-alloc-reset.md`](002-lazy-globals-and-alloc-reset.md) — every lazy global here is a raw arena pointer memoized behind `if (ptr == 0)`, `_sankoch_mtx` included; `alloc_reset()` invalidates all of them silently. Why the canary detection is exact rather than heuristic, and why any new lazy global must be added to `_sankoch_reset_tables()`.
 - [`001-zstd-optimal-chain-cutoff.md`](001-zstd-optimal-chain-cutoff.md) — the L9 optimal parser's hash-chain saturation cutoff (`_zo_chain_gate` / `_zo_chain_cut`): why the *length* gate is load-bearing and how to retune the speed/ratio trade-off without regressing diverse data.
 
 Further invariants are documented inline in `CLAUDE.md § Key Constraints` and in code comments at the relevant sites:

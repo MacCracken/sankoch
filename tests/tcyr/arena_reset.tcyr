@@ -1,0 +1,143 @@
+# sankoch — surviving a caller's alloc_reset() (2.7.10)
+#
+# Every lazy global in this library is a raw pointer into the stdlib bump
+# arena, memoized behind an `if (ptr == 0)` guard: the CRC-32 table, the
+# Huffman tables, the LZ77/LZ4 hash tables, and `_sankoch_mtx` itself.
+# `alloc_reset()` rewinds that arena without telling anyone, so every one of
+# those pointers goes dangling while staying non-zero — the guards read
+# "already built" and the library then reads and WRITES through memory a
+# different owner holds.
+#
+# What that cost before the fix, both measured with these cells against 2.7.9:
+#   * a caller who allocated 32 KB after alloc_reset() and made ONE ordinary
+#     crc32_init_table() call had 16,351 of its own bytes overwritten;
+#   * a zlib round-trip after alloc_reset() returned clen = -2, dlen = -1.
+#
+# The detection works because alloc_reset() ZEROES the span it rewinds (an
+# information-leak mitigation it already performs), so an arena-allocated
+# canary stamped with a magic reads back as zero afterwards. These cells are
+# the reason that stays true: they fail loudly against the unfixed library.
+include "tests/tcyr/_harness.tcyr"
+
+# A caller's buffer, filled with a known byte, checked for survivors.
+fn _ar_fill(p, n, v): i64 {
+    var i = 0;
+    while (i < n) {
+        store8(p + i, v);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _ar_count(p, n, v): i64 {
+    var c = 0;
+    var i = 0;
+    while (i < n) {
+        if (load8(p + i) == v) { c = c + 1; }
+        i = i + 1;
+    }
+    return c;
+}
+
+fn test_crc32_table_does_not_write_through_a_stale_pointer() {
+    # Warm the CRC table so its pointer is memoized, then reset the arena and
+    # hand the same addresses to a different owner.
+    var seed = alloc(64);
+    crc32_init_table();
+    assert(crc32(seed, 64) != 0, "crc32 works before the reset");
+
+    alloc_reset();
+
+    var mine = alloc(32768);
+    _ar_fill(mine, 32768, 0xA5);
+    assert_eq(_ar_count(mine, 32768, 0xA5), 32768, "the caller's buffer starts intact");
+
+    # One perfectly ordinary sankoch call. Against 2.7.9 this overwrote 16,351
+    # bytes of `mine` with CRC table data.
+    crc32_init_table();
+    assert_eq(_ar_count(mine, 32768, 0xA5), 32768,
+      "sankoch did not write through a stale table pointer");
+    return 0;
+}
+
+fn test_crc32_still_correct_after_a_reset() {
+    # Detection must REBUILD, not merely decline to write: a table that is
+    # neither rebuilt nor written through would produce silently wrong CRCs,
+    # which is the same defect wearing a quieter costume.
+    var a = alloc(64);
+    _ar_fill(a, 64, 0x5A);
+    crc32_init_table();
+    var before = crc32(a, 64);
+
+    alloc_reset();
+
+    var b = alloc(64);
+    _ar_fill(b, 64, 0x5A);
+    crc32_init_table();
+    var after = crc32(b, 64);
+    assert_eq(after, before, "the same bytes hash the same across an alloc_reset");
+    return 0;
+}
+
+fn _ar_roundtrip(name): i64 {
+    var n = 4096;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        store8(src + i, (i * 7) & 255);
+        i = i + 1;
+    }
+    var cap = n * 2 + 128;
+    var comp = alloc(cap);
+    var clen = zlib_compress(src, n, comp, cap);
+    assert(clen > 0, name);
+    var back = alloc(n + 64);
+    var dlen = zlib_decompress(comp, clen, back, n + 64);
+    assert_eq(dlen, n, name);
+    var ok = 1;
+    i = 0;
+    while (i < n) {
+        if (load8(back + i) != load8(src + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert_eq(ok, 1, name);
+    return 0;
+}
+
+fn test_public_api_round_trip_survives_a_reset() {
+    # The whole public path, not just the checksum: the mutex, the Huffman
+    # tables and the LZ77 hash tables are all arena pointers too. Against
+    # 2.7.9 the second call returned clen = -2 and dlen = -1.
+    _ar_roundtrip("zlib round-trip before any reset");
+    alloc_reset();
+    _ar_roundtrip("zlib round-trip after one alloc_reset");
+    alloc_reset();
+    _ar_roundtrip("zlib round-trip after a second alloc_reset");
+    return 0;
+}
+
+fn test_repeated_resets_do_not_leak_the_canary_check() {
+    # The guard re-arms after firing. If it did not, the second reset would go
+    # undetected and this cell would fail where the one above passes.
+    var k = 0;
+    while (k < 8) {
+        alloc_reset();
+        var p = alloc(4096);
+        _ar_fill(p, 4096, 0x3C);
+        crc32_init_table();
+        assert_eq(_ar_count(p, 4096, 0x3C), 4096, "caller memory intact across repeated resets");
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn main(): i64 {
+    test_crc32_table_does_not_write_through_a_stale_pointer();
+    test_crc32_still_correct_after_a_reset();
+    test_public_api_round_trip_survives_a_reset();
+    test_repeated_resets_do_not_leak_the_canary_check();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);
