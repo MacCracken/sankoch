@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.11] — 2026-09-06 — cyrius 6.6.0 (Result value form): pin bump + re-vendor
+
+Cyrius 6.6.0 makes `Result` / `Option` / `Either` `: stack` types — a payload
+variant is now a **register pair** (tag in `rax`, payload in `rdx`) that
+allocates zero bytes, replacing the 16-byte heap box. That is a hard API break
+across the ecosystem: `payload(r)` and `tagged_new()` are deleted, the
+tag-reading helpers gained an argument, and a single-variable bind
+(`var r = f();`), a plain assignment, and `store64(&slot, f())` are now
+compile errors rather than silent payload drops.
+
+**sankoch needed no source change to adopt it, and that is a verified result
+rather than an assumption.** This library's public surface returns plain `i64`
+error codes from `enum Error` (`src/types.cyr`) — it has never included
+`lib/result.cyr` or `lib/tagged.cyr`, and it constructs no `Ok` / `Err` /
+`Some` / `None`. The release is therefore the pin bump, the re-vendor, and the
+evidence that nothing regressed under the new compiler.
+
+### Changed
+
+- **Toolchain pin `6.5.35` → `6.6.0`** (`cyrius.cyml`). The pin drives a
+  re-exec of the pinned compiler, so it has to move before anything else is
+  meaningful: every cyrius before 6.5.55 cannot even parse the value form.
+- **Stdlib re-vendored from 6.6.0** (`cyrius deps`). All 26 files under `lib/`
+  are now byte-identical to the 6.6.0 source tree. The re-vendor changed no
+  bytes, and the reason is worth recording rather than reading as a no-op:
+  **nine of those 26 modules do differ between 6.5.35 and 6.6.0** —
+  `sync_macos.cyr`, `syscalls_aarch64_linux.cyr`, `syscalls_macos.cyr`,
+  `syscalls_x86_64_agnos.cyr`, `thread.cyr`, `thread_agnos.cyr`,
+  `thread_local.cyr`, `thread_macos.cyr`, `thread_win.cyr` — and the copies
+  committed here already carried the newer content. The vendored tree had been
+  refreshed from a post-6.5.35 toolchain while the pin still read 6.5.35, so it
+  was silently ahead of the version this repo claimed to build against. The pin
+  now describes what is actually vendored.
+- `lib/result.cyr` is absent by design — `result` is not in this repo's
+  `[deps] stdlib` list, because nothing here consumes it. `result.cyr` and
+  `tagged.cyr` are where the 6.6.0 break landed, and sankoch vendors neither.
+- **All ten dist bundles regenerated** against 6.6.0: the full
+  `dist/sankoch.cyr` plus every profile (`core`, `zlib`, `zstd`, `bzip2`, `xz`,
+  `gzip`, `zip`, `zipall`, `tar`). No bundle contains a `payload(` call or a
+  one-argument `result_unwrap(`.
+
+### Verified
+
+- **No boxed-`Result` reads survive anywhere in the tree.** The dangerous shape
+  under this break is a hand-rolled `load64(r)` / `load64(r + 8)` pair, which
+  does not fail to compile — a register pair dereferenced as a pointer is a
+  plausible-looking address. Eight variables in `src/` are read at both `+0` and
+  `+8`, and all eight were inspected and cleared: they are sankoch's own
+  documented multi-field heap structs — the bit reader (32 B), the bit writer
+  (40 B), the adler32/xxhash32 checksum states, and the lz4 / zlib / gzip
+  codec contexts (32–96 B) — each allocated by `_sankoch_alloc` with a field
+  map in its header comment. None is a two-slot tag/payload box.
+- **Full suite green on 6.6.0**: 24 `.tcyr` suites, **4,495,218 assertions
+  passing, 0 failing**, checked per file by exit code rather than by scraping a
+  summary line. Six fuzz harnesses pass. The kernel-safe tripwire
+  (`programs/core_smoke.cyr`) passes, so `dist/sankoch-core.cyr` stays fit for
+  the AGNOS initrd path. `lint`, `fmt --check` and `vet` are clean; the aarch64
+  cross-build produces a valid ARM ELF. No test asserted the old boxed layout,
+  so no test was rewritten or weakened.
+
+
 ## [2.7.10] — 2026-08-24 — surviving a caller's `alloc_reset()`
 
 Closes a consumer report from **chitra**, which reproduced it as "calling
