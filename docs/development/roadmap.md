@@ -1,12 +1,14 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.7.9**); no open Critical, open issue queue **0** — 2.7.6 shipped
-> the batch-deflate block-boundary corruption fix, 2.7.7 the ZIP sizing/reclaim work,
-> 2.7.8 the toolchain catch-up, 2.7.9 the RFC 7692 DEFLATE sync flush (+ the
-> fixed-vs-dynamic block chooser measuring it forced). Next: **2.8.x** (SIMD CRC-32 →
+> **Status**: Stable (**v2.7.12**); no open Critical, open issue queue **1**. Since this
+> file was last touched: 2.7.10 fixed the `alloc_reset()` wild write (chitra filing),
+> 2.7.11 adopted cyrius 6.6.0's `Result` value form (no source change, verified not
+> assumed), and 2.7.12 re-verified the tree against the in-place-rebuilt 6.6.0 binaries
+> and repaired the release ledger. **None of the three touched the forward ladder** — no
+> feature landed, so nothing below is superseded. Next: **2.8.x** (SIMD CRC-32 →
 > GPU texture → P(-1) closeout).
 > ⚠ The **DEFLATE match-finder** backlog item is no longer speculative — sit has
-> measured it as its single worst benchmark row; see Backlog. | **Last Updated**: 2026-08-23
+> measured it as its single worst benchmark row; see Backlog. | **Last Updated**: 2026-09-07
 
 This file is the **forward** ladder — the committed next releases
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
@@ -43,9 +45,28 @@ consumer profile.
 
 ## ▶ Next — 2.8.0
 
-Nothing preempts the 2.8.x ladder. The open issue queue is **0**: the last two
-consumer filings — agnosai's ZIP report (2.7.7) and bote's RFC 7692 sync-flush
-report (2.7.9) — are both closed and archived.
+⚠ **Corrected at 2.7.12: the open issue queue is 1, not 0.** This section had read
+"the queue is 0" — and used that to conclude nothing preempts the ladder — while
+[`docs/development/issues/2026-08-31-decompress-max-output-has-no-caller-override.md`](issues/2026-08-31-decompress-max-output-has-no-caller-override.md)
+sat **OPEN** in the tree, filed 2026-08-31 by chitra via crab, after the last
+roadmap refresh (2026-08-23) and never folded in. The two filings this section
+named — agnosai's ZIP report (2.7.7) and bote's RFC 7692 sync-flush report
+(2.7.9) — are indeed closed and archived; a third arrived afterwards.
+
+**The open item**: `DECOMPRESS_MAX_OUTPUT` is an absolute 16 MiB with no caller
+override, so a consumer that has *already* bounded its input cannot inflate past
+it — and the streaming API enforces the same ceiling (`deflate.cyr:1020`), so
+there is no entry point that gets around it. For chitra this means an ordinary
+PNG photograph fails to decode above roughly **5.6 megapixels** (2200×2200 RGB
+decodes; 2370×2370 returns `ERR_OUTPUT_LIMIT`). Filed as a **capability gap, not
+a bug** — the ask is a parameterised ceiling
+(`zlib_decompress_capped` + a `zlib_dec_init_output_capped` peer), explicitly
+*not* a request to raise the default, since 16 MiB is the right default for the
+untrusted-wire callers that have no independent bound.
+
+**This is not scheduled here.** Sizing and placing it is a decision for whoever
+opens the next release, not something a documentation-repair release should
+settle — but the ladder below should no longer be read as "nothing is waiting".
 
 ⚠ 2.7.9 shipped an **unaudited** addition to the DEFLATE encoder: the
 fixed-vs-dynamic block chooser in `_dyn_flush_subblock`, its scratch-bitwriter
@@ -229,16 +250,21 @@ a new codec).
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.7.9** — the tree is **21 modules**: `runtime.cyr`
+> Current as of **2.7.12** (every row re-counted against `wc -l`; 2 rows had
+> drifted — `zip.cyr` 1206 → **1386**, missing 2.7.7's sizing/reclaim work, and
+> `runtime.cyr` 73 → **155**, missing 2.7.10's arena canary — and the **Total**
+> read **15745** against an actual **16326**, having gone unmaintained while the
+> per-file rows were updated release by release).
+> The tree is **21 modules**: `runtime.cyr`
 > (the lock + alloc seam, extracted from `lib.cyr` at 2.4.9), `zstd.cyr`
 > (sovereign RFC-8878 codec) and `tar.cyr` (POSIX ustar/v7 cursor) at 2.5.0,
 > then `zip.cyr` (2.6.0) and `zip_methods.cyr` (2.6.1) for the PKZIP container.
 
 | File | Lines | Role | Profile |
 |------|-------|------|---------|
-| types.cyr        |   42 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2, FORMAT_ZSTD), errors (incl. ERR_OOM, ERR_RATIO_LIMIT), limits | core |
+| types.cyr        |   43 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2, FORMAT_ZSTD), errors (incl. ERR_OOM, ERR_RATIO_LIMIT), limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
-| checksum.cyr     |  546 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs (alloc-using) | full |
+| checksum.cyr     |  549 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs (alloc-using) | full |
 | bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  683 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes (OOM-propagating allocs) | full |
@@ -251,13 +277,13 @@ a new codec).
 | xz.cyr           | 2111 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) + 2.7.0 rep-only `nice_len` greedy shortcut + interior DP cut (repetitive encode ~290–473× faster) + 2.7.1 BT4 binary-tree match finder, xz-private, seed-only skip + 2.7.2 xz-private 256 KB window (real-source ratio now within ~0.2 % of `xz -6`) | full |
 | bzip2.cyr        | 1323 | `.bz2` de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (`bzip2_decompress` / `bzip2_compress`) + `bzip2_decompress_with_ratio_cap` (2.5.3) | full |
 | zstd.cyr         | 3058 | `.zst` de+compress (RFC 8878): decoder (2.5.0, hardened 2.5.6) + sovereign `zstd_compress` encoder (2.5.5 — LZ77 hash-chain matcher + FSE sequence encoder + length-limited Huffman literals, single/4-stream; adaptive FSE sequence tables 2.5.7; priced match selection `_ze_mvalue` 2.5.8; DP optimal parser at levels 7–9 with per-block best-of, 2.7.3; **cross-block frame-global match window (512 KiB), 2.7.4 — beats `zstd -19` on record data**; L9 hash-chain saturation cutoff for repetitive record data, 2.7.5); self-contained bit reader / FSE / Huffman, no runtime | full |
-| zip.cyr          | 1206 | PKZIP `.zip` container: in-memory reader + writer, methods 0/8, Zip64 (2.6.2), streaming write + data descriptors + Unix metadata/symlinks (2.6.3), CRC-32 verified, per-member ratio cap; 2.6.4 P(-1) hardening — i64-overflow-safe Zip64 bounds (subtraction form), streaming-abandon lock release, mid-stream-add rejection, name-length limit, cross-entry symlink ledger | full |
+| zip.cyr          | 1386 | PKZIP `.zip` container: in-memory reader + writer, methods 0/8, Zip64 (2.6.2), streaming write + data descriptors + Unix metadata/symlinks (2.6.3), CRC-32 verified, per-member ratio cap; 2.6.4 P(-1) hardening — i64-overflow-safe Zip64 bounds (subtraction form), streaming-abandon lock release, mid-stream-add rejection, name-length limit, cross-entry symlink ledger; **2.7.7** `zip_bound` / `zip_bound_member` sizing, `zip_open_a` / `zip_writer_init_a` reclaimable readers, `zip_last_error` (agnosai filing) — the +180 lines this row had not recorded until the 2.7.12 re-count | full |
 | zip_methods.cyr  |  150 | The rest of ZIP's methods (2.6.1): 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Kept OUT of `[lib.zip]` so the lean profile never pulls those codecs | full |
 | tar.cyr          |  710 | Sovereign POSIX ustar + pre-POSIX v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd); PAX/GNU long-name + two-layer path-traversal guards incl. the 2.5.9 cross-entry symlink ledger (H-1) + parse-path OOM guards (M-3) | full |
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
-| runtime.cyr      |   73 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
+| runtime.cyr      |   155 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  273 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **15745** | | |
+| **Total**        | **16326** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
@@ -271,7 +297,7 @@ per-byte round-trip loops on the streaming suites — a single 200 KB
 round-trip contributes 200,000 assertions through one
 `while (i < N) assert(byte_eq)` loop; the headline number measures
 coverage *density*, not coverage *breadth*. See
-[`../cyrius-usage.md`](../cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
+[`../guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
 Fuzz: 7,529 iterations across 6 files (`fuzz_lz4` 700, `fuzz_deflate`

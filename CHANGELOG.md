@@ -7,6 +7,139 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.12] — 2026-09-07 — toolchain re-verification on cyrius 6.6.0 + ledger repair
+
+**No source change.** `src/` is byte-identical to 2.7.11; all ten `dist/` bundles
+regenerate identical apart from the version stamp. This release is the evidence
+that the tree is correct under the toolchain actually installed today, plus the
+repair of a documentation ledger that had fallen behind — `state.md` by two
+releases, `roadmap.md` and `doc-health.md` by three.
+
+The request that opened it was "update to cyrius 6.6.0 and update libs to latest".
+Both were already true — and confirming that is the substance here rather than a
+reason to skip the release: the pin has read `6.6.0` since 2.7.11, upstream's
+latest release *is* `6.6.0`, and all 26 vendored files under `lib/` are
+byte-identical to the 6.6.0 stdlib. What had changed is the **6.6.0 toolchain
+binaries themselves**, rebuilt in place on 2026-09-07 (the `cycc` / `cyrius` /
+`cyrfmt` set) after 2.7.11 was cut against the 2026-09-06 build. A same-version
+in-place rebuild is exactly the case a version pin cannot detect, so the tree was
+re-verified end to end against it.
+
+### Changed
+
+- **`VERSION` 2.7.11 → 2.7.12**; all ten dist bundles regenerated
+  (`cyrius distlib` + the nine profiles). **Zero content drift** — diffing each
+  regenerated bundle against its 2.7.11 predecessor with the `# Version:` header
+  line excluded produces an empty diff for all ten. That is the release's main
+  claim: the 2026-09-07 compiler build emits the same bundle text as the
+  2026-09-06 one.
+- **Toolchain pin unchanged at `6.6.0`** — deliberately not bumped. Upstream's
+  latest release is 6.6.0 (confirmed against the GitHub releases API, not
+  assumed), and `~/.cyrius/current` reports 6.6.0. There is no newer version to
+  move to.
+- **Stdlib re-vendored — no bytes changed.** `cyrius deps` re-resolved against
+  the 6.6.0 stdlib and left every one of the 26 files under `lib/` untouched.
+  Recorded as a verified result, not skipped work: 2.7.11's re-vendor was checked
+  against the 2026-09-06 stdlib tree, and this one re-checks against the
+  2026-09-07 rebuild.
+
+### Verified
+
+Every gate, run against the current toolchain rather than carried forward:
+
+- **Tests** — 24 suites (25 files including the shared `_harness.tcyr`),
+  **4,495,218 assertions, 0 failures**.
+- **Fuzz** — all **6** harnesses pass (`lz4`, `deflate`, `xz`, `bzip2`, `zstd`,
+  `zip`).
+- **Build** — `cyrius build src/lib.cyr` clean, 0 warnings.
+- **Lint** — `cyrius lint` per source file: **0 warnings** across all 21 modules
+  and all 6 programs. (4 untracked deferrals in `checksum.cyr`/`deflate.cyr` and
+  the `types.cyr` bare-`ERR_*` notes are pre-existing notes, not warnings; the CI
+  gate is warnings-as-errors and is green.)
+- **Format** — `cyrfmt --check` diff-clean across `src/`, `programs/`, `tests/`,
+  `fuzz/`.
+- **Vet** — `cyrius vet src/lib.cyr` clean: 27 deps, 0 untrusted, 0 missing.
+- **Kernel-safe tripwire** — `programs/core_smoke.cyr` links against `[lib.core]`
+  only and reports `PASS`.
+- **aarch64 cross-build** — `cyrius build --aarch64` produces valid ARM aarch64
+  ELFs for both `src/lib.cyr` (672,168 bytes) and `programs/core_smoke.cyr`
+  (199,920 bytes).
+- **Downstream** — the Cyrius stdlib's `lib/sankoch.cyr` matches `dist/sankoch.cyr`
+  in content. ⚠ `lib/sankoch-core.cyr` is **absent** from the installed stdlib
+  even though this repo ships the profile and the Distribution section claims it
+  ships alongside — a Cyrius-side packaging gap, filed here because sankoch is
+  where the claim is made.
+- **Benchmarks** — full run recorded in
+  [`docs/benchmarks/2026-09-07-2.7.12-toolchain-verify.md`](docs/benchmarks/2026-09-07-2.7.12-toolchain-verify.md),
+  the first **full** SIZE table committed since `2026-06-16-pre-2.4.0.md` (2.7.0
+  through 2.7.11 shipped focused benchmark docs or none). Of the 43 rows shared
+  with that baseline, **40 are byte-identical and 3 improved** —
+  `deflate6_text_1K` 58 → 55, `zlib6_text_1K` 64 → 61, `gzip6_text_1K` 76 → 73 —
+  which are precisely the rows 2.7.9's fixed-vs-dynamic block chooser was
+  expected to move, and no others. That independently corroborates 2.7.9's
+  "3 of 43 improved, 40 unchanged" claim, which had been asserted from a run that
+  was never committed as a table. Four zstd rows are new fixtures (2.5.5), for 47
+  rows total. Timings are recorded as a machine-local baseline only, not a
+  throughput claim.
+
+### Fixed (documentation)
+
+The release ledger had drifted, and each of these was pointing at a version that
+is no longer current:
+
+- **`state.md` was stuck at 2.7.10** — its Version block, tag, release date and
+  pin (`6.5.35`) all predated 2.7.11, so the file **disagreed with `cyrius.cyml`**
+  about which toolchain the library builds against. That is the worst of these to
+  leave stale: it is the file a consumer reads to answer exactly that question.
+  Refreshed to 2.7.12 / 6.6.0, with 2.7.10, 2.7.11 and 2.7.12 rows added to Recent
+  releases, the In-flight section rewritten, and source re-counted **16,265 →
+  16,326** (+61, entirely 2.7.10's arena canary: `runtime.cyr` +58,
+  `checksum.cyr` +3) alongside all ten dist bundle counts and the fuzz harness
+  function count (**38 → 39**; the 7,589 iteration total was already correct).
+- **`roadmap.md` was stuck at 2.7.9** — status line, "Last Updated", and the File
+  Summary. Re-counted against `wc -l`: the **Total** read **15,745** against an
+  actual **16,326**, and two per-file rows had drifted — `zip.cyr` **1,206 →
+  1,386**, which had never recorded 2.7.7's `zip_bound` / reclaimable-reader /
+  `zip_last_error` work, and `runtime.cyr` **73 → 155**, missing 2.7.10's arena
+  canary. All 21 rows now sum to the Total. The `(at 2.3.0)` heading was left
+  **unchanged on purpose**: CLAUDE.md and `state.md` both deep-link
+  `#file-summary-at-230`, so retitling it would have broken two cross-links; the
+  re-count note went into the body instead.
+- **The "wire-format gate" is not a CI gate.** `state.md` listed it under
+  CI / release gates, but `ci.yml` runs `cyrius bench` at its Benchmarks step and
+  never diffs the SIZE lines against a stored baseline — nothing fails on drift.
+  Relabelled a review convention, and its count corrected **43 → 47** (four zstd
+  fixtures were added at 2.5.5 and never counted).
+- **The open-issue queue was 1, not 0.** Both `roadmap.md` and its ▶ Next section
+  asserted an empty queue — and the ladder's "nothing preempts 2.8.0" reasoning
+  rested on that — while
+  `docs/development/issues/2026-08-31-decompress-max-output-has-no-caller-override.md`
+  sat **OPEN** in the tree. It was filed 2026-08-31, eight days after the last
+  roadmap refresh, and never folded in. `DECOMPRESS_MAX_OUTPUT` is an absolute
+  16 MiB with no caller override, and the streaming path enforces the same ceiling
+  (`deflate.cyr:1020`), so no entry point emits past it; chitra cannot decode an
+  ordinary PNG photograph above ~5.6 megapixels. Recorded in both files as open
+  and **deliberately left unscheduled** — sizing it belongs to whoever opens the
+  next release, not to a documentation-repair release.
+- **Two broken relative links** repaired: roadmap's `../cyrius-usage.md` (the file
+  is at `docs/guides/cyrius-usage.md`) and this changelog's 2.7.9 link to the bote
+  issue, which had moved to `issues/archived/` when it was closed.
+- **The core profile is missing downstream.** `state.md` § Distribution claims
+  `lib/sankoch-core.cyr` ships alongside the full bundle; the installed Cyrius
+  stdlib has `sankoch.cyr` but **no `sankoch-core.cyr`**. The full bundle's
+  content does match `dist/sankoch.cyr`, so the fold-in is current — only the
+  core profile is absent. Flagged in `state.md` as a Cyrius-side packaging gap
+  rather than silently corrected here, since this repo generates the file
+  correctly and the CI tripwire builds against it.
+- **`doc-health.md` was stuck at 2.7.9** — refreshed with a 2.7.12 row.
+- **Test-total counting basis corrected.** The recorded total of **4,495,243** was
+  **25 too high**: the tally summed every `N passed, 0 failed` line, and the
+  runner's own final `25 passed, 0 failed` (a count of *files*, not assertions)
+  was being added to the assertion sum. The true figure is **4,495,218**. This is
+  the mirror image of the error noted in the 2.7.9 doc-health sweep, where the
+  same pattern ran 21 *low* by dropping a suite whose summary omits the
+  `(N total)` suffix; the tally now counts only lines carrying that suffix.
+
 ## [2.7.11] — 2026-09-06 — cyrius 6.6.0 (Result value form): pin bump + re-vendor
 
 Cyrius 6.6.0 makes `Result` / `Option` / `Either` `: stack` types — a payload
@@ -138,7 +271,7 @@ The mutex is the worst of them: `mutex_lock()` on re-owned memory.
 ## [2.7.9] — 2026-08-23 — DEFLATE sync flush for RFC 7692; toolchain catch-up to 6.5.35
 
 Closes the bote consumer report
-([`docs/development/issues/2026-08-23-bote-rfc7692-needs-public-sync-flush.md`](docs/development/issues/2026-08-23-bote-rfc7692-needs-public-sync-flush.md)):
+([`docs/development/issues/2026-08-23-bote-rfc7692-needs-public-sync-flush.md`](docs/development/issues/archived/2026-08-23-bote-rfc7692-needs-public-sync-flush.md)):
 the machinery for a sync flush already existed, only the exposure was missing. Measuring the
 newly-exposed path immediately showed it shipping **+64 % over reference zlib**, so this
 release also changes how the level ≥ 4 encoder picks a block type. Both halves are
