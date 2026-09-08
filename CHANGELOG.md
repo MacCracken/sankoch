@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.13] — 2026-09-07 — caller-overridable output ceiling (`zlib_decompress_capped`)
+
+Closes the chitra/crab filing
+([`2026-08-31-decompress-max-output-has-no-caller-override.md`](docs/development/issues/archived/2026-08-31-decompress-max-output-has-no-caller-override.md)).
+`DECOMPRESS_MAX_OUTPUT` is a 16 MB backstop chosen for a caller inflating untrusted
+input with no independent bound on the result. It was also an absolute wall for a
+caller that *has* one: chitra parses a PNG IHDR, validates the dimensions against
+its own caps, and knows exactly how many bytes a correct stream must produce — yet
+could not decode an ordinary phone photograph (~5.6 MP RGB and up), and the
+streaming API was no escape hatch, since `deflate_dec_write` enforces the same
+ceiling on every emit path.
+
+**The default is deliberately unchanged.** `zlib_decompress` is byte-for-byte what
+it was, and 16 MB is still what a caller who cannot bound its input gets. This adds
+a way to *ask*, not a new global default — which is what the filing requested, and
+it explicitly did not ask for the default to be raised.
+
+### Added
+
+- **`zlib_decompress_capped(src, src_len, dst, dst_cap, max_output)`** — batch
+  decode under a caller-supplied absolute ceiling. `max_output` is a byte count,
+  not a multiplier (contrast `zlib_decompress_with_ratio_cap`, which remains the
+  right tool for a bound *relative* to input size). Values below 16 MB are equally
+  valid and tighten the bound.
+- **`zlib_dec_init_output_capped(dst, dst_cap, max_output)`** — the streaming peer.
+  Like the ratio cap, the ceiling persists across `deflate_dec_reset`, so it bounds
+  cumulative output across a multi-member stream rather than per member.
+
+`max_output` is **clamped to `dst_cap`**: the caller has already allocated that
+buffer, no decode may write past it, and a larger ceiling therefore cannot mean
+anything. The clamp also keeps the ceiling arithmetic well inside i64. Bad
+arguments (`max_output < 1`, `dst_cap < 1`, `src_len < 0`) return
+`ERR_INVALID_INPUT` before any parsing; the batch entry rejects them without
+taking the API lock.
+
+The filing's fallback proposal — publish `DECOMPRESS_MAX_OUTPUT` as a documented
+public constant so consumers can pre-check — was **not** adopted. It would leave
+every consumer's supported image size a function of a sankoch internal, which is
+the thing the filing objected to in the first place.
+
+### Changed
+
+- `out_max` is threaded through the DEFLATE batch decoder (`_deflate_decode_block`,
+  `_deflate_decompress_inner`, `_deflate_decompress_dict_inner`) beside the existing
+  `ratio_max`, following that parameter's established 0-sentinel convention: `0`
+  resolves to `DECOMPRESS_MAX_OUTPUT` once at function entry, so every existing
+  caller passes `0` and is unchanged, and the hot-loop guard remains a **single
+  compare against a parameter** exactly where it was a compare against a constant.
+  No new branch on the emit path.
+- Streaming grows one ctx slot: `DDEC_CTX_SIZE` 184 → 192, with `+184` holding an
+  always-resolved absolute ceiling (`deflate_dec_init` stores
+  `DECOMPRESS_MAX_OUTPUT`), so the three streaming guard sites need no sentinel
+  check either.
+- In the preset-dict path the ceiling is offset by `dict_len`, matching what the
+  ratio cap already does and for the same reason — `dp` there counts the dict
+  prefix that is shifted out at the end.
+
+### Fixed (documentation, carried from the 2.7.12 review)
+
+- **`sankoch-core.cyr`'s distribution model was documented wrong.** `CLAUDE.md` and
+  `state.md` read as though the core profile folds into the Cyrius stdlib
+  "alongside" `sankoch.cyr`. It does not — it is consumed as a **direct dep**, so a
+  consumer declares it and pulls this repo's `dist/` artifact. Its absence from
+  `~/.cyrius/lib/` is therefore correct and expected. The 2.7.12 entry's claim of a
+  "Cyrius-side packaging gap" was wrong and is corrected there too; these edits
+  missed the 2.7.12 commit and land here.
+
+### Testing
+
+- **New `tests/tcyr/output_cap.tcyr`** (25th suite, 27 assertions). It is the only
+  suite that materialises more than 16 MB, so it sets its own 96 MB heap rather
+  than using the harness's 4 MB `_test_init`. It pins both halves of the contract:
+  the same 18 MB stream that `zlib_decompress` and `zlib_dec_init` **must** still
+  refuse with `ERR_OUTPUT_LIMIT` decodes byte-exactly through the capped entries.
+  Also covers the exact crossover (cap == size decodes, cap == size − 1 does not),
+  tightening below the default, the `dst_cap` clamp, capped/uncapped equivalence,
+  and argument validation.
+- **New `fuzz_output_cap`** in `fuzz/fuzz_deflate.fcyr` (120 iterations, raising the
+  fuzz total 7,589 → 7,709): an exact-crossover sweep across eight sizes, batch and
+  streaming.
+- Full suite green: **4,495,245 assertions across 25 suites**, 0 failures; all 6
+  fuzz harnesses pass. The uncapped assertion total is unchanged at 4,495,218,
+  which is the evidence that threading `out_max` altered no existing behaviour.
+
+### ⚠ Discovered, not fixed here — a pre-existing streaming hang
+
+Writing the fuzz harness surfaced a **High-severity infinite loop** that has nothing
+to do with this release and predates it by many versions. Filed as
+[`2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md`](docs/development/issues/2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md)
+and **reproduced against pristine 2.7.12** with `src/` reverted, so it is not
+introduced by the changes above:
+
+`DDEC_STATE_DECODE_SYM` pre-fills the bit accumulator to 9 bits, reasoning (in the
+comment) that "fixed litlen codes are 7-9 bits". Dynamic Huffman codes run to **15**
+(RFC 1951 §3.2.7). When one exceeds 9 bits and the accumulator holds exactly 9,
+`_ddec_fill` pulls nothing, the decode returns `NEED_MORE`, and `deflate_dec_write`
+returns having consumed **zero** input — whereupon `zlib_dec_write`'s
+`ZDEC_STATE_DEFLATE` arm, which has no no-progress guard, re-calls it with identical
+arguments inside `while (1)`, forever. An 848-byte stream from sankoch's own
+`zlib_compress` that the **batch** decoder returns byte-exactly hangs the streaming
+decoder permanently. `DDEC_STATE_DECODE_DIST` has the same defect one site over.
+
+It went unseen because **every** existing streaming fuzz harness fills its source
+with a single repeated byte, and a one-symbol alphabet never produces a code longer
+than 9 bits — the gap was in the input distribution, not the assertions. Kept out of
+this release under the one-change-at-a-time rule; `fuzz_output_cap`'s streaming half
+is pinned to uniform fill with a pointer to the issue, to be restored when it lands.
+
 ## [2.7.12] — 2026-09-07 — toolchain re-verification on cyrius 6.6.0 + ledger repair
 
 **No source change.** `src/` is byte-identical to 2.7.11; all ten `dist/` bundles
@@ -65,10 +173,8 @@ Every gate, run against the current toolchain rather than carried forward:
   ELFs for both `src/lib.cyr` (672,168 bytes) and `programs/core_smoke.cyr`
   (199,920 bytes).
 - **Downstream** — the Cyrius stdlib's `lib/sankoch.cyr` matches `dist/sankoch.cyr`
-  in content. ⚠ `lib/sankoch-core.cyr` is **absent** from the installed stdlib
-  even though this repo ships the profile and the Distribution section claims it
-  ships alongside — a Cyrius-side packaging gap, filed here because sankoch is
-  where the claim is made.
+  in content. `sankoch-core.cyr` is correctly absent from the stdlib: it is a
+  direct dep, not a stdlib fold-in (see the documentation fix below).
 - **Benchmarks** — full run recorded in
   [`docs/benchmarks/2026-09-07-2.7.12-toolchain-verify.md`](docs/benchmarks/2026-09-07-2.7.12-toolchain-verify.md),
   the first **full** SIZE table committed since `2026-06-16-pre-2.4.0.md` (2.7.0
@@ -124,13 +230,12 @@ is no longer current:
 - **Two broken relative links** repaired: roadmap's `../cyrius-usage.md` (the file
   is at `docs/guides/cyrius-usage.md`) and this changelog's 2.7.9 link to the bote
   issue, which had moved to `issues/archived/` when it was closed.
-- **The core profile is missing downstream.** `state.md` § Distribution claims
-  `lib/sankoch-core.cyr` ships alongside the full bundle; the installed Cyrius
-  stdlib has `sankoch.cyr` but **no `sankoch-core.cyr`**. The full bundle's
-  content does match `dist/sankoch.cyr`, so the fold-in is current — only the
-  core profile is absent. Flagged in `state.md` as a Cyrius-side packaging gap
-  rather than silently corrected here, since this repo generates the file
-  correctly and the CI tripwire builds against it.
+- **The core profile's distribution model was documented wrong.** `CLAUDE.md` and
+  `state.md` both read as though `sankoch-core.cyr` folds into the Cyrius stdlib
+  "alongside" `sankoch.cyr`. It does not: the core profile is consumed as a
+  **direct dep**, so a consumer declares it and pulls this repo's `dist/`
+  artifact. Its absence from `~/.cyrius/lib/` is therefore correct and expected,
+  not a packaging gap. Both files now say so explicitly.
 - **`doc-health.md` was stuck at 2.7.9** — refreshed with a 2.7.12 row.
 - **Test-total counting basis corrected.** The recorded total of **4,495,243** was
   **25 too high**: the tally summed every `N passed, 0 failed` line, and the

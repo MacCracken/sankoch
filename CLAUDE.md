@@ -83,7 +83,8 @@ tests/bcyr/        — benchmarks (sankoch.bcyr)
 fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd, zip — auto-discovered via fuzz/*.fcyr, all wired into CI)
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
-  sankoch-core.cyr — kernel-safe profile; ships as lib/sankoch-core.cyr alongside
+  sankoch-core.cyr — kernel-safe profile; consumed as a DIRECT dep (not folded into
+                     the Cyrius stdlib — do not expect it in ~/.cyrius/lib/)
   sankoch-<p>.cyr  — lean per-codec/container profiles (zlib/gzip/xz/bzip2/zstd/zip/zipall/tar)
 cyrius.cyml        — package manifest (toolchain pin, [deps], [lib] + [lib.core] + per-codec profiles: zlib/gzip/xz/bzip2/zstd/tar)
 ```

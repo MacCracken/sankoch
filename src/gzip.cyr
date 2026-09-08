@@ -87,7 +87,7 @@ fn _gzip_decompress_member(src, src_len, dst, dst_cap, ratio_max): i64 {
 
     # DEFLATE payload starts at offset
     var deflate_len = src_len - offset;
-    var dlen = _deflate_decompress_inner(src + offset, deflate_len, dst, dst_cap, ratio_max);
+    var dlen = _deflate_decompress_inner(src + offset, deflate_len, dst, dst_cap, ratio_max, 0);
     if (dlen < 0) { return dlen; }
 
     # Trailer starts right after the DEFLATE stream consumed bytes

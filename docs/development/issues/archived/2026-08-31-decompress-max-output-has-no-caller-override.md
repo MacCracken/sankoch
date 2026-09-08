@@ -1,6 +1,19 @@
 # `DECOMPRESS_MAX_OUTPUT` is an absolute 16 MiB with no caller override, so a vetted large stream cannot be inflated at all
 
-**Status:** 🟡 **OPEN** — a request for a parameterised ceiling, not a request to raise the default.
+**Status:** ✅ **RESOLVED in 2.7.13** (2026-09-07). Shipped `zlib_decompress_capped` and
+`zlib_dec_init_output_capped` — the parameterised ceiling exactly as asked, including the streaming
+peer, and *without* raising the default for anyone else: `zlib_decompress` is byte-for-byte
+unchanged and 16 MB is still what an unbounded caller gets. `max_output` is clamped to `dst_cap`,
+since the caller has already allocated that buffer and no decode may write past it. The alternative
+shape this filing offered — publishing `DECOMPRESS_MAX_OUTPUT` as a documented constant contract —
+was **not** taken: it would have left every consumer's supported image size a function of a sankoch
+internal, which is the thing the filing itself objected to.
+⚠ Chasing regression coverage for this fix surfaced an unrelated and more severe defect — a hang in
+the streaming zlib decoder on any dynamic-Huffman code longer than 9 bits, present since the 2.3.0
+streaming arc. Filed separately as
+`2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md`; it is **not** caused by this
+change and does not affect the batch path this filing was about.
+**Original status:** 🟡 OPEN — a request for a parameterised ceiling, not a request to raise the default.
 **Placement:** `src/types.cyr` (`DECOMPRESS_MAX_OUTPUT`), the guards in `src/deflate.cyr`
 (:155, :191, :396, :497, :1020), and a new capped entry point beside
 `zlib_decompress_with_ratio_cap` in `src/zlib.cyr`.

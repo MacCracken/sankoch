@@ -102,6 +102,31 @@ gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)    -> byte
 var ctx = zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)   # also deflate_/gzip_
 ```
 
+### Caller-overridable output ceiling (v2.7.13+)
+
+`DECOMPRESS_MAX_OUTPUT` is an absolute 16 MB backstop, and it is the right
+default for a caller inflating untrusted input with no independent bound on the
+result. A caller that **has** such a bound — it has parsed a header, validated
+dimensions against its own caps, and knows the exact byte count a correct stream
+must produce — can name its own ceiling instead. The default is unchanged:
+`zlib_decompress` still stops at 16 MB.
+
+`max_output` is an absolute byte count (contrast the *relative* ratio cap above),
+clamped to `dst_cap` — no decode may write past the buffer you allocated, so a
+larger ceiling cannot mean anything. Values **below** 16 MB are equally valid and
+tighten the bound. Exceeding it returns `ERR_OUTPUT_LIMIT`, exactly as the default
+does.
+
+```cyr
+# Batch:
+zlib_decompress_capped(src, src_len, dst, dst_cap, max_output)   -> bytes or -err
+
+# Streaming — the streaming API is NOT a way around the default ceiling
+# (deflate_dec_write enforces it on every emit path), so it needs its own peer.
+# Like the ratio cap, this bound is cumulative across a multi-member stream.
+var ctx = zlib_dec_init_output_capped(dst, dst_cap, max_output)
+```
+
 ### Streaming encode (v1.7.0+, preset-dict v2.2.0+)
 
 ```cyr

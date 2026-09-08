@@ -16,7 +16,7 @@
 # Decompress a zlib stream (no preset dictionary).
 fn zlib_decompress(src, src_len, dst, dst_cap): i64 {
     _sankoch_lock();
-    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, 0);
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, 0, 0);
     _sankoch_unlock();
     return r;
 }
@@ -31,7 +31,40 @@ fn zlib_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio): i64 {
     if (max_ratio < 1 || src_len < 0) { return 0 - ERR_INVALID_INPUT; }
     var ceiling = _deflate_ratio_ceiling(src_len, max_ratio);
     _sankoch_lock();
-    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, ceiling);
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, ceiling, 0);
+    _sankoch_unlock();
+    return r;
+}
+
+# Output-capped zlib decompress (2.7.13 — chitra/crab filing).
+#
+# `DECOMPRESS_MAX_OUTPUT` (16 MB) is an absolute backstop chosen for the
+# common case: a caller inflating untrusted wire data that has no
+# independent bound on the result. A caller that DOES have one — chitra
+# has parsed a PNG IHDR, validated the dimensions against its own caps,
+# and knows exactly how many bytes a correct stream must produce — was
+# nonetheless held to 16 MB, which put an ordinary phone photograph
+# (~5.6 MP RGB and up) out of reach with no way to ask for more.
+#
+# This entry point lets such a caller name its own ceiling. It does NOT
+# raise the default for anyone else: `zlib_decompress` is unchanged, and
+# 16 MB remains right for callers that cannot bound their input.
+#
+# `max_output` is an absolute byte count, not a multiplier. It is clamped
+# to `dst_cap` — the caller has already allocated that buffer and no
+# decode may write past it, so a larger `max_output` cannot mean anything;
+# the clamp also keeps the ceiling arithmetic well inside i64. Passing a
+# value SMALLER than 16 MB is equally valid and tightens the bound.
+#
+# Errors: max_output < 1, dst_cap < 1 or src_len < 0 return
+# ERR_INVALID_INPUT. Exceeding the ceiling returns ERR_OUTPUT_LIMIT,
+# exactly as the default ceiling does. For a *relative* bound tied to
+# input size, use zlib_decompress_with_ratio_cap instead.
+fn zlib_decompress_capped(src, src_len, dst, dst_cap, max_output): i64 {
+    if (max_output < 1 || dst_cap < 1 || src_len < 0) { return 0 - ERR_INVALID_INPUT; }
+    if (max_output > dst_cap) { max_output = dst_cap; }
+    _sankoch_lock();
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, 0, 0, 0, max_output);
     _sankoch_unlock();
     return r;
 }
@@ -42,7 +75,7 @@ fn zlib_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio): i64 {
 # for streams without FDICT.
 fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len): i64 {
     _sankoch_lock();
-    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, 0);
+    var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, 0, 0);
     _sankoch_unlock();
     return r;
 }
@@ -50,7 +83,8 @@ fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len): i64 {
 # Internal unlocked entry. Callers must already hold _sankoch_mtx.
 # ratio_max: absolute output ceiling for the ratio cap (0 = disabled),
 # computed from the full zlib src_len and passed to the DEFLATE inner.
-fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ratio_max): i64 {
+# out_max: absolute output ceiling (2.7.13; 0 = DECOMPRESS_MAX_OUTPUT).
+fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ratio_max, out_max): i64 {
     if (src_len < 6) { return 0 - ERR_INVALID_INPUT; }
 
     # Parse header
@@ -88,9 +122,10 @@ fn _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ratio
     var deflate_len = src_len - hdr_len;
     var dlen = 0;
     if (dict_len > 0) {
-        dlen = _deflate_decompress_dict_inner(deflate_src, deflate_len, dst, dst_cap, dict, dict_len, ratio_max);
+        dlen = _deflate_decompress_dict_inner(deflate_src, deflate_len, dst,
+          dst_cap, dict, dict_len, ratio_max, out_max);
     } else {
-        dlen = _deflate_decompress_inner(deflate_src, deflate_len, dst, dst_cap, ratio_max);
+        dlen = _deflate_decompress_inner(deflate_src, deflate_len, dst, dst_cap, ratio_max, out_max);
     }
     if (dlen < 0) { return dlen; }
 
@@ -268,6 +303,28 @@ fn zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio): i64 {
     var ctx = zlib_dec_init(dst, dst_cap);
     if (ctx == 0) { return 0; }
     _deflate_dec_set_ratio(load64(ctx + 0), expected_src_len, max_ratio);
+    return ctx;
+}
+
+# Output-capped streaming zlib decoder (2.7.13). The streaming peer of
+# `zlib_decompress_capped`, and it exists because the streaming API was
+# NOT a way around the 16 MB ceiling: `deflate_dec_write` enforces the
+# same limit on every emit path, so `zlib_dec_init` / `_write` / `_finish`
+# could not reach past it either.
+#
+# `max_output` is an absolute byte count, clamped to `dst_cap`. Like the
+# ratio cap it persists across `deflate_dec_reset`, so the bound is
+# cumulative over a multi-member stream rather than per-member.
+#
+# Returns 0 on bad arguments (max_output < 1 or dst_cap < 1), matching the
+# other init paths. Exceeding the ceiling poisons the ctx with
+# ERR_OUTPUT_LIMIT, surfaced by zlib_dec_write / zlib_dec_finish.
+fn zlib_dec_init_output_capped(dst, dst_cap, max_output): i64 {
+    if (max_output < 1 || dst_cap < 1) { return 0; }
+    if (max_output > dst_cap) { max_output = dst_cap; }
+    var ctx = zlib_dec_init(dst, dst_cap);
+    if (ctx == 0) { return 0; }
+    _deflate_dec_set_out_max(load64(ctx + 0), max_output);
     return ctx;
 }
 

@@ -1,0 +1,242 @@
+# sankoch — caller-overridable absolute output ceiling (2.7.13)
+#
+# `DECOMPRESS_MAX_OUTPUT` is a 16 MB backstop for callers that inflate
+# untrusted input with no independent bound on the result. Through 2.7.12
+# it was also an absolute wall for callers that DO have such a bound:
+# chitra parses a PNG IHDR, validates the dimensions against its own caps
+# and knows exactly how many bytes a correct stream must produce, yet
+# could not inflate an ordinary phone photograph (~5.6 MP RGB and up).
+# The streaming API was no escape hatch — `deflate_dec_write` enforces the
+# same ceiling on every emit path.
+#
+# This suite exercises `zlib_decompress_capped` /
+# `zlib_dec_init_output_capped` and, critically, pins the behaviour that
+# motivated them: the SAME stream that the default entry points refuse
+# must decode through the capped ones. Every "capped" assertion here
+# fails against 2.7.12 (the functions do not exist); the two
+# "default refuses" assertions pass against 2.7.12 and must keep passing,
+# since the default is deliberately unchanged.
+#
+# This suite sets its own 96 MB heap — it is the only suite that
+# materialises more than 16 MB of output, so it cannot use the harness's
+# 4 MB `_test_init`.
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/output_cap.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+# 18 MB — comfortably past the 16 MB DECOMPRESS_MAX_OUTPUT ceiling.
+var _OC_N = 18874368;
+
+# Allocated once and shared by every test below: the bump allocator has
+# no free(), so re-materialising 18 MB per test would exhaust the heap.
+var _oc_src = 0;    # 18 MB source
+var _oc_dst = 0;    # 18 MB inflate target
+var _oc_c = 0;      # compressed stream
+var _oc_clen = 0;   # its length
+
+# Small fixture for the boundary / validation tests, so those do not each
+# pay for an 18 MB round-trip.
+var _oc_s_src = 0;
+var _oc_s_c = 0;
+var _oc_s_clen = 0;
+var _OC_S_N = 4096;
+
+# 96 MB heap: 18 MB source + 18 MB destination + the compressed stream +
+# sankoch's own lazy tables, with margin.
+fn _oc_init() {
+    _heap_base = syscall(12, 0);
+    _heap_end = _heap_base + 100663296;
+    syscall(12, _heap_end);
+    _heap_ptr = _heap_base;
+    return 0;
+}
+
+# A 256-byte repeating ramp: compresses to almost nothing (so an 18 MB
+# stream is cheap to build) while still being position-dependent, so a
+# truncated, shifted or short output is caught rather than passing on a
+# uniform fill.
+fn _oc_fill(buf, n) {
+    var i = 0;
+    while (i < n) { store8(buf + i, i & 255); i = i + 1; }
+    return 0;
+}
+
+# Verify buf[0..n) matches the ramp. One assert, not n of them.
+fn _oc_verify(buf, n, label) {
+    var i = 0;
+    var ok = 1;
+    while (i < n) {
+        if (load8(buf + i) != (i & 255)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, label);
+    return 0;
+}
+
+fn _oc_setup() {
+    _oc_src = alloc(_OC_N);
+    _oc_fill(_oc_src, _OC_N);
+    _oc_c = alloc(1048576);
+    _oc_clen = zlib_compress(_oc_src, _OC_N, _oc_c, 1048576);
+    assert(_oc_clen > 0, "oc setup: 18 MB compress");
+    _oc_dst = alloc(_OC_N);
+
+    _oc_s_src = alloc(_OC_S_N);
+    _oc_fill(_oc_s_src, _OC_S_N);
+    _oc_s_c = alloc(8192);
+    _oc_s_clen = zlib_compress(_oc_s_src, _OC_S_N, _oc_s_c, 8192);
+    assert(_oc_s_clen > 0, "oc setup: 4 KB compress");
+    return 0;
+}
+
+# ================================================================
+# The filing, reproduced: the default ceiling refuses a stream the
+# caller has a buffer for.
+# ================================================================
+
+# dst_cap is the full 18 MB — the caller HAS the memory — and the stream
+# is valid. The only thing refusing it is DECOMPRESS_MAX_OUTPUT.
+fn test_oc_default_refuses_past_ceiling() {
+    var r = zlib_decompress(_oc_c, _oc_clen, _oc_dst, _OC_N);
+    assert(r == 0 - ERR_OUTPUT_LIMIT, "oc default: 18 MB -> ERR_OUTPUT_LIMIT");
+    return 0;
+}
+
+# Same for the streaming path — the 2.7.12 filing called this out
+# explicitly, because a caller might reasonably expect streaming to be
+# the way around a batch ceiling. It is not.
+fn test_oc_stream_default_refuses_past_ceiling() {
+    var ctx = zlib_dec_init(_oc_dst, _OC_N);
+    assert(ctx != 0, "oc stream default: init");
+    var rc = zlib_dec_write(ctx, _oc_c, _oc_clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc == 0 - ERR_OUTPUT_LIMIT || fin == 0 - ERR_OUTPUT_LIMIT,
+           "oc stream default: 18 MB -> ERR_OUTPUT_LIMIT");
+    return 0;
+}
+
+# ================================================================
+# The fix: the same stream, through the capped entry points.
+# ================================================================
+
+fn test_oc_capped_inflates_past_ceiling() {
+    var r = zlib_decompress_capped(_oc_c, _oc_clen, _oc_dst, _OC_N, _OC_N);
+    assert(r == _OC_N, "oc capped: 18 MB inflates fully");
+    _oc_verify(_oc_dst, _OC_N, "oc capped: 18 MB byte-exact");
+    return 0;
+}
+
+fn test_oc_stream_capped_inflates_past_ceiling() {
+    var ctx = zlib_dec_init_output_capped(_oc_dst, _OC_N, _OC_N);
+    assert(ctx != 0, "oc stream capped: init");
+    var rc = zlib_dec_write(ctx, _oc_c, _oc_clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc >= 0, "oc stream capped: write ok");
+    assert(fin == _OC_N, "oc stream capped: 18 MB inflates fully");
+    _oc_verify(_oc_dst, _OC_N, "oc stream capped: 18 MB byte-exact");
+    return 0;
+}
+
+# Fed in small chunks, the ceiling must still be cumulative rather than
+# per-chunk.
+fn test_oc_stream_capped_chunked() {
+    var ctx = zlib_dec_init_output_capped(_oc_dst, _OC_N, _OC_N);
+    assert(ctx != 0, "oc stream chunked: init");
+    var fed = 0;
+    var bad = 0;
+    while (fed < _oc_clen) {
+        var take = _oc_clen - fed;
+        if (take > 1024) { take = 1024; }
+        var rc = zlib_dec_write(ctx, _oc_c + fed, take);
+        if (rc < 0) { bad = rc; fed = _oc_clen; } else { fed = fed + take; }
+    }
+    var fin = zlib_dec_finish(ctx);
+    assert(bad == 0, "oc stream chunked: no mid-stream error");
+    assert(fin == _OC_N, "oc stream chunked: 18 MB cumulative");
+    return 0;
+}
+
+# ================================================================
+# The ceiling is caller-controlled in BOTH directions.
+# ================================================================
+
+# Below the default: a 4 KB stream refused at the caller's smaller number.
+fn test_oc_capped_tightens_below_default() {
+    var d = alloc(_OC_S_N);
+    var r = zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, 100);
+    assert(r == 0 - ERR_OUTPUT_LIMIT, "oc tighten: cap=100 -> ERR_OUTPUT_LIMIT");
+    return 0;
+}
+
+# Exact crossover: cap == output size decodes; cap == size - 1 does not.
+fn test_oc_capped_exact_boundary() {
+    var d = alloc(_OC_S_N);
+    var r = zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, _OC_S_N);
+    assert(r == _OC_S_N, "oc boundary: cap == size decodes");
+    _oc_verify(d, _OC_S_N, "oc boundary: byte-exact at cap == size");
+    var r2 = zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, _OC_S_N - 1);
+    assert(r2 == 0 - ERR_OUTPUT_LIMIT, "oc boundary: cap == size-1 refused");
+    return 0;
+}
+
+# A cap larger than dst_cap must not license a write past dst_cap: it is
+# clamped, so the buffer bound reports first.
+fn test_oc_capped_clamped_to_dst_cap() {
+    var d = alloc(1024);
+    var r = zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, 1024, _OC_N);
+    assert(r == 0 - ERR_BUFFER_TOO_SMALL, "oc clamp: cap > dst_cap -> BUFFER_TOO_SMALL");
+    return 0;
+}
+
+# On a stream that needs neither ceiling, capped and uncapped agree.
+fn test_oc_capped_equivalence_uncapped() {
+    var d1 = alloc(_OC_S_N);
+    var d2 = alloc(_OC_S_N);
+    var a = zlib_decompress(_oc_s_c, _oc_s_clen, d1, _OC_S_N);
+    var b = zlib_decompress_capped(_oc_s_c, _oc_s_clen, d2, _OC_S_N, _OC_S_N);
+    assert(a == b, "oc equivalence: same length");
+    var i = 0;
+    var ok = 1;
+    while (i < a) {
+        if (load8(d1 + i) != load8(d2 + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, "oc equivalence: byte-identical output");
+    return 0;
+}
+
+fn test_oc_capped_invalid_args() {
+    var d = alloc(_OC_S_N);
+    assert(zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, 0) == 0 - ERR_INVALID_INPUT,
+           "oc args: max_output 0");
+    assert(zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, 0 - 1) == 0 - ERR_INVALID_INPUT,
+           "oc args: max_output negative");
+    assert(zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, 0, 4096) == 0 - ERR_INVALID_INPUT,
+           "oc args: dst_cap 0");
+    assert(zlib_decompress_capped(_oc_s_c, 0 - 1, d, _OC_S_N, 4096) == 0 - ERR_INVALID_INPUT,
+           "oc args: src_len negative");
+    assert(zlib_dec_init_output_capped(d, _OC_S_N, 0) == 0, "oc args: stream max_output 0");
+    assert(zlib_dec_init_output_capped(d, 0, 4096) == 0, "oc args: stream dst_cap 0");
+    return 0;
+}
+
+fn main() {
+    _oc_init();
+    _oc_setup();
+    test_oc_default_refuses_past_ceiling();
+    test_oc_stream_default_refuses_past_ceiling();
+    test_oc_capped_inflates_past_ceiling();
+    test_oc_stream_capped_inflates_past_ceiling();
+    test_oc_stream_capped_chunked();
+    test_oc_capped_tightens_below_default();
+    test_oc_capped_exact_boundary();
+    test_oc_capped_clamped_to_dst_cap();
+    test_oc_capped_equivalence_uncapped();
+    test_oc_capped_invalid_args();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

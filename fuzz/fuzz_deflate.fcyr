@@ -684,6 +684,92 @@ fn fuzz_deflate_rfc7692_frames(seed, msg_size, count, level) {
     return 0;
 }
 
+# 2.7.13 output cap: the absolute output ceiling is caller-supplied, so
+# the exact crossover is the interesting boundary — one byte either side
+# of the true output size must flip the verdict. Kept entirely below
+# DECOMPRESS_MAX_OUTPUT so the harness stays cheap; the >16 MB behaviour
+# is pinned by tests/tcyr/output_cap.tcyr, which is where the memory is.
+fn fuzz_output_cap(seed, data_len) {
+    _fuzz_seed(seed);
+    var capped = data_len;
+    if (capped > 2048) { capped = 2048; }
+    if (capped < 1) { capped = 1; }
+
+    # Mixed runs + noise: exercises both the literal and the match emit
+    # guard, which are separate check sites.
+    var src[2048];
+    var i = 0;
+    while (i < capped) {
+        if ((_fuzz_next() & 3) == 0) { store8(&src + i, _fuzz_next() & 255); }
+        else { store8(&src + i, 65); }
+        i = i + 1;
+    }
+
+    var compressed[4096];
+    var decompressed[2048];
+    var clen = zlib_compress(&src, capped, &compressed, 4096);
+    if (clen < 0) { assert(0 == 1, "output-cap fuzz: compress failed"); }
+
+    # cap == exact size decodes and is byte-exact.
+    var e = zlib_decompress_capped(&compressed, clen, &decompressed, 2048, capped);
+    assert(e == capped, "output-cap fuzz: cap == size decodes");
+    i = 0;
+    while (i < capped) {
+        assert(load8(&decompressed + i) == load8(&src + i), "output-cap fuzz: content");
+        i = i + 1;
+    }
+
+    # cap == size - 1 must refuse (only meaningful when size > 1).
+    if (capped > 1) {
+        assert(zlib_decompress_capped(&compressed, clen, &decompressed, 2048, capped - 1) == 0 - ERR_OUTPUT_LIMIT,
+          "output-cap fuzz: cap == size-1 refused");
+    }
+
+    # A generous cap is transparent — same answer as the uncapped entry.
+    var u = zlib_decompress(&compressed, clen, &decompressed, 2048);
+    var g = zlib_decompress_capped(&compressed, clen, &decompressed, 2048, 2048);
+    assert(g == u, "output-cap fuzz: generous cap == uncapped");
+
+    # Argument validation short-circuits before any parsing.
+    assert(zlib_decompress_capped(&compressed, clen, &decompressed, 2048, 0) == 0 - ERR_INVALID_INPUT,
+      "output-cap fuzz: cap=0 rejected");
+
+    # The streaming peer must agree with the batch entry on both verdicts.
+    #
+    # ⚠ The streaming half below deliberately re-fills `src` with a UNIFORM
+    # byte first. Mixed data here would hang the process, and not because of
+    # anything in this release: `DDEC_STATE_DECODE_SYM` pre-fills only 9 bits
+    # on the reasoning that "fixed litlen codes are 7-9 bits", but a DYNAMIC
+    # litlen code runs to 15 (RFC 1951 §3.2.7). When one exceeds 9 bits and
+    # the accumulator holds exactly 9, `_ddec_fill` is a no-op, the decode
+    # returns NEED_MORE, and `deflate_dec_write` returns having consumed
+    # nothing — whereupon `zlib_dec_write`'s ZDEC_STATE_DEFLATE arm re-calls
+    # it with identical arguments inside `while (1)`, forever. Uniform fill
+    # keeps every code <= 9 bits, which is exactly why the existing
+    # streaming harnesses never surfaced it. See
+    # docs/development/issues/2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md
+    # — restore mixed data here once that lands.
+    i = 0;
+    while (i < capped) { store8(&src + i, 65); i = i + 1; }
+    clen = zlib_compress(&src, capped, &compressed, 4096);
+    if (clen < 0) { assert(0 == 1, "output-cap fuzz: uniform compress failed"); }
+    var ctx = zlib_dec_init_output_capped(&decompressed, 2048, capped);
+    assert(ctx != 0, "output-cap fuzz: stream init");
+    var rc = zlib_dec_write(ctx, &compressed, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(fin == capped, "output-cap fuzz: stream cap == size decodes");
+
+    if (capped > 1) {
+        var ctx2 = zlib_dec_init_output_capped(&decompressed, 2048, capped - 1);
+        assert(ctx2 != 0, "output-cap fuzz: stream init tight");
+        var rc2 = zlib_dec_write(ctx2, &compressed, clen);
+        var fin2 = zlib_dec_finish(ctx2);
+        assert(rc2 == 0 - ERR_OUTPUT_LIMIT || fin2 == 0 - ERR_OUTPUT_LIMIT,
+          "output-cap fuzz: stream cap == size-1 refused");
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -716,6 +802,18 @@ fn main() {
         seed = seed + 1;
     }
     println("fuzz_deflate: 100 malformed input tests passed");
+
+    # 2.7.13 output cap: exact-crossover sweep, batch + streaming.
+    seed = 1;
+    while (seed <= 15) {
+        var oi = 0;
+        while (oi < 8) {
+            fuzz_output_cap(seed * 6151 + oi, load64(&sizes + oi * 8));
+            oi = oi + 1;
+        }
+        seed = seed + 1;
+    }
+    println("fuzz_output_cap: 120 exact-crossover tests passed");
 
     # 2.7.9 sync flush: random flush points + context resets, levels 1/6/9
     # (fixed path, dynamic path, deepest chain).
