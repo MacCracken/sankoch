@@ -7,6 +7,152 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.14] — 2026-09-07 — streaming decoder: infinite-loop (DoS) fix
+
+**Security fix.** `zlib_dec_write` and `gzip_dec_write` could loop forever on ordinary,
+valid input — input this library's own encoder produces. Because
+`*_dec_init` takes `_sankoch_mtx` and only `*_dec_finish` releases it, a wedged
+decode holds the library-wide lock for the life of the process: every other
+sankoch call in that process blocks behind it. This is a **process-wide denial of
+service, not a single hung call**, and it is reachable without any hostile input.
+
+Present since the 2.3.0 streaming arc. The batch decoders were never affected.
+
+### The defect
+
+Three sites in the streaming decoder pre-filled the bit accumulator to **9** bits —
+`HUFF_TABLE_BITS`, the fast-table *peek* width — with the comment reasoning "fixed
+litlen codes are 7-9 bits". True of **fixed** Huffman blocks; **dynamic** codes run
+to `HUFF_MAX_BITS` = 15 (RFC 1951 §3.2.7). When the next code was longer than 9 bits
+and the accumulator held exactly 9, `_ddec_fill` was a no-op (`bits >= n` already),
+`_ddec_decode_huff` returned `DDEC_NEED_MORE`, and `deflate_dec_write` returned
+having consumed **zero** input. Both envelope decoders retry inside `while (1)` with
+no no-progress guard, so they reissued the identical call forever.
+
+An 848-byte stream from sankoch's own `zlib_compress` that the **batch** decoder
+returns byte-exactly hangs the streaming decoder permanently. On real source text at
+level 6 the wedge fired in **142 of 286** sampled inputs — roughly half.
+
+Underneath the fill depth sat a second, narrower defect: `_ddec_decode_huff` could
+not tell "ran out of bridge" from "conclusively invalid". `_huff_decode`'s slow path
+burns a full `HUFF_MAX_BITS` before returning `ERR_INVALID_HUFFMAN`, and
+`if (consumed >= bits)` relabelled that completed scan as `NEED_MORE`. Since
+`_huff_build` never verifies Kraft completeness, an incomplete table is buildable and
+reaches exactly that path.
+
+**Attribution, stated precisely, because it is easy to get wrong** (an earlier draft of
+this entry did): raising **all three** pre-fills is what guarantees liveness — with
+`bits >= 16` at every Huffman site, `consumed <= 15 < bits`, so the mislabel is
+unreachable and a partial-progress return is structurally impossible. The
+often-quoted "321 of 12,000 corrupt streams still hang" figure measured raising only
+**two** of the three sites, which was this release's first (wrong) plan; it is not a
+measurement of the three-site fix. The verdict hunk therefore improves error
+*classification* and provides margin — it is what would keep a 15-bit fill safe — and
+the liveness assertion is a tripwire. All three are kept deliberately, but only the
+first is load-bearing for the hang.
+
+### Fixed
+
+Three hunks, all in `src/deflate.cyr`:
+
+- **All three Huffman pre-fills `9` → `HUFF_MAX_BITS + 1`** — `DDEC_STATE_DECODE_SYM`,
+  `DDEC_STATE_DECODE_DIST`, and the code-length-alphabet site. The distance site
+  carried an independently reachable copy of the bug (its comment reasoned only about
+  the *fixed* table, but a dynamic `HDIST` alphabet emits 15-bit codes). The
+  code-length site is raised too: CL codes are ≤ 7 bits so 9 sufficed to *decode* one,
+  but not to disprove an invalid one. The `+ 1` over `HUFF_MAX_BITS` is load-bearing —
+  at exactly 15 bits a conclusive failure is indistinguishable from a short bridge.
+- **A conclusive-failure verdict in `_ddec_decode_huff`** — `if (bits >= HUFF_MAX_BITS)
+  { return sym; }` ahead of the `NEED_MORE` path. With 15 bits available, a failure to
+  match is final; no further input can change it.
+- **A no-progress liveness assertion in `deflate_dec_write`**, which is now a thin
+  wrapper over `_deflate_dec_write_inner`. A non-negative return that consumed less
+  than the whole chunk without reaching `DDEC_STATE_DONE` is by construction a stuck
+  decoder — every suspend point drains the chunk before returning — so it fails closed
+  with `ERR_CORRUPT_DATA`. It sits at the **DEFLATE** level rather than in the two
+  envelopes because `src/stream.cyr` hands raw `deflate_dec_write` straight to caller
+  loops, which would spin identically. It should never fire; it exists so a future
+  state-machine bug surfaces as an error at the offending call instead of an
+  unkillable spin.
+
+The `cp = cp - overpull` rewind in `zlib.cyr` / `gzip.cyr` was audited and
+**deliberately left unchanged** — it is provably safe (`overpull ≤ p − 1` where `p` is
+the bytes pulled in that call, so `cp − overpull ≥ base + 1`), and the bound holds for
+any fill target ≤ 17.
+
+### Testing
+
+- **New `tests/tcyr/deep_huffman.tcyr`** (26th suite, 598 assertions). Every test
+  **hangs** — not fails, hangs — against 2.7.13: the filed reproducer through zlib and
+  gzip streaming, raw-DEFLATE liveness (asserting `deflate_dec_write` never returns
+  short without finishing), 1/7/64-byte and whole-stream feeds, a 4-alphabet × 4-size ×
+  3-level sweep, concatenated gzip members with a pathological member 2, and 400
+  mutated streams that must all terminate.
+- **`fuzz_tree_shape_roundtrip` and `fuzz_skewed_freq_roundtrip` now also decode through
+  the streaming path.** Both already generated hanging data and decoded it with the
+  batch decoder; routing either through `zlib_dec_write` would have caught this in
+  2.3.0. New shared `_fuzz_stream_rt` helper.
+- **`fuzz_output_cap`'s streaming half restored to mixed data** — 2.7.13 pinned it to a
+  uniform fill to dodge this hang.
+- Ad-hoc verification: 15,632 exhaustive single-bit flips plus 3,000 random multi-byte
+  corruptions of a rich-alphabet stream all terminate (all wedge against 2.7.13); a
+  240-case valid-stream sweep (5 alphabets × 12 sizes × 4 chunkings) passes.
+- Full suite **4,495,843 assertions across 26 suites**, 0 failures; all 6 fuzz
+  harnesses green.
+- **Ablation matrix — measured, so the coverage claim is exact rather than implied.**
+  Each element of the fix was reverted alone against the committed suite:
+
+  | Reverted | `deep_huffman.tcyr` result | Pinned? |
+  |---|---|---|
+  | litlen pre-fill → 9 | 49 failures | ✅ |
+  | distance pre-fill → 9 | 31 failures | ✅ |
+  | code-length pre-fill → 9 | 1 failure (batch/stream differential) | ✅ |
+  | conclusive-failure verdict removed | 598 pass | ❌ redundant by design |
+  | all three fills 16 → 15 | 598 pass | ❌ redundant by design |
+  | full 2.7.13 revert | **hangs** | ✅ |
+
+  The last two are unpinned because they are genuinely *unreachable* given the fills:
+  at `bits >= 16` the mislabel cannot occur, so no input distinguishes those builds.
+  They ship as margin, not as untested code paths, and this table says so rather than
+  letting a green suite imply coverage it does not have.
+- **The first cut of this suite repeated the very mistake it documents.** It tested deep
+  *distance* alphabets only with whole-stream feeds, and chunked feeds only with an
+  alphabet whose distance codes never exceed 8 bits — the two axes never crossed, so it
+  was 100 % green against a build with the distance pre-fill reverted. Caught by
+  adversarial review, not by the suite. `test_dh_deep_distance_chunked_crossing` now
+  crosses them explicitly and `test_dh_alphabet_size_sweep` sweeps chunk size alongside
+  level.
+- **The liveness assertion was proven to be live code, not decoration.** Reverting
+  only the litlen pre-fill to `9` while keeping the guard and the verdict fix makes
+  `deep_huffman.tcyr` exit with **49 assertion failures instead of hanging** (exit 49,
+  not a 124 timeout). So if a future change reintroduces an under-fill, CI reports it
+  as a normal test failure rather than as a job that never finishes — which matters
+  here because `cyrius test` does not propagate a hung child as a failure, it simply
+  stops producing output.
+
+### Why it survived fifteen releases
+
+Not thin assertions — a **two-axis coverage gap**, and neither axis looked wrong alone.
+Every harness with a rich alphabet (`fuzz_tree_shape_roundtrip`,
+`fuzz_skewed_freq_roundtrip`) decoded with the **batch** decoder, which reads through a
+bitreader spanning the whole input and is structurally immune. Every harness that
+reached `*_dec_write` used a **degenerate alphabet** — a single repeated byte, or the
+8–12 byte fixtures in `stream.tcyr`, too small to emit a dynamic block at all. Nothing
+crossed the two. Chunk size, the variable that looks most relevant, is irrelevant; the
+load-bearing variables are compression **level** (1–3 emit fixed blocks and are safe)
+and **input size**.
+
+### CI
+
+- **The dist-bundle gate covered 8 of 10 bundles.** `dist/sankoch-zip.cyr` and
+  `dist/sankoch-zipall.cyr` both bundle `src/deflate.cyr`, but neither `ci.yml` nor
+  `release.yml` regenerated or verified them — so a decoder fix could regenerate clean
+  in the eight checked bundles while those two silently shipped the old code, and
+  `release.yml` never published them as artifacts at all. Both workflows now cover all
+  nine profiles. Six of the ten bundles carry this fix
+  (`sankoch`, `-zlib`, `-gzip`, `-tar`, `-zip`, `-zipall`); agnosai's `[lib.zip]`
+  profile is among them.
+
 ## [2.7.13] — 2026-09-07 — caller-overridable output ceiling (`zlib_decompress_capped`)
 
 Closes the chitra/crab filing

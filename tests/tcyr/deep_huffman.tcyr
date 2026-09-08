@@ -1,0 +1,475 @@
+# sankoch — deep-Huffman streaming decode (2.7.14 regression suite)
+#
+# Closes the structural coverage gap that let an infinite loop live in the
+# streaming decoder from the 2.3.0 arc through 2.7.13. The gap was two-axis
+# and neither axis alone was wrong:
+#
+#   * Harnesses with a RICH alphabet (fuzz_tree_shape_roundtrip,
+#     fuzz_skewed_freq_roundtrip) produced Huffman codes longer than 9 bits —
+#     but decoded with the BATCH decoder, which reads through a bitreader
+#     spanning the whole input and is structurally immune.
+#   * Harnesses that reached `*_dec_write` (fuzz_stream_ratio_cap,
+#     ratio_cap.tcyr, stream.tcyr) used a DEGENERATE alphabet — a single
+#     repeated byte, or 8-12 byte fixtures too small to emit a dynamic block
+#     at all — so their codes never exceeded 9 bits.
+#
+# Nothing crossed the two. This suite exists to cross them: every test here
+# feeds deep-Huffman data through a STREAMING decoder.
+#
+# The bug: DDEC_STATE_DECODE_SYM / _DIST pre-filled the bit accumulator to 9
+# (HUFF_TABLE_BITS, the fast-table PEEK width) while dynamic codes run to
+# HUFF_MAX_BITS = 15. At bits == 9 with a longer code, _ddec_fill was a no-op,
+# the decode returned NEED_MORE, and deflate_dec_write consumed nothing —
+# which zlib_dec_write / gzip_dec_write then retried forever inside `while (1)`,
+# holding _sankoch_mtx for the life of the process.
+#
+# Every test below hangs (does not fail — HANGS) against 2.7.13.
+#
+# Part of the split test suite (see _harness.tcyr). Run with:
+#   cyrius test tests/tcyr/deep_huffman.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+var _dh_fs = 0;
+fn _dh_seed(s) { _dh_fs = s; return 0; }
+fn _dh_rand() {
+    _dh_fs = _dh_fs * 6364136223846793005 + 1442695040888963407;
+    return (_dh_fs >> 33) & 255;
+}
+
+var _dh_src = 0;
+var _dh_c = 0;
+var _dh_d = 0;
+var _DH_CAP = 32768;
+
+fn _dh_init() {
+    if (_dh_src == 0) {
+        _dh_src = alloc(_DH_CAP);
+        _dh_c = alloc(_DH_CAP);
+        _dh_d = alloc(_DH_CAP);
+    }
+    return 0;
+}
+
+# The alphabet shape is the load-bearing variable. A single repeated byte
+# yields codes far below 9 bits (which is exactly why this bug survived);
+# a mixed alphabet at level >= 4 yields a dynamic block with deep codes.
+# mode 0 is the exact distribution of the filed reproducer.
+fn _dh_fill(buf, n, mode) {
+    var i = 0;
+    while (i < n) {
+        var b = 65;
+        if (mode == 0) { if ((_dh_rand() & 3) == 0) { b = _dh_rand() & 255; } }
+        elif (mode == 1) { b = _dh_rand() & 255; }
+        elif (mode == 2) { b = 97 + (_dh_rand() & 15); }
+        else { b = 32 + (_dh_rand() % 90); }
+        store8(buf + i, b);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _dh_verify(got, want, n, label) {
+    var i = 0;
+    var ok = 1;
+    while (i < n) {
+        if (load8(got + i) != load8(want + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, label);
+    return 0;
+}
+
+# ================================================================
+# The filed reproducer, exactly: seed 6158, n = 1628, level 6.
+# ================================================================
+
+fn test_dh_reproducer_zlib_stream() {
+    _dh_init();
+    _dh_seed(6158);
+    var n = 1628;
+    _dh_fill(_dh_src, n, 0);
+    var clen = zlib_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh repro: compress");
+
+    # Batch decodes this stream correctly even against 2.7.13 — the defect
+    # is streaming-only, so this is the control, not the regression.
+    var b = zlib_decompress(_dh_c, clen, _dh_d, _DH_CAP);
+    assert(b == n, "dh repro: batch control decodes");
+
+    var ctx = zlib_dec_init(_dh_d, _DH_CAP);
+    assert(ctx != 0, "dh repro: stream init");
+    var rc = zlib_dec_write(ctx, _dh_c, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc == clen, "dh repro: stream consumed whole input");
+    assert(fin == n, "dh repro: stream length");
+    _dh_verify(_dh_d, _dh_src, n, "dh repro: stream byte-exact");
+    return 0;
+}
+
+fn test_dh_reproducer_gzip_stream() {
+    _dh_init();
+    _dh_seed(6158);
+    var n = 1628;
+    _dh_fill(_dh_src, n, 0);
+    var clen = gzip_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh repro gzip: compress");
+    var ctx = gzip_dec_init(_dh_d, _DH_CAP);
+    assert(ctx != 0, "dh repro gzip: stream init");
+    var rc = gzip_dec_write(ctx, _dh_c, clen);
+    var fin = gzip_dec_finish(ctx);
+    assert(rc == clen, "dh repro gzip: consumed whole input");
+    assert(fin == n, "dh repro gzip: length");
+    _dh_verify(_dh_d, _dh_src, n, "dh repro gzip: byte-exact");
+    return 0;
+}
+
+# ================================================================
+# Liveness at the raw DEFLATE level. deflate_dec_write returning short
+# without reaching DONE is the no-progress condition itself: stream.cyr
+# hands this straight to caller loops, so it must never happen.
+# ================================================================
+
+fn test_dh_raw_deflate_always_progresses() {
+    _dh_init();
+    _dh_seed(20260907);
+    var n = 4096;
+    _dh_fill(_dh_src, n, 0);
+    var clen = deflate_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh raw: compress");
+
+    var ctx = deflate_dec_init(_dh_d, _DH_CAP);
+    assert(ctx != 0, "dh raw: init");
+    var fed = 0;
+    var short_returns = 0;
+    while (fed < clen) {
+        var take = clen - fed;
+        if (take > 97) { take = 97; }
+        var rc = deflate_dec_write(ctx, _dh_c + fed, take);
+        assert(rc >= 0, "dh raw: no error mid-stream");
+        # Either the whole chunk was absorbed, or the stream finished.
+        if (rc < take && _ddec_state(ctx) != DDEC_STATE_DONE) { short_returns = short_returns + 1; }
+        if (rc <= 0) { fed = clen; } else { fed = fed + rc; }
+    }
+    var fin = deflate_dec_finish(ctx);
+    assert(short_returns == 0, "dh raw: never returns short without finishing");
+    assert(fin == n, "dh raw: length");
+    _dh_verify(_dh_d, _dh_src, n, "dh raw: byte-exact");
+    return 0;
+}
+
+# ================================================================
+# Chunking is NOT the trigger (the accumulator lands anywhere in 9..16
+# depending on the residual), but feed size varies which symbol boundary
+# the suspend lands on, so sweep it.
+# ================================================================
+
+fn _dh_stream_chunked(clen, n, chunk, label) {
+    var ctx = zlib_dec_init(_dh_d, _DH_CAP);
+    assert(ctx != 0, label);
+    var fed = 0;
+    while (fed < clen) {
+        var take = clen - fed;
+        if (chunk > 0 && take > chunk) { take = chunk; }
+        var rc = zlib_dec_write(ctx, _dh_c + fed, take);
+        if (rc < 0) { zlib_dec_finish(ctx); assert(0 == 1, label); return 0; }
+        if (rc == 0) { fed = clen; } else { fed = fed + rc; }
+    }
+    var fin = zlib_dec_finish(ctx);
+    assert(fin == n, label);
+    _dh_verify(_dh_d, _dh_src, n, label);
+    return 0;
+}
+
+fn test_dh_chunked_feeds() {
+    _dh_init();
+    _dh_seed(424242);
+    var n = 3000;
+    _dh_fill(_dh_src, n, 0);
+    var clen = zlib_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh chunked: compress");
+    _dh_stream_chunked(clen, n, 1, "dh chunked: 1-byte feed");
+    _dh_stream_chunked(clen, n, 7, "dh chunked: 7-byte feed");
+    _dh_stream_chunked(clen, n, 64, "dh chunked: 64-byte feed");
+    _dh_stream_chunked(clen, n, 0, "dh chunked: whole-stream feed");
+    return 0;
+}
+
+# ================================================================
+# Alphabet x size sweep. Levels >= 4 emit dynamic blocks; levels 1-3
+# emit fixed blocks whose codes never exceed 9 bits, which is the other
+# half of why this hid for so long.
+# ================================================================
+
+fn test_dh_alphabet_size_sweep() {
+    _dh_init();
+    var mode = 0;
+    while (mode < 4) {
+        var si = 0;
+        while (si < 4) {
+            var n = 512 + si * 1531;
+            _dh_seed(7000 + mode * 131 + si * 17);
+            _dh_fill(_dh_src, n, mode);
+            var level = 4;
+            while (level <= 9) {
+                var clen = zlib_compress_level(_dh_src, n, _dh_c, _DH_CAP, level);
+                assert(clen > 0, "dh sweep: compress");
+                # Sweep chunk size WITH level rather than on a separate
+                # axis — feeding only whole streams here is what let the
+                # distance-site under-fill slip through the first cut.
+                _dh_stream_chunked(clen, n, 0, "dh sweep: whole feed");
+                _dh_stream_chunked(clen, n, 1, "dh sweep: 1-byte feed");
+                _dh_stream_chunked(clen, n, 5, "dh sweep: 5-byte feed");
+                level = level + 3;
+            }
+            si = si + 1;
+        }
+        mode = mode + 1;
+    }
+    return 0;
+}
+
+# ================================================================
+# Deep DISTANCE alphabets x chunked feeds — the crossing that matters.
+#
+# `DDEC_STATE_DECODE_DIST` carries its own copy of the under-fill, and it
+# is reachable independently of the litlen one. The first version of this
+# suite did not catch it: test_dh_alphabet_size_sweep exercised deep
+# distance alphabets but fed whole streams, and test_dh_chunked_feeds fed
+# in small chunks but used mode 0, whose distance codes never exceed
+# 8 bits. Each axis alone is green against a build with the distance
+# prefill reverted — which is the SAME coverage-topology mistake that let
+# the original bug live from 2.3.0 to 2.7.13, reproduced inside the very
+# suite written to close it.
+#
+# The chunk size matters here because it changes where the decoder
+# suspends, and therefore the residual `bits` it resumes with; a deep
+# distance code only wedges when it lands on a suspend boundary. These
+# three (seed, size) pairs were verified to fail on a distance-ablated
+# build and pass on the fixed one.
+# ================================================================
+
+fn _dh_dist_case(st) {
+    var seed = 16838 + st * 104729;
+    var n = 700 + st * 137;
+    _dh_seed(seed);
+    _dh_fill(_dh_src, n, 2);
+    var level = 4;
+    while (level <= 9) {
+        var clen = zlib_compress_level(_dh_src, n, _dh_c, _DH_CAP, level);
+        assert(clen > 0, "dh dist-cross: compress");
+        _dh_stream_chunked(clen, n, 1, "dh dist-cross: 1-byte feed");
+        _dh_stream_chunked(clen, n, 3, "dh dist-cross: 3-byte feed");
+        _dh_stream_chunked(clen, n, 0, "dh dist-cross: whole feed");
+        level = level + 1;
+    }
+    return 0;
+}
+
+fn test_dh_deep_distance_chunked_crossing() {
+    _dh_init();
+    _dh_dist_case(17);
+    _dh_dist_case(37);
+    _dh_dist_case(39);
+    return 0;
+}
+
+# ================================================================
+# Concatenated gzip members: deflate_dec_reset restores the inner decoder
+# to exactly the state that wedged, so member 2 and beyond must be proven
+# separately from member 1.
+# ================================================================
+
+fn test_dh_gzip_concatenated_members() {
+    _dh_init();
+    # Member 1: degenerate alphabet (safe even pre-fix).
+    var n1 = 64;
+    var i = 0;
+    while (i < n1) { store8(_dh_src + i, 65); i = i + 1; }
+    var m1 = gzip_compress(_dh_src, n1, _dh_c, _DH_CAP);
+    assert(m1 > 0, "dh concat: member 1 compress");
+
+    # Member 2: the pathological alphabet, appended after member 1.
+    _dh_seed(6158);
+    var n2 = 1628;
+    _dh_fill(_dh_src + n1, n2, 0);
+    var m2 = gzip_compress(_dh_src + n1, n2, _dh_c + m1, _DH_CAP - m1);
+    assert(m2 > 0, "dh concat: member 2 compress");
+
+    var total = n1 + n2;
+    var ctx = gzip_dec_init(_dh_d, _DH_CAP);
+    assert(ctx != 0, "dh concat: init");
+    var rc = gzip_dec_write(ctx, _dh_c, m1 + m2);
+    var fin = gzip_dec_finish(ctx);
+    assert(fin == total, "dh concat: both members decoded");
+    _dh_verify(_dh_d, _dh_src, total, "dh concat: byte-exact across members");
+    return 0;
+}
+
+# ================================================================
+# Corrupt input must terminate with an error, never spin. Raising the
+# pre-fill alone does NOT achieve this: _huff_decode burns a full
+# HUFF_MAX_BITS before reporting ERR_INVALID_HUFFMAN, and at bits <= 15
+# that conclusive verdict was mislabelled NEED_MORE, so a hostile stream
+# could still wedge the decoder. A hang here fails the suite by timeout.
+# ================================================================
+
+fn test_dh_corrupt_streams_terminate() {
+    _dh_init();
+    _dh_seed(31337);
+    var n = 1024;
+    _dh_fill(_dh_src, n, 0);
+    var clen = zlib_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh corrupt: compress");
+
+    var handled = 0;
+    var t = 0;
+    while (t < 400) {
+        var k = 0;
+        while (k < clen) { store8(_dh_d + _DH_CAP - clen + k, load8(_dh_c + k)); k = k + 1; }
+        var mbuf = _dh_d + _DH_CAP - clen;
+        var pos = (_dh_rand() * 251 + _dh_rand()) % clen;
+        store8(mbuf + pos, _dh_rand() & 255);
+        var ctx = zlib_dec_init(_dh_src, 512);
+        if (ctx != 0) {
+            zlib_dec_write(ctx, mbuf, clen);
+            zlib_dec_finish(ctx);
+            handled = handled + 1;
+        }
+        t = t + 1;
+    }
+    assert(handled == 400, "dh corrupt: every mutated stream terminated");
+    return 0;
+}
+
+# ================================================================
+# Truncation must stay distinguishable from corruption.
+#
+# The conclusive-failure verdict (`bits >= HUFF_MAX_BITS` => report the
+# error rather than NEED_MORE) is only sound because any valid code fits
+# in 15 bits: if the accumulator holds 15 real bits and nothing matches,
+# no further input can help. A stream that is merely TRUNCATED never
+# reaches that state — it runs out of bits first — so it must still be
+# reported as an incomplete stream, not as an invalid Huffman code.
+# Getting this wrong would turn every short read into a bogus corruption
+# error, so it is pinned explicitly.
+# ================================================================
+
+fn test_dh_truncated_streams_report_incomplete() {
+    _dh_init();
+    _dh_seed(5150);
+    var n = 2048;
+    _dh_fill(_dh_src, n, 0);
+    var clen = zlib_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh trunc: compress");
+
+    # Every proper prefix: feeding it must never wedge, never claim
+    # success, and never decode more bytes than the full stream holds.
+    var cut = 1;
+    var handled = 0;
+    while (cut < clen) {
+        var ctx = zlib_dec_init(_dh_d, _DH_CAP);
+        if (ctx != 0) {
+            var rc = zlib_dec_write(ctx, _dh_c, cut);
+            var fin = zlib_dec_finish(ctx);
+            # A truncated stream must not report a completed decode.
+            assert(fin != n, "dh trunc: prefix must not report full length");
+            handled = handled + 1;
+        }
+        cut = cut + 37;
+    }
+    assert(handled > 0, "dh trunc: prefixes exercised");
+
+    # And the untruncated stream still decodes, so the guard above is not
+    # simply rejecting everything.
+    var ctx2 = zlib_dec_init(_dh_d, _DH_CAP);
+    assert(ctx2 != 0, "dh trunc: full init");
+    var rc2 = zlib_dec_write(ctx2, _dh_c, clen);
+    var fin2 = zlib_dec_finish(ctx2);
+    assert(fin2 == n, "dh trunc: full stream still decodes");
+    _dh_verify(_dh_d, _dh_src, n, "dh trunc: full stream byte-exact");
+    return 0;
+}
+
+# ================================================================
+# Batch/stream differential on corrupt input.
+#
+# The two decoders share `_huff_decode` but not the 4-byte stack bridge:
+# batch reads through a bitreader spanning the whole input, streaming
+# reassembles bits through the accumulator. They must nonetheless agree
+# EXACTLY on every corrupt stream — same success, same length, same error
+# code — because a divergence means the streaming path reached a verdict
+# the evidence does not support.
+#
+# This is what pins the code-length-alphabet prefill, which nothing else
+# here detects: with that site left at 9, a corrupt CL table makes
+# `_huff_decode` burn 15 bits and fail, the streaming decoder mislabels
+# that as NEED_MORE, and the liveness assertion converts it to
+# ERR_CORRUPT_DATA — while batch correctly reports ERR_INVALID_HUFFMAN.
+# No hang, no wrong output, but a demonstrably wrong error, and the
+# assertion firing at all means a state-machine invariant is broken.
+#
+# Flips are confined to the block header region, where the dynamic
+# Huffman tables (and so the CL alphabet) live — that is where the
+# divergence is dense enough to catch cheaply.
+# ================================================================
+
+fn test_dh_batch_stream_differential() {
+    _dh_init();
+    _dh_seed(6158);
+    var n = 3000;
+    _dh_fill(_dh_src, n, 2);
+    var clen = zlib_compress(_dh_src, n, _dh_c, _DH_CAP);
+    assert(clen > 0, "dh diff: compress");
+
+    var span = 300;
+    if (span > clen) { span = clen; }
+
+    var disagree = 0;
+    var checked = 0;
+    var bytei = 0;
+    while (bytei < span) {
+        var biti = 0;
+        while (biti < 8) {
+            var mbuf = _dh_d + _DH_CAP - clen - 8;
+            var k = 0;
+            while (k < clen) { store8(mbuf + k, load8(_dh_c + k)); k = k + 1; }
+            store8(mbuf + bytei, load8(_dh_c + bytei) ^ (1 << biti));
+
+            var b = zlib_decompress(mbuf, clen, _dh_src + 8192, 8192);
+            var sres = 0;
+            var ctx = zlib_dec_init(_dh_src + 16384, 8192);
+            if (ctx != 0) {
+                var rc = zlib_dec_write(ctx, mbuf, clen);
+                var fin = zlib_dec_finish(ctx);
+                sres = fin;
+                if (rc < 0) { sres = rc; }
+            }
+            if (b != sres) { disagree = disagree + 1; }
+            checked = checked + 1;
+            biti = biti + 1;
+        }
+        bytei = bytei + 1;
+    }
+    assert(checked == span * 8, "dh diff: all flips exercised");
+    assert(disagree == 0, "dh diff: batch and stream agree on every corrupt stream");
+    return 0;
+}
+
+fn main() {
+    _test_init();
+    test_dh_reproducer_zlib_stream();
+    test_dh_reproducer_gzip_stream();
+    test_dh_raw_deflate_always_progresses();
+    test_dh_chunked_feeds();
+    test_dh_alphabet_size_sweep();
+    test_dh_deep_distance_chunked_crossing();
+    test_dh_gzip_concatenated_members();
+    test_dh_corrupt_streams_terminate();
+    test_dh_truncated_streams_report_incomplete();
+    test_dh_batch_stream_differential();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

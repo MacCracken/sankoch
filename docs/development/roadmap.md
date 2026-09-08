@@ -1,7 +1,7 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.7.13**); open issue queue **1** — and it is a **hang**
-> (High), so it outranks everything scheduled below. Since this
+> **Status**: Stable (**v2.7.14**); open issue queue **0** — the streaming-decoder
+> hang shipped fixed in 2.7.14. Since this
 > file was last touched: 2.7.10 fixed the `alloc_reset()` wild write (chitra filing),
 > 2.7.11 adopted cyrius 6.6.0's `Result` value form (no source change, verified not
 > assumed), and 2.7.12 re-verified the tree against the in-place-rebuilt 6.6.0 binaries
@@ -46,29 +46,26 @@ consumer profile.
 
 ## ▶ Next — 2.8.0
 
-⚠ **The queue is 1, and it is not the item that was here at 2.7.12.** That one —
-`DECOMPRESS_MAX_OUTPUT` having no caller override — **shipped in 2.7.13**
-(`zlib_decompress_capped` / `zlib_dec_init_output_capped`) and is archived. What
-replaced it is worse:
+The queue is **0**. The streaming-decoder hang that preempted this ladder shipped
+fixed in **2.7.14** (all three Huffman pre-fills → `HUFF_MAX_BITS + 1`, a
+conclusive-failure verdict in `_ddec_decode_huff`, a no-progress liveness assertion
+in `deflate_dec_write`) and is archived. Nothing now preempts 2.8.0.
 
-**▶ Open: a streaming-decoder hang (High).**
-[`issues/2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md`](issues/2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md).
-`zlib_dec_write` loops forever on any stream containing a dynamic Huffman code longer
-than 9 bits — `DDEC_STATE_DECODE_SYM` pre-fills 9 bits on the premise that "fixed
-litlen codes are 7-9 bits", but dynamic codes run to 15 (RFC 1951 §3.2.7), so the
-decode returns `NEED_MORE` having consumed nothing and the zlib wrapper's
-`while (1)` re-issues the identical call forever. An 848-byte stream from sankoch's
-own `zlib_compress` that the **batch** decoder returns byte-exactly hangs the
-streaming decoder permanently. Reproduced against **pristine 2.7.12**; present since
-the 2.3.0 streaming arc. `sit` and `bote` are on that path.
+⚠ **Carry one finding into the 2.8.x-closeout P(-1) pass**, because it is a latent
+correctness gap rather than a fixed bug: `_huff_build` never verifies **Kraft
+completeness**, so an incomplete Huffman table is buildable and simply fails to match
+at decode time. That is what made the mislabelled-`NEED_MORE` path reachable in the
+first place. It is now handled safely — the conclusive-failure verdict turns it into
+`ERR_INVALID_HUFFMAN` — but rejecting an over-subscribed or incomplete table at
+*build* time is the spec-correct behaviour (RFC 1951 §3.2.2) and would fail earlier
+and more clearly. Audit it there.
 
-**This should preempt the 2.8.x ladder.** A hang is the one failure mode a consumer
-cannot defend against — it cannot be caught, retried or timed out from inside the
-API. The fix is small and already understood (raise the two pre-fills to 15; make
-no-progress fail closed in `ZDEC_STATE_DEFLATE`), and the regression coverage it
-needs is a fuzz harness with a **mixed alphabet** — every existing streaming harness
-uses a single repeated byte, which is exactly why every release since 2.3.0
-never saw it.
+⚠ **Also carry the coverage lesson.** The hang survived from 2.3.0 because the test
+and fuzz corpora had a two-axis gap: every **rich-alphabet** harness decoded **batch**,
+and every harness reaching `*_dec_write` used a **degenerate alphabet**. Neither set
+looked deficient on its own. When the P(-1) pass reviews coverage, review it as a
+*matrix* — input distribution × code path — not as a checklist of which functions have
+tests.
 
 ⚠ 2.7.9 shipped an **unaudited** addition to the DEFLATE encoder: the
 fixed-vs-dynamic block chooser in `_dyn_flush_subblock`, its scratch-bitwriter
@@ -252,8 +249,8 @@ a new codec).
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md
 > and state.md cross-links; figures below are refreshed every release.
-> Current as of **2.7.13** (`deflate.cyr` +30 and `zlib.cyr` +56 for the
-> caller-overridable output ceiling). Re-counted at 2.7.12, where 2 rows had
+> Current as of **2.7.14** (`deflate.cyr` +56 for the streaming-hang fix; 2.7.13
+> added +30 there and +56 in `zlib.cyr` for the caller-overridable output ceiling). Re-counted at 2.7.12, where 2 rows had
 > drifted — `zip.cyr` 1206 → **1386**, missing 2.7.7's sizing/reclaim work, and
 > `runtime.cyr` 73 → **155**, missing 2.7.10's arena canary — and the **Total**
 > read **15745** against an actual **16326**, having gone unmaintained while the
@@ -274,7 +271,7 @@ a new codec).
 | lz77.cyr         |  184 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  181 | LZ4 block + frame decompress (incl. per-block checksum) + LZ4F enum (kernel-safe) | core |
 | lz4.cyr          |  935 | LZ4 block + frame compress + `lz4f_enc_*` (configurable block-max + checksum) + `lz4f_dec_*` streaming | full |
-| deflate.cyr      | 2887 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling`; **2.7.9 RFC 7692 sync flush** (`deflate_enc_flush` / `deflate_enc_reset_context` / `deflate_dec_produced`) + the fixed-vs-dynamic block chooser and its exact scratch-bitwriter header pricer (`_dyn_header_bits`) | full |
+| deflate.cyr      | 2943 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming (+ `deflate_dec_reset` / `deflate_dec_init_dict` / `deflate_dec_init_capped`), dict, OOM-propagating table inits, `deflate_decompress_with_ratio_cap` + shared `_deflate_ratio_ceiling`; **2.7.9 RFC 7692 sync flush** (`deflate_enc_flush` / `deflate_enc_reset_context` / `deflate_dec_produced`) + the fixed-vs-dynamic block chooser and its exact scratch-bitwriter header pricer (`_dyn_header_bits`) | full |
 | zlib.cyr         |  542 | RFC 1950 wrapper + FDICT batch + streaming (`zlib_dec_init_dict` / `zlib_dec_init_capped`) + `zlib_enc_*` + `zlib_dec_*` + `zlib_decompress_with_ratio_cap` | full |
 | gzip.cyr         |  650 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC verify + `gzip_enc_*` + `gzip_dec_*` streaming (+ `gzip_dec_init_capped`) + `gzip_decompress_with_ratio_cap` (cumulative cap) | full |
 | xz.cyr           | 2111 | `.xz` de/compress: container + LZMA2 framing + LZMA range decoder/encoder, optimal-parse (`xz_decompress` / `xz_compress`) + `xz_decompress_with_ratio_cap` (2.5.3) + 2.7.0 rep-only `nice_len` greedy shortcut + interior DP cut (repetitive encode ~290–473× faster) + 2.7.1 BT4 binary-tree match finder, xz-private, seed-only skip + 2.7.2 xz-private 256 KB window (real-source ratio now within ~0.2 % of `xz -6`) | full |
@@ -286,7 +283,7 @@ a new codec).
 | stream.cyr       |  256 | Streaming dispatch (`stream_compress_*`, legacy buffered `stream_decompress_*`, incremental `stream_decompress_init_inc` / `_finish_inc`) | full |
 | runtime.cyr      |   155 | Shared runtime seam: `_sankoch_mtx` + two-tier lock (agnos no-op since 2.4.4) + `_sankoch_alloc` arena + fault injection — extracted from `lib.cyr` (2.4.9) so lean profiles pull it without the format-dispatch API | full |
 | lib.cyr          |  273 | Include chain + public API + format dispatch + `_sankoch_reset_tables` (references every codec's lazy globals) | full |
-| **Total**        | **16415** | | |
+| **Total**        | **16471** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 317 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no

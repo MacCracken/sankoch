@@ -91,13 +91,18 @@ jobs:
         # profile and fails if any drifts from the committed copy.
         run: |
           cyrius distlib
-          for prof in core zlib zstd bzip2 xz gzip tar; do
+          # Every profile in cyrius.cyml, not a subset. zip/zipall were
+          # omitted until 2.7.14 even though both bundle src/deflate.cyr,
+          # so a decoder fix could regenerate clean in the seven checked
+          # bundles while those two silently shipped the old code.
+          for prof in core zlib zstd bzip2 xz gzip tar zip zipall; do
             cyrius distlib "$prof"
           done
           fail=0
           for bundle in dist/sankoch.cyr dist/sankoch-core.cyr dist/sankoch-zlib.cyr \
                         dist/sankoch-zstd.cyr dist/sankoch-bzip2.cyr dist/sankoch-xz.cyr \
-                        dist/sankoch-gzip.cyr dist/sankoch-tar.cyr; do
+                        dist/sankoch-gzip.cyr dist/sankoch-tar.cyr \
+                        dist/sankoch-zip.cyr dist/sankoch-zipall.cyr; do
             if ! git diff --quiet "$bundle"; then
               echo "ERROR: $bundle is stale. Run 'cyrius distlib [<profile>]' and commit the result."
               git --no-pager diff "$bundle" | head -40

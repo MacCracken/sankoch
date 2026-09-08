@@ -1,6 +1,11 @@
 # `zlib_dec_write` hangs forever on any stream containing a dynamic Huffman code longer than 9 bits
 
-**Status:** 🔴 **OPEN** — infinite loop (hang / DoS) on *valid, ordinary* input. Not a corruption
+**Status:** ✅ **RESOLVED in 2.7.14** (2026-09-07). Fixed in three hunks, all in
+`src/deflate.cyr`: all **three** Huffman pre-fills raised `9` → `HUFF_MAX_BITS + 1`, the
+conclusive-failure verdict added to `_ddec_decode_huff`, and a no-progress liveness assertion
+added to `deflate_dec_write`. **This filing's own proposed fix was incomplete — see
+"What this filing got wrong" at the end.**
+**Original status:** 🔴 OPEN — infinite loop (hang / DoS) on *valid, ordinary* input. Not a corruption
 bug and not attacker-specific: the triggering stream is one this library's own encoder produces.
 **Placement:** root cause in `src/deflate.cyr` (`DDEC_STATE_DECODE_SYM`, the `_ddec_fill(..., 9)`);
 amplified to an infinite loop by `src/zlib.cyr` (`ZDEC_STATE_DEFLATE` in `zlib_dec_write`).
@@ -120,3 +125,54 @@ Two changes, and both are worth making rather than either alone:
 Regression coverage must use **mixed-alphabet** data; the reproducer above is a ready fixture, and
 `fuzz/fuzz_deflate.fcyr`'s `fuzz_output_cap` has its streaming half pinned to uniform fill with a
 pointer to this file, to be restored once this lands.
+
+
+---
+
+## What this filing got wrong
+
+The reproducer and the mechanism above are accurate. Three of its conclusions were not, and each
+would have shipped a fix that still hung:
+
+**1. It scoped the amplifier to zlib. `gzip_dec_write` has the identical defect.**
+`GDEC_STATE_DEFLATE` (`src/gzip.cyr`) is the same arm written twice — same missing no-progress
+guard, same `overpull` rewind. Reproduced: the same fixture that hangs `zlib_dec_write` hangs
+`gzip_dec_write`, and because `deflate_dec_reset` restores the inner decoder to exactly the
+wedging state, it recurs on member 2 of a concatenated `.gz`. Anything reaching gzip streaming —
+including `tar_open_auto`'s gzip path — was exposed.
+
+**2. Its fix table marked the code-length-alphabet site "✅ Fine". It was not.**
+The reasoning ("CL codes are at most 7 bits, so 9 suffices") is correct about *decoding a valid*
+code and irrelevant to the hang. `_huff_decode`'s slow path burns a full `HUFF_MAX_BITS` before
+returning `ERR_INVALID_HUFFMAN`, so on a corrupt stream that site wedges at `bits ∈ [9,15]` exactly
+like the other two. Measured: raising only the two sites this filing named left **321 of 12,000**
+bit-flipped streams still wedging, all at `DDEC_STATE_DYN_AL_SYM`. The fix is a blanket raise at
+all three.
+
+**3. Fill depth was not the whole root cause.**
+Underneath it, `_ddec_decode_huff` could not distinguish "ran out of bridge" from "conclusively
+invalid": `if (consumed >= bits) { return NEED_MORE; }` relabels a completed 15-bit scan that
+matched nothing as a request for more input. Since `_huff_build` never verifies Kraft
+completeness, an incomplete table is buildable and reaches exactly that path. That 321/12,000 figure measured raising only the **two** sites this filing named. With
+all **three** raised, `bits >= 16` at every Huffman site and `consumed <= 15`, so the mislabel is
+unreachable and liveness is guaranteed by the fills alone. The verdict fix ships anyway — it
+corrects the error *classification* and is what would keep a 15-bit fill safe — but it is not the
+thing that stops the hang.
+
+Two further corrections to the record:
+
+- **The coverage claim was half right.** It said every streaming harness used a single repeated
+  byte. In fact `fuzz_deflate_stream` / `fuzz_zlib_stream` / `fuzz_gzip_stream` use uniform
+  *random* bytes, which does produce >9-bit codes — they missed the bug because they stream the
+  **encoder** and then decode with the **batch** decoder. The real invariant was two-axis: every
+  rich-alphabet harness decoded batch, and every harness reaching `*_dec_write` used a degenerate
+  alphabet. `fuzz_tree_shape_roundtrip` and `fuzz_skewed_freq_roundtrip` already generated hanging
+  data; routing either through the streaming decoder would have caught this in 2.3.0. That is now
+  what they do.
+- **Chunking is not the trigger.** `_ddec_fill` leaves `bits` anywhere in 9..16 depending on the
+  residual, so the wedge condition is `code_len > bits_held`; whole/1/7/64-byte feeds hang alike.
+  The load-bearing variables are **level** (1–3 emit fixed blocks and are safe) and **size**.
+
+The `cp = cp - overpull` rewind, which this filing did not question, was independently audited and
+is **provably safe** (`overpull ≤ p − 1` where `p` is the bytes pulled in the call, so
+`cp − overpull ≥ base + 1`). It was deliberately left unchanged.

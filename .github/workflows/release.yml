@@ -98,7 +98,10 @@ jobs:
       - name: Regenerate bundles (full + all profiles)
         run: |
           cyrius distlib
-          for prof in core zlib zstd bzip2 xz gzip tar; do
+          # All nine profiles — see the ci.yml note; zip/zipall carry the
+          # DEFLATE decoder and were previously left out of both the
+          # regeneration and the published artifacts.
+          for prof in core zlib zstd bzip2 xz gzip tar zip zipall; do
             cyrius distlib "$prof"
           done
 
@@ -119,7 +122,7 @@ jobs:
           cp dist/sankoch.cyr      "sankoch-${TAG}.cyr"
           cp dist/sankoch-core.cyr "sankoch-${TAG}-core.cyr"
           # per-codec decode profiles (2.5.1): consumers pull only what they need
-          for prof in zlib zstd bzip2 xz gzip tar; do
+          for prof in zlib zstd bzip2 xz gzip tar zip zipall; do
             cp "dist/sankoch-${prof}.cyr" "sankoch-${TAG}-${prof}.cyr"
           done
           # Ship prebuilt binaries alongside source + bundles so

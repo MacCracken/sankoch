@@ -251,6 +251,30 @@ fn fuzz_lz4f_stream(seed, data_len) {
     return 0;
 }
 
+# Decode `clen` bytes of zlib stream through the STREAMING decoder and check
+# it round-trips to src[0..n). Exists because every rich-alphabet harness in
+# this file decoded via the BATCH path, and every harness that reached
+# *_dec_write used a degenerate alphabet -- so deep Huffman codes never met
+# the streaming decoder, and a 9-bit prefill against 15-bit codes hung it
+# from the 2.3.0 arc to 2.7.13 without one fuzz run noticing. Any harness
+# that builds a rich alphabet should call this alongside its batch check.
+fn _fuzz_stream_rt(c, clen, d, dcap, src, n, label) {
+    var ctx = zlib_dec_init(d, dcap);
+    if (ctx == 0) { assert(0 == 1, label); return 0; }
+    var rc = zlib_dec_write(ctx, c, clen);
+    var fin = zlib_dec_finish(ctx);
+    assert(rc == clen, label);
+    assert(fin == n, label);
+    var k = 0;
+    var ok = 1;
+    while (k < n) {
+        if (load8(d + k) != load8(src + k)) { ok = 0; }
+        k = k + 1;
+    }
+    assert(ok == 1, label);
+    return 0;
+}
+
 # Tree-shape generator: builds inputs that mimic git tree objects, which
 # put many ~10-byte ASCII filenames adjacent to 32-byte high-entropy
 # hashes. This is the input class that triggered the 2026-04-24 bug —
@@ -349,6 +373,13 @@ fn fuzz_tree_shape_roundtrip(seed, num_entries) {
               "tree-shape: byte mismatch");
             k = k + 1;
         }
+        # Cross the alphabet x decoder axes (2.7.14). Levels >= 4 emit
+        # dynamic blocks, whose codes reach 15 bits; that is the shape the
+        # streaming decoder mishandled.
+        if (level >= 4) {
+            _fuzz_stream_rt(_fuzz_c, clen, _fuzz_d, 200000, src, n,
+              "tree-shape: streaming round-trip");
+        }
         level = level + 1;
     }
     return 0;
@@ -398,6 +429,8 @@ fn fuzz_skewed_freq_roundtrip(seed, n) {
               "skewed: byte mismatch");
             k = k + 1;
         }
+        _fuzz_stream_rt(_fuzz_c, clen, _fuzz_d, 200000, src, n,
+          "skewed: streaming round-trip");
         level = level + 1;
     }
     return 0;
@@ -735,24 +768,8 @@ fn fuzz_output_cap(seed, data_len) {
       "output-cap fuzz: cap=0 rejected");
 
     # The streaming peer must agree with the batch entry on both verdicts.
-    #
-    # ⚠ The streaming half below deliberately re-fills `src` with a UNIFORM
-    # byte first. Mixed data here would hang the process, and not because of
-    # anything in this release: `DDEC_STATE_DECODE_SYM` pre-fills only 9 bits
-    # on the reasoning that "fixed litlen codes are 7-9 bits", but a DYNAMIC
-    # litlen code runs to 15 (RFC 1951 §3.2.7). When one exceeds 9 bits and
-    # the accumulator holds exactly 9, `_ddec_fill` is a no-op, the decode
-    # returns NEED_MORE, and `deflate_dec_write` returns having consumed
-    # nothing — whereupon `zlib_dec_write`'s ZDEC_STATE_DEFLATE arm re-calls
-    # it with identical arguments inside `while (1)`, forever. Uniform fill
-    # keeps every code <= 9 bits, which is exactly why the existing
-    # streaming harnesses never surfaced it. See
-    # docs/development/issues/2026-09-07-streaming-zlib-decoder-hangs-on-dynamic-huffman-codes.md
-    # — restore mixed data here once that lands.
-    i = 0;
-    while (i < capped) { store8(&src + i, 65); i = i + 1; }
-    clen = zlib_compress(&src, capped, &compressed, 4096);
-    if (clen < 0) { assert(0 == 1, "output-cap fuzz: uniform compress failed"); }
+    # (2.7.13 pinned this half to a uniform fill to dodge the streaming-decoder
+    # hang; 2.7.14 fixed that, so the mixed data above is used throughout.)
     var ctx = zlib_dec_init_output_capped(&decompressed, 2048, capped);
     assert(ctx != 0, "output-cap fuzz: stream init");
     var rc = zlib_dec_write(ctx, &compressed, clen);
