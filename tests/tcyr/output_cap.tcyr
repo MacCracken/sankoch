@@ -113,7 +113,7 @@ fn test_oc_stream_default_refuses_past_ceiling() {
     var rc = zlib_dec_write(ctx, _oc_c, _oc_clen);
     var fin = zlib_dec_finish(ctx);
     assert(rc == 0 - ERR_OUTPUT_LIMIT || fin == 0 - ERR_OUTPUT_LIMIT,
-           "oc stream default: 18 MB -> ERR_OUTPUT_LIMIT");
+      "oc stream default: 18 MB -> ERR_OUTPUT_LIMIT");
     return 0;
 }
 
@@ -210,13 +210,13 @@ fn test_oc_capped_equivalence_uncapped() {
 fn test_oc_capped_invalid_args() {
     var d = alloc(_OC_S_N);
     assert(zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, 0) == 0 - ERR_INVALID_INPUT,
-           "oc args: max_output 0");
+      "oc args: max_output 0");
     assert(zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, _OC_S_N, 0 - 1) == 0 - ERR_INVALID_INPUT,
-           "oc args: max_output negative");
+      "oc args: max_output negative");
     assert(zlib_decompress_capped(_oc_s_c, _oc_s_clen, d, 0, 4096) == 0 - ERR_INVALID_INPUT,
-           "oc args: dst_cap 0");
+      "oc args: dst_cap 0");
     assert(zlib_decompress_capped(_oc_s_c, 0 - 1, d, _OC_S_N, 4096) == 0 - ERR_INVALID_INPUT,
-           "oc args: src_len negative");
+      "oc args: src_len negative");
     assert(zlib_dec_init_output_capped(d, _OC_S_N, 0) == 0, "oc args: stream max_output 0");
     assert(zlib_dec_init_output_capped(d, 0, 4096) == 0, "oc args: stream dst_cap 0");
     return 0;
