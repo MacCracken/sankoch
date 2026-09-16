@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build, tests, and any bench/fuzz/distlib target, including every
   `[lib.<profile>]` bundle.
 
-
 ## [2.7.14] — 2026-09-07 — streaming decoder: infinite-loop (DoS) fix
 
 **Security fix.** `zlib_dec_write` and `gzip_dec_write` could loop forever on ordinary,
@@ -3577,7 +3576,6 @@ section), 8-byte word-compare match extension (lower in this section).
   the chain once the current best is already long enough); ring-buffer
   match-finder (drops `lz77_rebase` cost in streaming); PCLMULQDQ
   CRC-32 (already deferred separately).
-
 
 
 ### Optimized

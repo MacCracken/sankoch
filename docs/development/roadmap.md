@@ -41,12 +41,22 @@ line. It opens **straight into the feature** — no P(-1) pass *leads* 2.8.0
 encoder surface together with the 2.8.x additions before the next minor opens. The
 remaining Backlog items (DEFLATE match-finder, Brotli) stay parked pending a
 consumer profile.
+> 📌 **Brotli now has its consumer (2026-09-15):** rekha's WOFF2 needs a decode-only RFC 7932
+> decoder as a `[lib.brotli]` profile — see
+> [`proposals/2026-09-15-brotli-decoder-for-woff2.md`](proposals/2026-09-15-brotli-decoder-for-woff2.md).
+> Not yet placed on a ladder; the next arc's scheduling decides where.
 
 ---
 
 ## ▶ Next — 2.8.0
 
-The queue is **0**. The streaming-decoder hang that preempted this ladder shipped
+> 📌 **Queue item filed 2026-09-15 (rekha):** every codec profile bundle (zlib, gzip, xz, bzip2, zstd,
+> tar, zip, zipall) calls `_sankoch_reset_tables`, which only the full bundle defines — a consumer
+> that calls a profile is refused at link, since 2.7.10. See
+> [`issues/2026-09-15-profile-bundles-call-sankoch-reset-tables-outside-their-closure.md`](issues/2026-09-15-profile-bundles-call-sankoch-reset-tables-outside-their-closure.md).
+> CI's profile gate checks bytes, not linking.
+
+The queue was **0** before that filing. The streaming-decoder hang that preempted this ladder shipped
 fixed in **2.7.14** (all three Huffman pre-fills → `HUFF_MAX_BITS + 1`, a
 conclusive-failure verdict in `_ddec_decode_huff`, a no-progress liveness assertion
 in `deflate_dec_write`) and is archived. Nothing now preempts 2.8.0.
@@ -193,6 +203,10 @@ into a fresh ladder** when a consumer surfaces.
   cost here is match finding in `lz77.cyr`, not checksumming.
 - **Brotli** (new codec) — DEFLATE-family with a static dictionary + context
   modeling; land it when a web-serving / font consumer needs it.
+  📌 **The font consumer is here:** rekha (WOFF2), decode-only, batch into a sized buffer with a
+  fail-closed output ceiling, hostile-input hardened, full RFC 7932 incl. the 122,784-byte static
+  dictionary, shipped as `[lib.brotli]`. Filed as
+  [`proposals/2026-09-15-brotli-decoder-for-woff2.md`](proposals/2026-09-15-brotli-decoder-for-woff2.md).
 
 ---
 
