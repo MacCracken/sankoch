@@ -1,6 +1,8 @@
 # Every codec profile bundle calls `_sankoch_reset_tables`, which only the full bundle defines — a consumer that calls the profile is refused at link
 
-**Status:** 🟡 **OPEN — MEASURED** against the committed `dist/` of sankoch **2.7.15**.
+**Status:** ✅ **RESOLVED in 2.8.0** (2026-09-16) — per-module resets + per-profile dispatchers + a
+link gate in CI and release. The filing understated the defect; see *Resolution*.
+**Original status:** 🟡 OPEN — MEASURED against the committed `dist/` of sankoch **2.7.15**.
 **Filed:** 2026-09-15, by **rekha** (adopting `[lib.zlib]` for WOFF 1.0).
 **Affects:** `dist/sankoch-{zlib,gzip,xz,bzip2,zstd,tar,zip,zipall}.cyr` — every profile except
 `core` — since **2.7.10** (commit `89771bb`, "repairs to alloc_reset").
@@ -73,3 +75,42 @@ rekha 0.4.x's WOFF 1.0 reader builds its tests against the full `lib/sankoch.cyr
 ships (2.7.15, which has `zlib_decompress_capped`), and keeps WOFF in its own `[lib.woff]` profile so
 rekha's base bundle never requires sankoch. When the zlib profile links again, rekha documents it as
 the lean way for a WOFF consumer to satisfy the dependency.
+
+## Resolution (2.8.0)
+
+**What shipped.**
+
+- Every memoizing module defines `_<module>_reset_tables` next to the globals it owns (checksum,
+  huffman, lz77, lz4, deflate, xz, bzip2, zstd, brotli).
+- `src/lib.cyr`'s `_sankoch_reset_tables` calls all of them. Each alloc-bearing profile lists a
+  `src/reset_<profile>.cyr` that calls exactly the resets in its closure.
+- `scripts/profile-link-gate.sh` runs in CI and release, for every profile it parses from `cyrius.cyml`:
+  - registration: module resets defined vs called;
+  - a reachable-call link probe;
+  - a run of reference-CLI vectors, repeated after `alloc_reset()` with the old arena handed to a
+    victim buffer;
+  - `--agnos` DCE reachability of the reset from `_sankoch_lock` alone.
+- Rule and rationale: [`docs/architecture/003-per-profile-reset-dispatch.md`](../../../architecture/003-per-profile-reset-dispatch.md).
+
+**What the filing missed.** It saw only the link error. The reset itself was incomplete even in the full
+bundle, and it was measured once the link worked:
+
+- **Memoized globals the 2.7.10 reset never zeroed.** Caller memory was overwritten after `alloc_reset()`
+  on 2.7.15 sources: xz BT4 **229,370 words**, zstd L9 **712**, zstd L6 **14**.
+- **Public builders that consumers call without the lock** had no guard: `crc64_init_table`,
+  `crc32_bzip2_init_table`, `lz77_init`, the `huff_build_*` family. They now call
+  `_sankoch_arena_guard`, and the lz77 and huff builders overwrote 524,288 and 8,701 caller bytes.
+- **A stranded canary.** A caller that filled the first arena chunk before sankoch's first call got a
+  canary that `alloc_reset()` never zeroes (475,882 caller bytes overwritten). Fixed by
+  `_sankoch_canary_stranded`.
+- **AGNOS.** The guard sat after `_sankoch_lock`'s AGNOS early return, so on AGNOS the reset was dead
+  code. It now runs first on every target.
+- The 2.8.0 review found two more gaps, both fixed before the cut:
+  - the gate's first AGNOS check was defeated by those new direct guard calls;
+  - a failed 8-byte canary alloc silently disarmed detection.
+
+**Why not `#ifdef` module markers.** They work in both the include chain and a distlib concatenation
+(probed under 6.6.4). But cycc has one 16-entry `#define` table per compile, shared with the consumer,
+and 3 entries are compiler predefines. `lib/sigil.cyr` alone spends 7, so eight sankoch markers would
+break every consumer that also pulls sigil. Upstream issue
+`cyrius/docs/development/issues/2026-09-16-sankoch-preprocessor-flag-table-16-entries-no-dedup.md`.

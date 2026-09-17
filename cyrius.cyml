@@ -1,11 +1,11 @@
 [package]
 name = "sankoch"
 version = "${file:VERSION}"
-description = "Lossless compression + archive library — LZ4, DEFLATE, zlib, gzip, xz, bzip2, zstd, tar"
+description = "Lossless compression + archive library — LZ4, DEFLATE, zlib, gzip, xz, bzip2, zstd, Brotli (decode), tar"
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/sankoch"
 language = "cyrius"
-cyrius = "6.6.2"
+cyrius = "6.6.4"
 
 [build]
 entry = "src/lib.cyr"
@@ -37,6 +37,8 @@ modules = [
     "src/xz.cyr",
     "src/bzip2.cyr",
     "src/zstd.cyr",
+    "src/brotli_dict.cyr",
+    "src/brotli.cyr",
     "src/tar.cyr",
     "src/zip.cyr",
     "src/zip_methods.cyr",
@@ -80,6 +82,7 @@ modules = [
     "src/deflate.cyr",
     "src/zlib.cyr",
     "src/runtime.cyr",
+    "src/reset_zlib.cyr",
 ]
 
 # --- Per-codec DECODE profiles (2.5.1) --------------------------------------
@@ -89,6 +92,12 @@ modules = [
 # [lib.zlib]); `cyrius distlib <name>` → dist/sankoch-<name>.cyr. Closures
 # verified by compiling <modules> + the codec entry with no undefined sankoch
 # symbols (see the 2.5.1 CHANGELOG).
+#
+# 2.8.0: every alloc-bearing profile ends `runtime.cyr, reset_<name>.cyr` — the
+# second file defines that bundle's `_sankoch_reset_tables` over exactly the
+# memoizing modules listed above it (rule: src/runtime.cyr). The closure is now
+# proven by LINKING: scripts/profile-link-gate.sh builds and runs a probe against
+# every profile's committed bundle, and fails on a profile with no probe.
 
 # `[lib.zstd]` — the RFC-8878 zstd decoder, fully self-contained (its own bit
 # reader / FSE / Huffman; no checksum/deflate/runtime). The smallest useful
@@ -99,6 +108,7 @@ modules = [
     "src/types.cyr",
     "src/zstd.cyr",
     "src/runtime.cyr",
+    "src/reset_zstd.cyr",
 ]
 
 # `[lib.bzip2]` — bzip2 decode (BWT + Huffman + MTF). Needs the bzip2 CRC + the
@@ -110,6 +120,7 @@ modules = [
     "src/checksum.cyr",
     "src/bzip2.cyr",
     "src/runtime.cyr",
+    "src/reset_bzip2.cyr",
 ]
 
 # `[lib.xz]` — .xz (LZMA2) decode. Needs lz77 (match model) + crc32/crc64.
@@ -121,6 +132,7 @@ modules = [
     "src/lz77.cyr",
     "src/xz.cyr",
     "src/runtime.cyr",
+    "src/reset_xz.cyr",
 ]
 
 # `[lib.gzip]` — gzip/DEFLATE decode (the deflate closure + crc32). Like
@@ -137,6 +149,7 @@ modules = [
     "src/deflate.cyr",
     "src/gzip.cyr",
     "src/runtime.cyr",
+    "src/reset_gzip.cyr",
 ]
 
 # `[lib.zip]` — the PKZIP `.zip` container (2.6.0): in-memory reader + writer for
@@ -156,6 +169,7 @@ modules = [
     "src/deflate.cyr",
     "src/zip.cyr",
     "src/runtime.cyr",
+    "src/reset_zip.cyr",
 ]
 
 # `[lib.zipall]` — ZIP with EVERY method sankoch owns (2.6.1): store / DEFLATE plus
@@ -179,6 +193,7 @@ modules = [
     "src/zip.cyr",
     "src/zip_methods.cyr",
     "src/runtime.cyr",
+    "src/reset_zipall.cyr",
 ]
 
 # `[lib.tar]` — the sovereign tar cursor + every envelope its `tar_open_auto`
@@ -201,6 +216,41 @@ modules = [
     "src/zstd.cyr",
     "src/tar.cyr",
     "src/runtime.cyr",
+    "src/reset_tar.cyr",
+]
+
+# `[lib.brotli]` — RFC 7932 Brotli DECODE (2.8.0). Self-contained: its own bit reader,
+# prefix codes and static dictionary; no checksum or deflate modules. The ~123 KB
+# dictionary literal lives in brotli_dict.cyr, which only this profile, [lib.woff] and
+# [lib] carry. Needs the sankoch alloc/mutex runtime for its lazy workspace.
+[lib.brotli]
+modules = [
+    "src/types.cyr",
+    "src/brotli_dict.cyr",
+    "src/brotli.cyr",
+    "src/runtime.cyr",
+    "src/reset_brotli.cyr",
+]
+
+# `[lib.woff]` — web-font containers (2.8.0): WOFF 1.0 (zlib per table) + WOFF2 (Brotli).
+# rekha's profile. ONE sankoch bundle per program (src/runtime.cyr), so the two codecs ship
+# as one closure: the [lib.zlib] module list plus the Brotli modules. Keep the zlib part in
+# step with [lib.zlib].
+[lib.woff]
+modules = [
+    "src/types.cyr",
+    "src/xxhash32.cyr",
+    "src/checksum.cyr",
+    "src/bitreader.cyr",
+    "src/bitwriter.cyr",
+    "src/huffman.cyr",
+    "src/lz77.cyr",
+    "src/deflate.cyr",
+    "src/zlib.cyr",
+    "src/brotli_dict.cyr",
+    "src/brotli.cyr",
+    "src/runtime.cyr",
+    "src/reset_woff.cyr",
 ]
 
 [deps]

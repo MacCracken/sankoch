@@ -1,6 +1,8 @@
 # A Brotli decoder (RFC 7932), decode-only, as a `[lib.brotli]` profile — for rekha's WOFF2
 
-**Status:** 🟡 **OPEN — a capability request.** The roadmap Backlog already names the trigger this
+**Status:** ✅ **SHIPPED (2.8.0)**, 2026-09-16. See *What shipped* at the end and
+[ADR 0001](../../../adr/0001-brotli-decoder-placement.md).
+**Original status:** 🟡 OPEN — a capability request. The roadmap Backlog already names the trigger this
 filing meets: *"Brotli (new codec) … land it when a web-serving / **font consumer** needs it."*
 **Filed:** 2026-09-15, by **rekha** (the outline-font library; its v0.4.0 roadmap lists WOFF/WOFF2).
 **Placement:** a new `src/brotli.cyr` (+ the RFC 7932 Appendix A dictionary as a data module), a
@@ -52,7 +54,7 @@ transform, which shrinks the Brotli input further:
 
 ## Not asked for
 
-- **Encode.** rekha only reads fonts. (A Brotli encoder is a separate, later sankoch question.)
+- **Encode.** rekha only reads fonts. (Since scheduled as 2.8.1; see *What shipped*.)
 - **Streaming.** WOFF2 hands over one complete stream with a known output size.
 - **Large-window Brotli** (the non-RFC 30-bit extension). WOFF2 uses standard RFC 7932 streams.
 
@@ -72,3 +74,27 @@ rekha's v0.4.0 line proceeds without waiting: cmap formats 12/6/0, WOFF 1.0 over
 `[lib.zlib]`, CFF (`OTTO`) outlines, and the WOFF2 **container + glyf/loca transform** reader written
 and tested against transformed-but-uncompressed tables — so the only missing piece when this lands is
 the one call to `brotli_decompress`.
+
+## What shipped (2.8.0)
+
+| Need | Shipped |
+|---|---|
+| 1. Batch decode into a caller buffer | `brotli_decompress(src, src_len, dst, dst_cap)` → bytes or `0 - ERR_*`, and `decompress(FORMAT_BROTLI, …)` (`FORMAT_BROTLI = 9`). |
+| 2. Fail-closed output ceiling | `brotli_decompress_capped(…, max_output)`, same argument rules as `zlib_decompress_capped`. The bound is checked at every meta-block header, so a bomb fails in O(1) and never returns a truncated success. The tighter of `dst_cap` and the ceiling reports first, as with zlib. |
+| 3. Hostile-input hardening, bounded work | Truncated, invalid-code, out-of-range-distance, bad-dictionary-reference, bad-`WBITS` and malformed-metadata cases all fail closed. Prefix codes are checked complete at build time. The command loop has a liveness guard, and the adversarial-IMTF work is bounded in T12. Evidence: `fuzz/fuzz_brotli.fcyr` with guard-page src/dst; a 22,042-stream differential against `brotli -d` and a strict Python decoder (0 mismatches). |
+| 4. The full format | All of RFC 7932 including errata 6977: context modes, block switching, the 122,784-byte dictionary and 121 transforms, WBITS 10..24. LiberationSans `-q 11 -w 22` (169,278 B) decodes byte-exact. |
+| 5. `[lib.brotli]` profile | `dist/sankoch-brotli.cyr` = types + dictionary + decoder + runtime + `reset_brotli.cyr`. No other codec profile carries the dictionary. |
+
+**Deviations.**
+
+- **`[lib.woff]` was added** (the `[lib.zlib]` closure + Brotli). rekha reads WOFF 1.0 (zlib) and
+  WOFF2 (Brotli) in one program, and two sankoch profile bundles cannot share a program
+  ([architecture 003](../../../architecture/003-per-profile-reset-dispatch.md)). rekha should use
+  `[lib.woff]`, or `[lib.brotli]` for WOFF2 only.
+- **Brotli is also in the full bundle**, and with cycc's current DCE its dictionary data is kept even
+  by consumers that never call it. The measured cost and the upstream issue are in ADR 0001.
+- **Bytes after the final padding are rejected** (`ERR_CORRUPT_DATA`), as `brotli -d` does. A WOFF2
+  reader must pass exactly the compressed stream's length.
+- **Large Window Brotli** is rejected with `ERR_UNSUPPORTED_FORMAT`, where `brotli -d` accepts it.
+- **Encode** was not asked for here. It is scheduled as **2.8.1 — Brotli encoder**
+  ([roadmap](../../roadmap.md)).

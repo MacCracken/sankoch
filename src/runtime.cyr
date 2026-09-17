@@ -1,10 +1,9 @@
 # runtime.cyr — sankoch's shared runtime seam: the API lock + the alloc seam.
 #
 # Extracted from lib.cyr (2.4.9) so a distlib PROFILE can pull the helpers every
-# alloc-bearing codec funnels through WITHOUT lib.cyr's format-dispatch API and
-# `_sankoch_reset_tables` (which references every codec's lazy globals, incl.
-# `_lz4_htab` / gzip / xz / bzip2 — undefined in a lean single-codec profile).
-# The full `[lib]` still includes both; `[lib.zlib]` includes just this.
+# alloc-bearing codec funnels through WITHOUT lib.cyr's format-dispatch API.
+# The full `[lib]` still includes both; `[lib.zlib]` includes just this (plus its
+# `src/reset_zlib.cyr` dispatcher — see "Registering a module's reset" below).
 #
 # All mutable de/compression state (bit I/O, hash + Huffman tables, symbol
 # buffers) lives behind a single mutex so concurrent callers serialize on API
@@ -35,16 +34,76 @@ var _sankoch_mtx = 0;
 # happen to write exactly SANKOCH_ARENA_MAGIC at exactly that offset. That is a
 # 1-in-2^64 coincidence and it is the same bargain every guard value in systems
 # software makes. It is named here rather than left implicit.
+#
+# Stranded canary (2.8.0): alloc_reset() zeroes only the REWINDABLE region — the
+# first chunk on Linux/AGNOS, the one reserve on macOS/Windows. A caller that has
+# already filled that region before sankoch's first call gets a canary from a later
+# chunk (or a large-object mapping) that no reset ever zeroes, so the magic check
+# alone would never fire again. Measured before this fix: alloc(256 MB + 64), one
+# compress, alloc_reset(), gzip compress, alloc_reset(), then a caller buffer —
+# 475,882 of the caller's bytes overwritten, or a hang in mutex_lock on a stale
+# _sankoch_mtx. `_sankoch_canary_stranded` closes it, exactly: a canary lands
+# outside the rewindable region only while the bump pointer is past it, and the
+# bump pointer comes back into it only through alloc_reset(). Tables memoized in
+# the same epoch as a stranded canary were allocated after it, so they are outside
+# the region too and stay exclusively ours until that reset is observed.
+#
+# This reads the stdlib allocator's own bookkeeping (_heap_base/_heap_ptr/_heap_end,
+# plus _heap_first_base/_heap_first_end where chunks exist). Those names are private
+# to lib/alloc*.cyr; if the stdlib renames them this file stops compiling, which is
+# the failure we want rather than a silently weaker guard.
 # ---------------------------------------------------------------------------
 var _sankoch_canary = 0;
+var _sankoch_canary_lost = 0;   # 1: the last arm's alloc failed (see _sankoch_arm_canary)
 var SANKOCH_ARENA_MAGIC = 0x534E4B4152454E41;   # "SNKARENA"
 
 # Re-arm after a (re)build. Separate from the check so the check stays a
 # straight-line fast path.
+#
+# A failed arm must not read as "first call ever" (2.8.0 review): the same call goes on to
+# memoize tables, and the next guard would arm without resetting, so an alloc_reset() in
+# between went unseen (measured: a wrong crc32 after a fault-injected arm). Two defences:
+# the canary bypasses the _sankoch_alloc fault-injection seam (an injected OOM tests error
+# paths; a disarmed detector is not one), and a genuine failure sets _sankoch_canary_lost,
+# which makes the next guard treat the unarmed epoch as reset. Residual: a real 8-byte OOM
+# that recovers within the same call resets tables under that call's feet.
 fn _sankoch_arm_canary(): i64 {
-    _sankoch_canary = _sankoch_alloc(8);
-    if (_sankoch_canary != 0) { store64(_sankoch_canary, SANKOCH_ARENA_MAGIC); }
+    _sankoch_canary = alloc(8);
+    if (_sankoch_canary == 0) {
+        _sankoch_canary_lost = 1;
+        return 0;
+    }
+    store64(_sankoch_canary, SANKOCH_ARENA_MAGIC);
+    _sankoch_canary_lost = 0;
     return 0;
+}
+
+# 1 when the canary sits outside the region alloc_reset() zeroes AND the bump
+# pointer has since returned to that region — which only alloc_reset() does.
+fn _sankoch_canary_stranded(): i64 {
+    var stranded = 0;
+    #ifdef CYRIUS_TARGET_LINUX
+    if (_sankoch_canary < _heap_first_base || _sankoch_canary >= _heap_first_end) {
+        if (_heap_base == _heap_first_base) { stranded = 1; }
+    }
+    #endif
+    #ifdef CYRIUS_TARGET_AGNOS
+    if (_sankoch_canary < _heap_first_base || _sankoch_canary >= _heap_first_end) {
+        if (_heap_base == _heap_first_base) { stranded = 1; }
+    }
+    #endif
+    #ifdef CYRIUS_TARGET_MACOS
+    # One reserve; an alloc that does not fit gets its own never-recycled mapping.
+    if (_sankoch_canary < _heap_base || _sankoch_canary >= _heap_end) {
+        if (_heap_ptr + 8 <= _heap_end) { stranded = 1; }
+    }
+    #endif
+    #ifdef CYRIUS_TARGET_WIN
+    if (_sankoch_canary < _heap_base || _sankoch_canary >= _heap_end) {
+        if (_heap_ptr + 8 <= _heap_end) { stranded = 1; }
+    }
+    #endif
+    return stranded;
 }
 
 # Call before touching ANY lazy global. Returns 0 always; its effect is that
@@ -52,21 +111,86 @@ fn _sankoch_arm_canary(): i64 {
 # still owns or is 0 (so the ordinary lazy-init guards rebuild it).
 fn _sankoch_arena_guard(): i64 {
     if (_sankoch_canary == 0) {
-        _sankoch_arm_canary();
-        return 0;
+        if (_sankoch_canary_lost == 0) {   # first call ever: nothing is memoized yet
+            _sankoch_arm_canary();
+            return 0;
+        }
+        # else: tables memoized while unarmed — treat as a reset (below)
+    } else {
+        if (load64(_sankoch_canary) == SANKOCH_ARENA_MAGIC) {
+            if (_sankoch_canary_stranded() == 0) { return 0; }
+        }
     }
-    if (load64(_sankoch_canary) == SANKOCH_ARENA_MAGIC) { return 0; }
     # The arena was reset under us. Drop every memoized pointer — including the
     # mutex, which is why this must run BEFORE _sankoch_lock touches it — and
     # re-arm so the next call takes the fast path.
     _sankoch_mtx = 0;
-    _sankoch_reset_tables();
+    _sankoch_reset_tables();   # this bundle's dispatcher — see the rule below
     _sankoch_canary = 0;
     _sankoch_arm_canary();
     return 0;
 }
 
+# ---------------------------------------------------------------------------
+# Registering a module's reset (2.8.0)
+#
+# `_sankoch_reset_tables` is NOT defined here, and must not be: it is a
+# per-bundle dispatcher, and this file is in every bundle but the kernel-safe
+# core. 2.7.10–2.7.15 called it from here while only lib.cyr defined it, so
+# every profile bundle (zlib/gzip/xz/bzip2/zstd/tar/zip/zipall) carried the call
+# without the function and cycc refused to emit any consumer that reached a
+# profile entry ("1 reachable undefined function(s)"). The definitions:
+#
+#   [lib]           src/lib.cyr            — every memoizing module
+#   [lib.<name>]    src/reset_<name>.cyr   — only the modules in that profile
+#
+# THE RULE: a module that memoizes an arena pointer (or a flag gating one) must
+# define `_<module>_reset_tables` at the end of the module, zeroing exactly its
+# own globals, and register it here — i.e. call it from lib.cyr's
+# `_sankoch_reset_tables` AND from `src/reset_<name>.cyr` of every profile that
+# lists the module. A new profile lists its own `src/reset_<name>.cyr` last,
+# after runtime.cyr (as [lib.brotli] and [lib.woff] do).
+#
+# `scripts/profile-link-gate.sh` enforces both halves on the committed dist/
+# bundles: a call to a reset outside the closure fails the link probe, and a
+# module reset the bundle DEFINES but its dispatcher does not CALL fails the
+# registration check. The gate does NOT prove that a module reset zeroes every
+# global its module memoizes — a probe only notices the ones its calls touch.
+# The per-global safety net is the inventory cell in tests/tcyr/arena_reset.tcyr:
+# a new lazy global goes into the module's reset AND that cell.
+#
+# ONE sankoch bundle per program. Profile bundles are closures, not layers: two of
+# them in one program (sankoch-zlib.cyr + sankoch-zstd.cyr, or any profile + the
+# full bundle) each carry runtime.cyr and their own `_sankoch_reset_tables`. cycc
+# accepts that with only "duplicate fn" warnings, but a duplicate `var` is a
+# SEPARATE global (measured under 6.6.4) and a call binds to whichever definition
+# precedes it, so one bundle's arena guard runs the other bundle's dispatcher and
+# the other's tables survive alloc_reset() — measured: zlib+zstd segfaults after a
+# reset, in either include order. Need two codecs? Use the smallest profile that
+# lists both (tar/zipall carry every codec) or the full bundle.
+#
+# Reserved names: `_sankoch_*` and `_<module>_reset_tables` (checksum, huffman,
+# lz77, lz4, deflate, xz, bzip2, zstd, brotli). A consumer fn with one of these names
+# replaces the bundle's with only a "duplicate fn" warning.
+#
+# Why per-profile files and not `#define SANKOCH_HAS_<MODULE>` markers with
+# `#ifdef`-guarded calls here (which do work, in both the include chain and a
+# distlib concatenation — probed under 6.6.4): cycc's preprocessor has one
+# 16-entry flag table per COMPILE, shared with the consumer, never deduplicated,
+# and with no #undef. 3 entries are compiler predefines on x86_64 Linux, so a
+# program gets 13; lib/sigil.cyr alone spends 7 (measured: sigil + 7 more
+# defines fails "too many preprocessor #define/flag entries (max 16)"). Eight
+# sankoch markers would have broken every consumer that also pulls sigil.
+# ---------------------------------------------------------------------------
+
 fn _sankoch_lock(): i64 {
+    # FIRST, on every target: _sankoch_mtx is itself an arena pointer, so after an
+    # alloc_reset() it is dangling and mutex_lock would operate on memory owned by
+    # someone else. Before 2.8.0 this call sat inside the #ifndef AGNOS branch, so
+    # on AGNOS (whose alloc_reset rewinds and zeroes exactly like Linux) no reset
+    # dispatcher was reachable — DCE listed _sankoch_reset_tables as dead. The guard
+    # takes no lock and makes no syscall beyond an 8-byte alloc.
+    _sankoch_arena_guard();
     #ifdef CYRIUS_TARGET_AGNOS
     # AGNOS userland is single-threaded — no lock needed. No-op here so sankoch
     # never references mutex_* on agnos, making it self-sufficient even for a
@@ -77,10 +201,6 @@ fn _sankoch_lock(): i64 {
     return 0;
     #endif
     #ifndef CYRIUS_TARGET_AGNOS
-    # BEFORE the mutex is touched: _sankoch_mtx is itself an arena pointer, so
-    # after an alloc_reset() it is dangling and mutex_lock would operate on
-    # memory owned by someone else.
-    _sankoch_arena_guard();
     if (_sankoch_mtx == 0) {
         _sankoch_mtx = mutex_new();
     }

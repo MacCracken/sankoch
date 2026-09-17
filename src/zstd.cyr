@@ -2618,7 +2618,17 @@ fn _ze_fse_encode_weights(ct, weights, m, log) {
 # byte length, or -1 if it doesn't apply / doesn't fit a <128 header byte.
 var _ze_wcnt = 0; var _ze_wnorm = 0;
 fn _ze_emit_fse_weights(maxsym, maxbits) {
-    if (_ze_wcnt == 0) { _ze_wcnt = _sankoch_alloc(16 * 8); _ze_wnorm = _sankoch_alloc(16 * 8); }
+    if (_ze_wcnt == 0) {
+        _ze_wcnt = _sankoch_alloc(16 * 8); _ze_wnorm = _sankoch_alloc(16 * 8);
+        # 2.8.0 — unchecked until this pair joined `_zstd_reset_tables`, which is what
+        # lets the OOM sweep reach it: a faulted alloc then stored through NULL. Unlatch
+        # the pair (M-8), raise the sticky flag so _ze_encode reports ERR_OOM like every
+        # other lazy init, and decline.
+        if (_ze_wcnt == 0 || _ze_wnorm == 0) {
+            _ze_wcnt = 0; _ze_wnorm = 0; _ze_oom = 1;
+            return 0 - 1;
+        }
+    }
     var alpha = maxbits + 1;
     # weight-value counts over the transmitted weights _ze_wt[0..maxsym)
     var w = 0;
@@ -3055,4 +3065,50 @@ fn zstd_decompress(src, src_len, dst, dst_cap) {
     var r = _zstd_decompress_inner(src, src_len, dst, dst_cap);
     _sankoch_unlock();
     return r;
+}
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# ---------------------------------------------------------------------------
+fn _zstd_reset_tables(): i64 {
+    # Decoder: literals scratch, Huffman decode table, the 2.5.10 pools. The
+    # previous-table slots (`_z_huff_ready`, `_z_fse_*`) are frame-scoped and point
+    # into the pools, so they go with them.
+    _z_lit = 0; _z_huff_sym = 0; _z_huff_nb = 0; _z_huff_ready = 0;
+    _z_fse_ll = 0; _z_fse_of = 0; _z_fse_ml = 0;
+    _z_pool_tab = 0; _z_pool_next = 0; _z_pool_scratch = 0;
+    _z_pool_weight = 0; _z_pool_wscr = 0; _z_pool_wtab = 0; _z_pool_rd = 0;
+    # Encoder: pooled FSE ctables, the cached predefined tables, the sticky OOM flag.
+    _ze_ctp = 0; _ze_oom = 0;
+    _ze_ct_ll = 0; _ze_ct_of = 0; _ze_ct_ml = 0;
+    # Huffman encode slabs, gated by `_ze_huff_ready`.
+    _ze_huff_ready = 0;
+    _ze_cnt = 0; _ze_nb = 0; _ze_wt = 0; _ze_code = 0; _ze_tmp = 0; _ze_tmp2 = 0;
+    _ze_hw = 0; _ze_hp = 0; _ze_ha = 0; _ze_hsym = 0;
+    # LZ sequence arrays + hash head/chain/shadow, gated by `_ze_lz_ready`.
+    _ze_lz_ready = 0;
+    _zs_ll = 0; _zs_ml = 0; _zs_off = 0; _zs_ofv = 0;
+    _zs_llc = 0; _zs_ofc = 0; _zs_mlc = 0; _zs_lit = 0;
+    _ze_head = 0; _ze_prev = 0; _ze_head_save = 0;
+    # Adaptive sequence-table plan, gated by `_ze_plan_ready`.
+    _ze_plan_ready = 0;
+    _ze_pmode = 0; _ze_pct = 0; _ze_plog = 0; _ze_pnorm = 0; _ze_palpha = 0; _ze_prle = 0;
+    _ze_phist = 0; _ze_ncbuf = 0;
+    # MISSED by the 2.7.10 list — both measured writing through a caller's buffer
+    # after alloc_reset() (tests/tcyr/arena_reset.tcyr, against 2.7.15):
+    # the FSE weight-description scratch (a pair, guarded on `_ze_wcnt`; 14 words
+    # clobbered at L6) and the level >= 7 optimal-parser slabs, gated by
+    # `_zo_alloced` (712 words clobbered at L9).
+    _ze_wcnt = 0; _ze_wnorm = 0;
+    _zo_alloced = 0;
+    _zo_price = 0; _zo_off = 0; _zo_mlen = 0; _zo_litlen = 0;
+    _zo_rep0 = 0; _zo_rep1 = 0; _zo_rep2 = 0; _zo_bof = 0;
+    _zo_mt_len = 0; _zo_mt_ofb = 0; _zo_mt_boff = 0;
+    _zo_litfreq = 0; _zo_llfreq = 0; _zo_mlfreq = 0; _zo_offreq = 0;
+    return 0;
 }

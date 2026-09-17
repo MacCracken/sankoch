@@ -78,24 +78,38 @@ and it is the same bargain every guard value in systems software makes.
 
 ## Where the check lives
 
-Two places, and both are necessary:
+2.7.10 put it in two places. 2.8.0 widened both and added a third kind of site:
 
-- **`_sankoch_lock()`, before `_sankoch_mtx` is touched.** Every public API
-  entry goes through the lock, and the mutex pointer is itself a candidate for
-  being dangling — so the guard cannot run after it.
-- **`crc32_init_table()`.** Consumers call it directly, without the lock;
-  chitra re-inits per PNG decode. An entry point reachable without the lock
-  carries its own guard.
+- **`_sankoch_lock()`, before `_sankoch_mtx` is touched, on every target.** Every
+  public API entry goes through the lock, and the mutex pointer can itself be
+  dangling, so the guard cannot run after it. Before 2.8.0 it sat after the
+  AGNOS early return, which made the reset dead code on AGNOS.
+- **Every memoizing public entry reachable without the lock.** That is
+  `crc32_init_table()` (chitra re-inits per PNG decode) and, since 2.8.0,
+  `crc64_init_table` / `crc64_init`, `crc32_bzip2_init_table`, `lz77_init` and
+  the `huff_build_*` family. Before 2.8.0 those overwrote up to 524,288 caller
+  bytes after a reset.
+- **The stranded-canary predicate (2.8.0).** `alloc_reset()` zeroes only the
+  first chunk. A canary placed in a later chunk (because the caller filled the
+  first one before sankoch's first call) is treated as reset once the bump
+  pointer is back in the first chunk. `arena_reset.tcyr` pins both directions.
 
-When the guard fires it drops every memoized pointer (via
-`_sankoch_reset_tables()`, no longer test-only) and re-arms the canary, so the
-ordinary lazy-init guards rebuild from scratch on the next use.
+When the guard fires it drops every memoized pointer and re-arms the canary, so
+the ordinary lazy-init guards rebuild from scratch on the next use. The drop goes
+through `_sankoch_reset_tables()`, which since 2.8.0 is the **bundle's**
+dispatcher; see [003](003-per-profile-reset-dispatch.md). A canary whose 8-byte
+alloc fails no longer disarms detection: the next guard treats the unarmed epoch
+as a reset.
 
 ## Consequence for anyone adding a lazy global
 
-Add it to `_sankoch_reset_tables()`. That function is no longer test-only
-scaffolding — it is the recovery path, and a pointer missing from it is a
-pointer that survives a reset it should not have survived. The pattern to be
+Follow the registration rule in [003](003-per-profile-reset-dispatch.md): zero it
+in its module's `_<module>_reset_tables`, make sure that reset is called from
+`lib.cyr` and from every `src/reset_<profile>.cyr` whose profile lists the module,
+and add it to the `arena_reset.tcyr` inventory cell. That reset is the recovery
+path, not test scaffolding, and a pointer missing from it survives a reset it
+should not have survived. 2.7.10's single list missed xz BT4 and zstd tables
+(229,370 caller words overwritten, measured on 2.7.15 sources). The pattern to be
 suspicious of is any `if (ptr == 0)` guard over an arena allocation: correct
 before 2.7.10 only by accident, correct after it only because something zeroes
 the pointer first.
@@ -106,4 +120,5 @@ the pointer first.
   against 2.7.9.
 - `src/runtime.cyr` — `_sankoch_arena_guard`, the canary, and the reasoning at
   the point of use.
-- CHANGELOG 2.7.10.
+- [003](003-per-profile-reset-dispatch.md) — the per-bundle dispatcher and the registration rule.
+- CHANGELOG 2.7.10, 2.8.0.

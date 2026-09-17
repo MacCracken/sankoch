@@ -23,9 +23,9 @@ If the decision could credibly have gone the other way, write the ADR. A reader 
 
 ## Index
 
-No ADRs filed yet. Sankoch's load-bearing decisions are currently codified in `CLAUDE.md` (zero deps, no FFI, no floating point, all mutable state behind one mutex, etc.) and in the audit history. The first ADR will land when a new decision is made that has competing alternatives worth recording.
+- [`0001-brotli-decoder-placement.md`](0001-brotli-decoder-placement.md) (Accepted, 2.8.0): Brotli decode in the full bundle plus `[lib.brotli]` / `[lib.woff]`; the dictionary as a generated literal; trailing bytes rejected; the measured DCE cost.
 
-Some candidates that could earn an ADR retroactively if any of them surfaces a future reader asking *why* again:
+Older load-bearing decisions (zero deps, no FFI, no floating point, all mutable state behind one mutex) are codified in `CLAUDE.md` and the audit history. Some candidates that could earn an ADR retroactively if any of them surfaces a future reader asking *why* again:
 
 - *Why is checksum code (Adler-32 / CRC-32 / xxHash32) inlined in sankoch instead of pulled from sigil?* — Reason: 30-line primitives that live inside the compression-format specs anyway; sigil dependency would invert the layering.
 - *Why does the streaming decoder use a hold/bits bit accumulator with a bridge to `_huff_decode` instead of a per-symbol rewind?* — Reason: documented in CHANGELOG 2.3.0 bite-2; the bridge approach avoids per-call alloc and the speculative-rewind alternative would have required a carry-over tail buffer anyway.

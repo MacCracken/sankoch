@@ -84,25 +84,40 @@ jobs:
       - name: Vet
         run: cyrius vet src/lib.cyr
 
+      - name: Verify brotli dictionary module
+        # src/brotli_dict.cyr is GENERATED from the committed RFC 7932 dictionary. The generator
+        # pins its sha256 / CRC-32 and refuses to emit a literal the cyrius string-interning bug
+        # could alias; this step proves the committed module is exactly its output.
+        run: |
+          mkdir -p build
+          python3 scripts/brotli_dict2cyr.py docs/sources/brotli/dictionary.bin build/brotli_dict.regen.cyr
+          cmp build/brotli_dict.regen.cyr src/brotli_dict.cyr || { echo "src/brotli_dict.cyr is stale/hand-edited"; exit 1; }
+
       - name: Verify dist bundles are in sync with src/
         # `cyrius distlib [<profile>]` reads [lib[.<profile>].modules] from
         # cyrius.cyml and concatenates the listed files into
         # dist/sankoch[-<profile>].cyr. CI regenerates the full bundle + every
         # profile and fails if any drifts from the committed copy.
+        # The profile list comes from cyrius.cyml (the link gate's parser), never
+        # from this file: zip/zipall were omitted from a hand-kept list until
+        # 2.7.14, and 2.8.0's review showed an unlisted [lib.<name>] passing both
+        # gates with a stale bundle.
         run: |
-          cyrius distlib
-          # Every profile in cyrius.cyml, not a subset. zip/zipall were
-          # omitted until 2.7.14 even though both bundle src/deflate.cyr,
-          # so a decoder fix could regenerate clean in the seven checked
-          # bundles while those two silently shipped the old code.
-          for prof in core zlib zstd bzip2 xz gzip tar zip zipall; do
-            cyrius distlib "$prof"
-          done
+          profiles=$(bash scripts/profile-link-gate.sh --list-profiles) || exit 1
           fail=0
-          for bundle in dist/sankoch.cyr dist/sankoch-core.cyr dist/sankoch-zlib.cyr \
-                        dist/sankoch-zstd.cyr dist/sankoch-bzip2.cyr dist/sankoch-xz.cyr \
-                        dist/sankoch-gzip.cyr dist/sankoch-tar.cyr \
-                        dist/sankoch-zip.cyr dist/sankoch-zipall.cyr; do
+          for prof in $profiles; do
+            if [ "$prof" = full ]; then
+              cyrius distlib; bundle=dist/sankoch.cyr
+            else
+              cyrius distlib "$prof"; bundle="dist/sankoch-$prof.cyr"
+            fi
+            # `git diff --quiet` exits 0 on an UNTRACKED path, so a bundle that was never
+            # committed (or is missing its .gitignore re-include) would pass silently.
+            if ! git ls-files --error-unmatch "$bundle" >/dev/null 2>&1; then
+              echo "ERROR: $bundle is not tracked. Add its !dist/ re-include to .gitignore and commit it."
+              fail=1
+              continue
+            fi
             if ! git diff --quiet "$bundle"; then
               echo "ERROR: $bundle is stale. Run 'cyrius distlib [<profile>]' and commit the result."
               git --no-pager diff "$bundle" | head -40
@@ -111,6 +126,24 @@ jobs:
           done
           [ $fail -eq 0 ] || exit 1
           echo "dist bundles match src/"
+
+      - name: Profile link gate
+        # The dist gate above proves each bundle is CURRENT; this proves each one LINKS
+        # and RUNS. For every profile in cyrius.cyml it builds a probe (the [deps] stdlib +
+        # the committed bundle) that calls real public entries, fails on ANY "undefined
+        # function" / "refusing to emit", decodes reference-CLI vectors, and re-runs after
+        # alloc_reset() with the old arena handed to a victim buffer. 2.7.10–2.7.15 shipped
+        # all eight alloc-bearing profiles unlinkable because only the byte gate existed.
+        # A profile with no probe in the script fails here.
+        run: bash scripts/profile-link-gate.sh
+
+      - name: NUL-free string literals
+        # cycc 6.6.4 can alias a string literal holding a NUL byte onto storage the next literal
+        # overwrites (upstream cyrius issue
+        # 2026-09-16-sankoch-string-literal-interning-aliases-overlapping-storage). Every literal in
+        # src/ programs/ tests/ fuzz/ and the link-gate probes must decode NUL-free; the generated
+        # src/brotli_dict.cyr is the only exemption (its generator proves it safe).
+        run: python3 scripts/nul-literal-gate.py
 
       - name: Build (DCE)
         run: |

@@ -27,7 +27,7 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   encoders serialize naturally.
 - **Reference-CLI compatibility**: LZ4F output is validated against
   `lz4 -dc`; zlib/gzip output against Python's `zlib.decompress`
-  and `gunzip`. Spec-divergent wire format is a correctness bug, not
+  and `gunzip`; Brotli decode against `brotli -d`. Spec-divergent wire format is a correctness bug, not
   just an interop inconvenience (caught v1.6.1 xxHash32 fix).
 
 ## Audit History
@@ -59,21 +59,24 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   memory-corruption, 2 DoS) plus a sibling OOB in `zstd_frame_content_size`
   — all fixed; new `fuzz/fuzz_zstd.fcyr` decode-survival harness added.
 
-Next periodic audit: the **P(-1) scaffold-hardening closeout** run
-before the next minor cut (none currently scheduled — the codec set is
-complete through 2.5.x). Most recent run:
-`docs/audit/2026-07-18-zstd-decoder-hardening.md` (2.5.6 zstd decoder
-hardening — 36 reachable OOB / memory-corruption / DoS issues found and
-fixed; decoder now fuzzed). Forward ladder in
+- `docs/audit/2026-07-19-pre-2.6.0.md` and `docs/audit/2026-07-20-zip-container.md` — the
+  2.5.9/2.5.10 and 2.6.4 P(-1) passes (codec surface, then the ZIP container).
+- `docs/audit/2026-09-16-2.8.0-brotli-and-reset.md` — 2.8.0 pre-release review of the new
+  Brotli decoder and the per-profile arena-reset seam: 0 HIGH · 4 MEDIUM · 15 LOW · 4 INFO, all
+  fixed before the cut (the mediums were test/gate blind spots, not decoder defects).
+
+Next periodic audit: the **2.8.x-closeout P(-1) pass** at the end of the 2.8.x line (the 2.7.x
+encoder surface, the Brotli decoder + encoder, the reset seam, the PCLMULQDQ CRC fold, the GPU
+texture encoder). Forward ladder in
 [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| 2.7.x   | Yes       |
-| 2.6.x   | Security fixes only |
-| < 2.6.0 | No — upgrade |
+| 2.8.x   | Yes       |
+| 2.7.x   | Security fixes only |
+| < 2.7.0 | No — upgrade |
 
 ⚠ If you compress inputs larger than 1 MiB through the one-shot
 `deflate_compress` / `zlib_compress` / `gzip_compress` path, upgrade to
@@ -81,4 +84,9 @@ fixed; decoder now fuzzed). Forward ladder in
 re-encoded up to 257 bytes at every 1 MiB block boundary and returned a
 stream longer than the input, with no error raised.
 
-**Last Updated**: 2026-08-23
+⚠ If your program calls the stdlib `alloc_reset()` while using sankoch, upgrade to **2.8.0**:
+2.7.10–2.7.15 could still write through caller-owned memory after a reset (xz, zstd, the unlocked
+table builders, a canary stranded outside the first arena chunk, and every AGNOS build), and every
+profile bundle except `core` failed to link.
+
+**Last Updated**: 2026-09-16

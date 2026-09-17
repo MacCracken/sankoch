@@ -97,13 +97,16 @@ jobs:
 
       - name: Regenerate bundles (full + all profiles)
         run: |
-          cyrius distlib
-          # All nine profiles — see the ci.yml note; zip/zipall carry the
-          # DEFLATE decoder and were previously left out of both the
-          # regeneration and the published artifacts.
-          for prof in core zlib zstd bzip2 xz gzip tar zip zipall; do
-            cyrius distlib "$prof"
+          # Every profile in cyrius.cyml (the link gate's parser) — see the ci.yml note.
+          profiles=$(bash scripts/profile-link-gate.sh --list-profiles) || exit 1
+          for prof in $profiles; do
+            if [ "$prof" = full ]; then cyrius distlib; else cyrius distlib "$prof"; fi
           done
+
+      - name: Profile link gate
+        # Mirror the CI gate on the bundles this release publishes: every profile must
+        # link and run a real call (including the alloc_reset path), not merely exist.
+        run: bash scripts/profile-link-gate.sh
 
       - name: Kernel-safe tripwire
         # Mirror the CI gate so a release tag can never ship a
@@ -119,11 +122,12 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           git archive --format=tar.gz --prefix="sankoch-${TAG}/" -o "sankoch-${TAG}-src.tar.gz" HEAD
-          cp dist/sankoch.cyr      "sankoch-${TAG}.cyr"
-          cp dist/sankoch-core.cyr "sankoch-${TAG}-core.cyr"
-          # per-codec decode profiles (2.5.1): consumers pull only what they need
-          for prof in zlib zstd bzip2 xz gzip tar zip zipall; do
-            cp "dist/sankoch-${prof}.cyr" "sankoch-${TAG}-${prof}.cyr"
+          cp dist/sankoch.cyr "sankoch-${TAG}.cyr"
+          # core + per-codec profiles (2.5.1): consumers pull only what they need.
+          # The list comes from cyrius.cyml, like the regeneration step.
+          for prof in $(bash scripts/profile-link-gate.sh --list-profiles); do
+            [ "$prof" = full ] && continue
+            cp "dist/sankoch-${prof}.cyr" "sankoch-${TAG}-${prof}.cyr" || exit 1
           done
           # Ship prebuilt binaries alongside source + bundles so
           # consumers can grab a statically-linked ELF per arch.

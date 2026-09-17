@@ -1321,3 +1321,27 @@ fn bzip2_compress(src, src_len, dst, dst_cap): i64 {
     _sankoch_unlock();
     return r;
 }
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# ---------------------------------------------------------------------------
+fn _bzip2_reset_tables(): i64 {
+    # Decode tables, gated by `_bz_tables_ready`.
+    _bz_tables_ready = 0;
+    _bz_limit = 0; _bz_base = 0; _bz_perm = 0; _bz_minlens = 0; _bz_len = 0;
+    _bz_selector = 0; _bz_selmtf = 0; _bz_inuse = 0; _bz_seq = 0; _bz_mtf = 0;
+    _bz_unzftab = 0; _bz_cftab = 0; _bz_tt = 0;
+    # Encode working buffers + MTF/Huffman tables, gated by `_bze_ready`.
+    _bze_ready = 0;
+    _bze_rle = 0; _bze_ptr = 0; _bze_tmp = 0; _bze_rank = 0; _bze_nrank = 0;
+    _bze_cnt = 0; _bze_lcol = 0; _bze_mtfv = 0;
+    _bze_efreq = 0; _bze_hlen = 0; _bze_hcode = 0; _bze_rfreq = 0;
+    _bze_sel = 0; _bze_selmtf = 0; _bze_yy = 0; _bze_unseq = 0; _bze_seq2 = 0;
+    _bze_inuse2 = 0; _bze_heap = 0; _bze_hwt = 0; _bze_hpar = 0;
+    return 0;
+}

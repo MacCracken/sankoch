@@ -164,6 +164,7 @@ fn lz77_rebase(delta): i64 {
 # every streaming encoder init, so the window_base for batch is always 0
 # (abs_pos == win_pos in batch mode — no behavior change vs pre-2.x).
 fn lz77_init(): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     if (_lz77_head == 0) {
         _lz77_head = _sankoch_alloc(262144);
         if (_lz77_head == 0) { return 0 - ERR_OOM; }
@@ -180,5 +181,19 @@ fn lz77_init(): i64 {
         i = i + 1;
     }
     _lz77_window_base = 0;
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# The 3-byte hash head + chain tables (a pair: lz77_init guards on the head).
+# ---------------------------------------------------------------------------
+fn _lz77_reset_tables(): i64 {
+    _lz77_head = 0; _lz77_prev = 0;
     return 0;
 }

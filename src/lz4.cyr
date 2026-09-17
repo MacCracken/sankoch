@@ -933,3 +933,17 @@ fn lz4f_dec_finish(ctx): i64 {
     _sankoch_unlock();
     return rc;
 }
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# The block encoder's match hash table.
+# ---------------------------------------------------------------------------
+fn _lz4_reset_tables(): i64 {
+    _lz4_htab = 0;
+    return 0;
+}

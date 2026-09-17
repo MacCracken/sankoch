@@ -1,0 +1,17 @@
+# reset_xz.cyr — the `[lib.xz]` profile's arena-reset dispatcher (2.8.0).
+#
+# `_sankoch_arena_guard` (runtime.cyr) calls `_sankoch_reset_tables` after it
+# detects an `alloc_reset()`. Every bundle must define that function over exactly
+# the memoizing modules it contains; this is the definition for
+# dist/sankoch-xz.cyr. Listed last in `[lib.xz]`, after runtime.cyr. The full
+# bundle's version is in src/lib.cyr. Registration rule: src/runtime.cyr.
+#
+# ONE sankoch bundle per program: including this profile alongside another sankoch
+# bundle leaves one bundle's tables live across alloc_reset() (runtime.cyr explains).
+# For several codecs use a profile that lists all of them, or dist/sankoch.cyr.
+fn _sankoch_reset_tables(): i64 {
+    _checksum_reset_tables();
+    _lz77_reset_tables();
+    _xz_reset_tables();
+    return 0;
+}

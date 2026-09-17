@@ -304,6 +304,7 @@ fn crc32_final(st): i64 {
 var crc64_table = 0;   # heap-allocated: 256 entries × 8 bytes
 
 fn crc64_init_table(): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     if (crc64_table == 0) {
         crc64_table = _sankoch_alloc(2048);   # 256 × 8
         if (crc64_table == 0) { return 0 - ERR_OOM; }
@@ -374,6 +375,7 @@ fn crc64_final(st): i64 {
 var crc32bz_table = 0;   # heap-allocated: 256 entries × 8 bytes
 
 fn crc32_bzip2_init_table(): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     if (crc32bz_table == 0) {
         crc32bz_table = _sankoch_alloc(2048);   # 256 × 8
         if (crc32bz_table == 0) { return 0 - ERR_OOM; }
@@ -546,4 +548,20 @@ fn xxhash32_final(st): i64 {
     h = (h * XXH32_PRIME3) & m;
     h = h ^ (h >> 16);
     return h;
+}
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# The slice-by-8 CRC-32 table, the CRC-64/XZ table, the bzip2 CRC-32 table.
+# ---------------------------------------------------------------------------
+fn _checksum_reset_tables(): i64 {
+    crc32_table = 0;
+    crc64_table = 0;
+    crc32bz_table = 0;
+    return 0;
 }

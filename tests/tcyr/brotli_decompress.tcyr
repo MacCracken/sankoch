@@ -1,0 +1,2450 @@
+# sankoch — Brotli (RFC 7932) decoder suite (2.8.0)
+#
+# T1  constant tables: every BSS table rendered in docs/sources/brotli/tables.txt's line format
+#     (comma-joined decimals) and CRC-32'd against the extractor's pinned value, plus the 128-entry
+#     WBITS pattern map run through the real stream-header routine.
+# T2  static dictionary integrity (CRC-32, FNV verify incl. a negative, geometry).
+#     Bit reader / symbol decoder unit cells.
+# T5  every tests/data/brotli/MANIFEST.tsv row: ok rows decode to the reference length + CRC-32
+#     through both entry points and fail closed one byte short; the exact-cap decodes run with src
+#     flush against a PROT_NONE page and 64 guard bytes after dst + out_len (no over-read, no
+#     over-write); reject rows return exactly their ERR_* class.
+# T6  output-cap parity with output_cap.tcyr (70,000-byte stream; 16 MiB ceiling streams built
+#     in memory and checked against CRC-32s from `brotli -dc` 1.2.0).
+# T7  every prefix of every small ok row is exactly ERR_CORRUPT_DATA.
+# T8  single-bit-flip digests (#flip rows) — see scripts/brotli-manifest.py.
+# T9  trailing bytes after a valid stream are ERR_CORRUPT_DATA.
+# T3  prefix codes: 2,000 random complete codes built directly and through the complex-code
+#     reader (identical tables, zlib `enough` table bounds, every symbol decodes with its length); exact-fit
+#     capacity cells; simple codes in every order; code-length / repeat / space checks; context
+#     maps (RLE, IMTF, random property sweep); block switching; the distance LUT.
+# T10 header-only frame loop (_brd_decode with header_only = 1): every row needing the command loop
+#     parses its first compressed header, and each prefix of a small one fails exactly until that
+#     header is complete; workspace OOM is ERR_OOM with no latch.
+# T11 command loop: _brd_copy against a bytewise forward copy for every distance 1..24 and
+#     length 0..40 plus long copies, with guard bytes (no write past pos + len); compressed-stream
+#     output caps (16 MiB bomb, 1 MiB copy). The manifest's `cmds` rows (block switching in L / I / D,
+#     context modes, distances, real q0 / q1 / q11 encoder output) run through T5 / T7 / T9.
+# T4  static dictionary: all 1,633,984 (length, word, transform) expansions through _brd_dict
+#     against the reference C transform's golden CRC-32, each with guard bytes past its end; spot
+#     checks (identity, empty words, UppercaseAll on a trailing UTF-8 lead, the last dictionary word);
+#     argument / bound / error-class cells with no write on error; the one-time FNV-1a self-check
+#     (a corrupted literal and the _brd_dict_ok hook fail closed with ERR_CHECKSUM_MISMATCH); the
+#     profile-link-gate vector. The manifest's `dict` rows run through T5 / T7 / T9.
+# T12 inverse move-to-front: the word-wise _brd_imtf against a bytewise reference on random
+#     and all-255 maps (no store outside the 256-byte list); the adversarial-IMTF work budget — the
+#     76-byte adv_imtf_256_trunc (16,384 x 255 list moves, then ERR_CORRUPT_DATA) must cost at most
+#     half the thread CPU time of the bytewise reference IMTF doing the same 16,384 x 255 moves
+#     (measured at 2.8.0: about 5x faster). A same-process ratio on CLOCK_THREAD_CPUTIME_ID, so
+#     host load, CPU speed and emulation cancel out.
+#
+# The corpus is read at runtime (cyrius test runs from the repo root, as git_object.tcyr relies
+# on). Oracles: brotli 1.2.0 CLI + scripts/brotli_ref_decoder.py, via scripts/brotli-manifest.py.
+# No string literal in this file contains a NUL byte (cyrius 6.6.4 interning hazard).
+#
+# Run: cyrius test tests/tcyr/brotli_decompress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+var _BRV_MIB16 = 16777216;
+var _brv_dst = 0;      # 16 MiB + 64 shared output buffer
+var _brv_s = 0;        # stream buffer (corpus file)
+var _brv_t = 0;        # scratch stream buffer (truncations, trailing data, flips)
+var _brv_line = 0;     # table-rendering scratch
+var _brv_ll = 0;       # rendered length
+var _brv_man = 0;      # MANIFEST.tsv bytes
+var _brv_man_len = 0;
+var _brv_gsrc = 0;     # PROT_NONE page; streams copied to end flush against it
+var _BRV_SMAX = 262144;
+
+# 72 MB heap: two 16 MiB streams + the 16 MiB output + corpus buffers, with margin.
+fn _brv_init() {
+    _heap_base = syscall(12, 0);
+    _heap_end = _heap_base + 75497472;
+    syscall(12, _heap_end);
+    _heap_ptr = _heap_base;
+    crc32_init_table();
+    _brv_dst = alloc(_BRV_MIB16 + 64);
+    _brv_s = alloc(_BRV_SMAX);
+    _brv_t = alloc(_BRV_SMAX + 64);
+    _brv_line = alloc(32768);
+    _brv_man = alloc(65536);
+    _brv_gsrc = _brv_guard_map(_BRV_SMAX);
+    return 0;
+}
+
+# RW pages for n bytes followed by one PROT_NONE page; returns the address of the guard page, so a
+# buffer of k bytes placed at (returned - k) ends flush against it.
+fn _brv_guard_map(n) {
+    var pages = (n + 4095) & (0 - 4096);
+    var m = syscall(SYS_MMAP, 0, pages + 4096, 3, 34, 0 - 1, 0);   # PROT_READ|WRITE, MAP_PRIVATE|ANON
+    var nr = 10;                                     # mprotect: x86_64 10, aarch64 226
+    if (SYS_LSEEK != 8) { nr = 226; }
+    assert(m > 0 && syscall(nr, m + pages, 4096, 0) == 0, "guard page mapped");
+    return m + pages;
+}
+
+# Stream bit position (reader diagnostics).
+fn _brv_bitpos() {
+    return (_brd_ip - _brd_src) * 8 - _brd_nb;
+}
+
+fn _brv_read(path, buf, max) {
+    var fd = syscall(2, path, 0, 0);   # SYS_OPEN, O_RDONLY
+    if (fd < 0) { return fd; }
+    var n = 0;
+    while (n < max) {
+        var r = syscall(0, fd, buf + n, max - n);  # SYS_READ
+        if (r <= 0) { break; }
+        n = n + r;
+    }
+    syscall(3, fd);                    # SYS_CLOSE
+    return n;
+}
+
+# ================================================================
+# T1: constant tables
+# ================================================================
+
+fn _brv_reset() {
+    _brv_ll = 0;
+    return 0;
+}
+
+fn _brv_emit(v) {
+    if (_brv_ll > 0) { store8(_brv_line + _brv_ll, 44); _brv_ll = _brv_ll + 1; }
+    var x = v;
+    if (x < 0) { store8(_brv_line + _brv_ll, 45); _brv_ll = _brv_ll + 1; x = 0 - x; }
+    var tmp[24];
+    var n = 0;
+    if (x == 0) { store8(&tmp, 48); n = 1; }
+    while (x > 0) { store8(&tmp + n, 48 + (x % 10)); x = x / 10; n = n + 1; }
+    while (n > 0) { n = n - 1; store8(_brv_line + _brv_ll, load8(&tmp + n)); _brv_ll = _brv_ll + 1; }
+    return 0;
+}
+
+fn _brv_crc() {
+    return crc32(_brv_line, _brv_ll);
+}
+
+# Render one field of the packed command LUT: (e >> shift) & mask for all 704 symbols.
+fn _brv_cmd_crc(shift, mask) {
+    _brv_reset();
+    var s = 0;
+    while (s < 704) { _brv_emit((load64(&_brd_cmd + s * 8) >> shift) & mask); s = s + 1; }
+    return _brv_crc();
+}
+
+fn _brv_u8_crc(p, n) {
+    _brv_reset();
+    var i = 0;
+    while (i < n) { _brv_emit(load8(p + i)); i = i + 1; }
+    return _brv_crc();
+}
+
+fn _brv_i64_crc(p, n) {
+    _brv_reset();
+    var i = 0;
+    while (i < n) { _brv_emit(load64(p + i * 8)); i = i + 1; }
+    return _brv_crc();
+}
+
+fn test_t1_tables() {
+    _brd_init_tables();
+    assert(_brv_cmd_crc(32, 31) == 0xcf468c10, "T1 CMD_INSERT_NBITS crc");
+    assert(_brv_cmd_crc(40, 31) == 0xa6229f16, "T1 CMD_COPY_NBITS crc");
+    assert(_brv_cmd_crc(0, 65535) == 0xb7c6cb31, "T1 CMD_INSERT_OFFSET crc");
+    assert(_brv_cmd_crc(16, 4095) == 0x0cb4dd8e, "T1 CMD_COPY_OFFSET crc");
+    assert(_brv_cmd_crc(48, 3) == 0xf9780ea9, "T1 CMD_DIST_CONTEXT crc");
+    assert(_brv_cmd_crc(50, 1) == 0x758633ca, "T1 CMD_IMPLICIT_DIST0 crc");
+    _brv_reset();
+    var k = 0;
+    while (k < 26) { _brv_emit(load64(&_brd_blut + k * 8) & 65535); k = k + 1; }
+    assert(_brv_crc() == 0x4b62b20e, "T1 BLOCK_LEN_OFFSET crc");
+    _brv_reset();
+    k = 0;
+    while (k < 26) { _brv_emit((load64(&_brd_blut + k * 8) >> 16) & 31); k = k + 1; }
+    assert(_brv_crc() == 0xe09afb46, "T1 BLOCK_LEN_NBITS crc");
+    assert(_brv_u8_crc(&_brd_ctx, 512) == 0xcf348991, "T1 CONTEXT_LUT_LSB6 crc");
+    assert(_brv_u8_crc(&_brd_ctx + 512, 512) == 0x963fc7f7, "T1 CONTEXT_LUT_MSB6 crc");
+    assert(_brv_u8_crc(&_brd_ctx + 1024, 512) == 0xc826da92, "T1 CONTEXT_LUT_UTF8 crc");
+    assert(_brv_u8_crc(&_brd_ctx + 1536, 512) == 0xb815293c, "T1 CONTEXT_LUT_SIGNED crc");
+    assert(_brv_u8_crc(&_brd_ctx + 1024, 256) == 0x66cceed9, "T1 RFC_LUT0 crc");
+    assert(_brv_u8_crc(&_brd_ctx + 1280, 256) == 0xb65880ff, "T1 RFC_LUT1 crc");
+    assert(_brv_i64_crc(&_brd_ndbits, 25) == 0xec030e65, "T1 DICT_NDBITS crc");
+    _brv_reset();
+    k = 0;
+    while (k < 25) { _brv_emit(load64(&_brd_doff + k * 8)); k = k + 1; }
+    _brv_emit(_brotli_dict_size());
+    assert(_brv_crc() == 0x8f9d90e1, "T1 DICT_DOFFSET crc");
+    _brv_reset();
+    k = 0;
+    while (k < 121) { _brv_emit(load8(&_brd_tr + 3 * k)); k = k + 1; }
+    assert(_brv_crc() == 0xf812d94d, "T1 TRANSFORM_PREFIX_ID crc");
+    _brv_reset();
+    k = 0;
+    while (k < 121) { _brv_emit(load8(&_brd_tr + 3 * k + 1)); k = k + 1; }
+    assert(_brv_crc() == 0xd9d90142, "T1 TRANSFORM_TYPE crc");
+    _brv_reset();
+    k = 0;
+    while (k < 121) { _brv_emit(load8(&_brd_tr + 3 * k + 2)); k = k + 1; }
+    assert(_brv_crc() == 0x1be22738, "T1 TRANSFORM_SUFFIX_ID crc");
+    assert(_brv_i64_crc(&_brd_affix_off, 50) == 0xd64be057, "T1 PREFIX_SUFFIX_MAP crc");
+    assert(_brv_u8_crc(&_brd_affix, 217) == 0x9bf639d5, "T1 PREFIX_SUFFIX_POOL crc");
+    _brv_reset();
+    k = 0;
+    while (k < 16) { _brv_emit((BRD_CLCL_BITS >> (k << 2)) & 15); k = k + 1; }
+    assert(_brv_crc() == 0xe538db41, "T1 CLCL_PREFIX_BITS crc");
+    _brv_reset();
+    k = 0;
+    while (k < 16) { _brv_emit((BRD_CLCL_VALUE >> (k << 2)) & 15); k = k + 1; }
+    assert(_brv_crc() == 0x2afaf029, "T1 CLCL_PREFIX_VALUE crc");
+    _brv_reset();
+    k = 0;
+    while (k < 18) { _brv_emit(_brd_cl_order(k)); k = k + 1; }
+    assert(_brv_crc() == 0x4d797026, "T1 CODE_LENGTH_CODE_ORDER crc");
+    _brv_reset();
+    k = 0;
+    while (k < 16) {
+        var d = 0;
+        if (k >= 4 && k < 10) { d = ((BRD_SHORT_DELTA >> (4 * (k - 4))) & 15) - 3; }
+        if (k >= 10) { d = ((BRD_SHORT_DELTA >> (4 * (k - 10))) & 15) - 3; }
+        _brv_emit(d);
+        k = k + 1;
+    }
+    assert(_brv_crc() == 0xb5cbd151, "T1 DIST_SHORT_DELTA crc");
+    # rev8 is an involution and reverses bits.
+    var p = 0;
+    var inv = 1;
+    while (p < 256) {
+        if (load8(&_brd_rev8 + load8(&_brd_rev8 + p)) != p) { inv = 0; }
+        p = p + 1;
+    }
+    assert(inv == 1, "T1 rev8 is an involution");
+    assert(load8(&_brd_rev8 + 1) == 128, "T1 rev8[1] == 128");
+    assert(load8(&_brd_rev8 + 0xA0) == 0x05, "T1 rev8[0xA0] == 0x05");
+    return 0;
+}
+
+# WBITS_BY_PATTERN7: every 7-bit pattern through _brd_read_wbits (0 for the large-window escape).
+fn test_t1_wbits_map() {
+    var b[8];
+    _brv_reset();
+    var p = 0;
+    var esc_ok = 1;
+    var wmax_ok = 1;
+    while (p < 128) {
+        store8(&b, p);
+        _brd_reader_init(&b, 1);
+        var w = _brd_read_wbits();
+        if (w == 0 - ERR_UNSUPPORTED_FORMAT) {
+            if (p != 0x11) { esc_ok = 0; }
+            _brv_emit(0);
+        } else {
+            if (w < 10 || w > 24) { esc_ok = 0; }
+            if (_brd_wmax != (1 << w) - 16) { wmax_ok = 0; }
+            _brv_emit(w);
+        }
+        p = p + 1;
+    }
+    assert(_brv_crc() == 0x07e2bdf8, "T1 WBITS_BY_PATTERN7 crc");
+    assert(esc_ok == 1, "T1 only pattern 0x11 is the large-window escape");
+    assert(wmax_ok == 1, "T1 window max = (1 << WBITS) - 16");
+    # A header that runs out of bits is truncation, not a window size.
+    store8(&b, 0x01);
+    _brd_reader_init(&b, 0);
+    assert(_brd_read_wbits() == 0 - ERR_CORRUPT_DATA, "T1 empty header is ERR_CORRUPT_DATA");
+    return 0;
+}
+
+# Workspace layout: offsets ascend, each region fits its stated size, 8-byte aligned.
+fn test_t1_ws_layout() {
+    var off: i64[18];
+    var sz: i64[17];
+    store64(&off, BRD_WS_TAB_L); store64(&sz, 323584);
+    store64(&off + 8, BRD_WS_TAB_I); store64(&sz + 8, 552960);
+    store64(&off + 16, BRD_WS_TAB_D); store64(&sz + 16, 458752);
+    store64(&off + 24, BRD_WS_TAB_BT); store64(&sz + 24, 3792);
+    store64(&off + 32, BRD_WS_TAB_BC); store64(&sz + 32, 2376);
+    store64(&off + 40, BRD_WS_TAB_CM); store64(&sz + 40, 1292);
+    store64(&off + 48, BRD_WS_TAB_CL); store64(&sz + 48, 512);
+    store64(&off + 56, BRD_WS_HT_L); store64(&sz + 56, 2048);
+    store64(&off + 64, BRD_WS_HT_I); store64(&sz + 64, 2048);
+    store64(&off + 72, BRD_WS_HT_D); store64(&sz + 72, 2048);
+    store64(&off + 80, BRD_WS_CMAP_L); store64(&sz + 80, 16384);
+    store64(&off + 88, BRD_WS_CMAP_D); store64(&sz + 88, 1024);
+    store64(&off + 96, BRD_WS_CMODE); store64(&sz + 96, 256);
+    store64(&off + 104, BRD_WS_LENS); store64(&sz + 104, 704);
+    store64(&off + 112, BRD_WS_SORTED); store64(&sz + 112, 1408);
+    store64(&off + 120, BRD_WS_MTF); store64(&sz + 120, 264);
+    store64(&off + 128, BRD_WS_DLUT); store64(&sz + 128, 4160);
+    store64(&off + 136, BRD_WS_SIZE);
+    var ok = 1;
+    var i = 0;
+    while (i < 17) {
+        var a = load64(&off + i * 8);
+        var n = load64(&off + i * 8 + 8);
+        if (a + load64(&sz + i * 8) > n) { ok = 0; }
+        if (n - (a + load64(&sz + i * 8)) > 7) { ok = 0; }
+        if ((n & 7) != 0) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, "T1 workspace offsets ascend and match their sizes");
+    assert(BRD_WS_SIZE == 1373616, "T1 workspace size");
+    assert(BRD_BLEN_NEVER == 1 << 40, "T1 BRD_BLEN_NEVER");
+    return 0;
+}
+
+# ================================================================
+# T2: static dictionary
+# ================================================================
+
+fn test_t2_dictionary() {
+    var d = _brotli_dict_data();
+    assert(_brotli_dict_size() == 122784, "T2 dictionary size");
+    assert(crc32(d, 122784) == 0x5136cb04, "T2 dictionary CRC-32 (RFC 7932 App. A)");
+    assert(_brotli_dict_crc32() == 0x5136cb04, "T2 pinned CRC-32 accessor");
+    assert(_brotli_dict_verify(d) == 1, "T2 FNV-1a verify accepts the literal");
+    assert(load8(d) == 116, "T2 first byte 't'");
+    assert(load8(d + 122783) == 0xbe, "T2 last byte 0xbe");
+    assert(load8(d + 122784) == 0, "T2 terminating NUL");
+    var cp = alloc(122784);
+    var i = 0;
+    while (i < 122784) { store8(cp + i, load8(d + i)); i = i + 1; }
+    assert(_brotli_dict_verify(cp) == 1, "T2 verify accepts an exact copy");
+    store8(cp + 43900, load8(cp + 43900) ^ 1);
+    assert(_brotli_dict_verify(cp) == 0, "T2 verify rejects a one-bit change");
+    var sum = 0;
+    var geo = 1;
+    var len = 4;
+    while (len <= 24) {
+        if (_brotli_dict_offset(len) != sum) { geo = 0; }
+        sum = sum + (len << _brotli_dict_ndbits(len));
+        len = len + 1;
+    }
+    assert(geo == 1, "T2 DOFFSET equals the running sum of len << NDBITS");
+    assert(sum == 122784, "T2 sum of len << NDBITS is the dictionary size");
+    assert(_brotli_dict_ndbits(3) == 0 && _brotli_dict_ndbits(25) == 0, "T2 NDBITS outside 4..24 is 0");
+    assert(_brotli_dict_offset(3) == 0 && _brotli_dict_offset(25) == 0, "T2 DOFFSET outside 4..24 is 0");
+    _brd_init_tables();
+    assert(_brd_dict_addr == d, "T2 decoder holds the dictionary literal address");
+    return 0;
+}
+
+# ================================================================
+# Bit reader / symbol decoder
+# ================================================================
+
+fn test_reader_bits() {
+    var buf[16];
+    _put_str(&buf, "\xa5\x5a\x3c\xc3\xff\x01\x7e\x01\x02\x04\x08", 11);
+    _brd_reader_init(&buf, 11);
+    assert(_brd_bits(0) == 0, "reader: 0 bits is 0");
+    assert(_brd_bits(4) == 0x5, "reader: low nibble first");
+    assert(_brd_bits(4) == 0xa, "reader: high nibble next");
+    assert(_brd_bits(24) == 0xc33c5a, "reader: 24 bits LSB-first");
+    assert(_brd_bits(12) == 0x1ff, "reader: across bytes");
+    assert(_brv_bitpos() == 44, "reader: bit position 44");
+    assert(_brd_align() == 0, "reader: zero padding aligns");
+    assert(_brv_bitpos() == 48, "reader: aligned to 48");
+    assert(_brd_byte_pos() == &buf + 6, "reader: aligned byte position");
+    assert(_brd_bits(24) == 0x02017e, "reader: 24 bits after align");
+    assert(_brd_bits(16) == 0x0804, "reader: tail bytes");
+    assert(_brd_bits(1) == 0 - ERR_CORRUPT_DATA, "reader: past the end is ERR_CORRUPT_DATA");
+    assert(_brd_bits(25) == 0 - ERR_CORRUPT_DATA, "reader: n > 24 rejected");
+    assert(_brd_bits(0 - 3) == 0 - ERR_CORRUPT_DATA, "reader: negative n rejected");
+    # Non-zero padding.
+    _brd_reader_init(&buf, 11);
+    assert(_brd_bits(3) == 5, "reader: 3 bits");
+    assert(_brd_align() == 0 - ERR_CORRUPT_DATA, "reader: non-zero padding is ERR_CORRUPT_DATA");
+    # Exact truncation: 2 bytes give exactly 16 bits.
+    _brd_reader_init(&buf, 2);
+    assert(_brd_bits(15) == 0x5aa5 & 32767, "reader: 15 of 16 bits");
+    assert(_brd_bits(2) == 0 - ERR_CORRUPT_DATA, "reader: 2 bits with 1 left fails");
+    assert(_brd_bits(1) == 0, "reader: the last bit is still readable");
+    # Byte payload bounds.
+    _brd_reader_init(&buf, 11);
+    assert(_brd_bits(8) == 0xa5, "reader: one byte");
+    assert(_brd_skip_bytes(10) == &buf + 1, "reader: skip to the exact end");
+    assert(_brd_bits(1) == 0 - ERR_CORRUPT_DATA, "reader: nothing after the skipped payload");
+    _brd_reader_init(&buf, 11);
+    assert(_brd_bits(16) == 0x5aa5, "reader: two bytes");
+    assert(_brd_skip_bytes(10) == 0 - ERR_CORRUPT_DATA, "reader: payload past the end");
+    return 0;
+}
+
+fn test_reader_sym() {
+    var tab = alloc(2 * 260);
+    var buf[8];
+    # 2-bit codes: root entry j = (2 << 12) | (j & 3).
+    var j = 0;
+    while (j < 256) { store16(tab + 2 * j, (2 << 12) | (j & 3)); j = j + 1; }
+    _put_str(&buf, "\xe4", 1);
+    _brd_reader_init(&buf, 1);
+    assert(_brd_sym(tab) == 0, "sym: 2-bit code 00");
+    assert(_brd_sym(tab) == 1, "sym: 2-bit code 01");
+    assert(_brd_sym(tab) == 2, "sym: 2-bit code 10");
+    assert(_brd_sym(tab) == 3, "sym: 2-bit code 11");
+    assert(_brd_sym(tab) == 0 - ERR_CORRUPT_DATA, "sym: a code past the input end fails");
+    # 0-bit code: decodes with no input left.
+    j = 0;
+    while (j < 256) { store16(tab + 2 * j, 7); j = j + 1; }
+    assert(_brd_sym(tab) == 7, "sym: 0-bit code needs no input");
+    # Second level: root[0] points at a 2-entry table at index 256 (9-bit codes).
+    j = 0;
+    while (j < 256) { store16(tab + 2 * j, (1 << 12) | 1); j = j + 1; }
+    store16(tab, ((8 + 1) << 12) | 256);
+    store16(tab + 512, (1 << 12) | 5);
+    store16(tab + 514, (1 << 12) | 6);
+    _put_str(&buf, "\x01\x02", 2);
+    _brd_reader_init(&buf, 2);
+    assert(_brd_bits(1) == 1, "sym: skip one bit");
+    assert(_brd_sym(tab) == 6, "sym: second-level 9-bit code");
+    assert(_brv_bitpos() == 10, "sym: consumed 9 bits");
+    _brd_reader_init(&buf, 1);
+    assert(_brd_bits(1) == 1, "sym: skip one bit (short)");
+    assert(_brd_sym(tab) == 0 - ERR_CORRUPT_DATA, "sym: 9-bit code with 7 bits left fails");
+    return 0;
+}
+
+# ================================================================
+# MANIFEST.tsv parsing
+# ================================================================
+
+fn _brv_lit_eq(p, n, s) {
+    if (strlen(s) != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (load8(p + i) != load8(s + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn _brv_dec(p, n) {
+    var v = 0;
+    var i = 0;
+    while (i < n) { v = v * 10 + load8(p + i) - 48; i = i + 1; }
+    return v;
+}
+
+fn _brv_hexn(p, n) {
+    var v = 0;
+    var i = 0;
+    while (i < n) { v = (v << 4) | _brd_hexv(load8(p + i)); i = i + 1; }
+    return v;
+}
+
+fn _brv_stage(p, n) {
+    if (_brv_lit_eq(p, n, "frame") == 1) { return 1; }
+    if (_brv_lit_eq(p, n, "codes") == 1) { return 2; }
+    if (_brv_lit_eq(p, n, "cmds") == 1) { return 3; }
+    if (_brv_lit_eq(p, n, "dict") == 1) { return 4; }
+    return 99;
+}
+
+fn _brv_err(p, n) {
+    if (_brv_lit_eq(p, n, "ok") == 1) { return 0; }
+    if (_brv_lit_eq(p, n, "ERR_CORRUPT_DATA") == 1) { return ERR_CORRUPT_DATA; }
+    if (_brv_lit_eq(p, n, "ERR_UNSUPPORTED_FORMAT") == 1) { return ERR_UNSUPPORTED_FORMAT; }
+    if (_brv_lit_eq(p, n, "ERR_INVALID_HUFFMAN") == 1) { return ERR_INVALID_HUFFMAN; }
+    if (_brv_lit_eq(p, n, "ERR_MATCH_OUT_OF_RANGE") == 1) { return ERR_MATCH_OUT_OF_RANGE; }
+    if (_brv_lit_eq(p, n, "ERR_CHECKSUM_MISMATCH") == 1) { return ERR_CHECKSUM_MISMATCH; }
+    return 0 - 1;
+}
+
+# Split the line [p, p+n) at tabs into up to 8 (ptr, len) fields. Returns the field count.
+var _brv_fp: i64[8];
+var _brv_fl: i64[8];     # a #header line has exactly 8 fields
+fn _brv_split(p, n) {
+    var k = 0;
+    var start = 0;
+    var i = 0;
+    while (i <= n && k < 8) {
+        if (i == n || load8(p + i) == 9) {
+            store64(&_brv_fp + k * 8, p + start);
+            store64(&_brv_fl + k * 8, i - start);
+            k = k + 1;
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return k;
+}
+
+fn _brv_f(k) { return load64(&_brv_fp + k * 8); }
+fn _brv_n(k) { return load64(&_brv_fl + k * 8); }
+
+# "tests/data/brotli/" + field into a NUL-terminated path buffer.
+var _brv_path: u8[256];
+fn _brv_mkpath(p, n) {
+    var pre = "tests/data/brotli/";
+    var m = strlen(pre);
+    var i = 0;
+    while (i < m) { store8(&_brv_path + i, load8(pre + i)); i = i + 1; }
+    i = 0;
+    while (i < n && m + i < 255) { store8(&_brv_path + m + i, load8(p + i)); i = i + 1; }
+    store8(&_brv_path + m + i, 0);
+    return &_brv_path;
+}
+
+# ================================================================
+# T5 / T7 / T9: manifest rows
+# ================================================================
+
+var _brv_rows = 0;
+var _brv_run = 0;
+var _brv_trunc = 0;
+
+# 64 guard bytes after d + len: 1 when all still 0xA5.
+fn _brv_tail_set(d, len) {
+    var i = 0;
+    while (i < 64) { store8(d + len + i, 0xA5); i = i + 1; }
+    return 0;
+}
+
+fn _brv_tail_ok(d, len) {
+    var i = 0;
+    while (i < 64) {
+        if (load8(d + len + i) != 0xA5) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn _brv_ok_row(n, out_len, crc) {
+    var s = _brv_s;
+    var d = _brv_dst;
+    # Exact-cap decodes: the stream ends flush against a PROT_NONE page (a read past src_len
+    # faults) and 64 guard bytes follow dst + out_len (a write past dst_cap is caught).
+    var g = _brv_gsrc - n;
+    var i = 0;
+    while (i < n) { store8(g + i, load8(s + i)); i = i + 1; }
+    _brv_tail_set(d, out_len);
+    assert(brotli_decompress(g, n, d, out_len) == out_len, "T5 ok row decodes to out_len");
+    assert(crc32(d, out_len) == crc, "T5 ok row CRC-32 matches brotli -d");
+    assert(_brv_tail_ok(d, out_len) == 1, "T5 exact-cap decode writes nothing past dst_cap");
+    assert(decompress(FORMAT_BROTLI, g, n, d, out_len) == out_len, "T5 decompress(FORMAT_BROTLI) length");
+    assert(crc32(d, out_len) == crc, "T5 decompress(FORMAT_BROTLI) CRC-32");
+    assert(_brv_tail_ok(d, out_len) == 1, "T5 decompress(FORMAT_BROTLI) writes nothing past dst_cap");
+    if (out_len > 0) {
+        assert(brotli_decompress_capped(g, n, d, out_len, out_len) == out_len && _brv_tail_ok(d, out_len) == 1,
+          "T5 capped exact-cap decode writes nothing past dst_cap");
+    }
+    assert(brotli_decompress(s, n, d, _BRV_MIB16) == out_len, "T5 second decode, roomy dst");
+    assert(crc32(d, out_len) == crc, "T5 second decode CRC-32");
+    if (out_len > 0) {
+        assert(brotli_decompress(s, n, d, out_len - 1) == 0 - ERR_BUFFER_TOO_SMALL,
+          "T5 one byte short is ERR_BUFFER_TOO_SMALL");
+        assert(brotli_decompress_capped(s, n, d, out_len, out_len) == out_len, "T5 capped at out_len");
+        assert(crc32(d, out_len) == crc, "T5 capped CRC-32");
+    }
+    if (out_len >= 2) {
+        assert(brotli_decompress_capped(s, n, d, out_len, out_len - 1) == 0 - ERR_OUTPUT_LIMIT,
+          "T5 capped one byte short is ERR_OUTPUT_LIMIT");
+    }
+    if (n <= 1024 && out_len <= 1048576) {
+        # T7: every proper prefix is exactly ERR_CORRUPT_DATA; length 0 is ERR_INVALID_INPUT.
+        assert(brotli_decompress(s, 0, d, _BRV_MIB16) == 0 - ERR_INVALID_INPUT, "T7 empty input");
+        var bad = 0;
+        var inv = 0;
+        var k = 1;
+        while (k < n) {
+            if (brotli_decompress(s, k, d, _BRV_MIB16) != 0 - ERR_CORRUPT_DATA) { bad = bad + 1; }
+            if (_brd_nb < 0 || _brd_nb > 64 || _brd_ip > _brd_end) { inv = inv + 1; }
+            _brv_trunc = _brv_trunc + 1;
+            k = k + 1;
+        }
+        assert(bad == 0, "T7 every prefix is ERR_CORRUPT_DATA");
+        assert(inv == 0, "T7 a failed prefix leaves the bit reader in range (never consumes bits it lacks)");
+        # T9: trailing data.
+        var t = _brv_t;
+        var i = 0;
+        while (i < n) { store8(t + i, load8(s + i)); store8(t + n + i, load8(s + i)); i = i + 1; }
+        store8(t + n, 0);
+        assert(brotli_decompress(t, n + 1, d, _BRV_MIB16) == 0 - ERR_CORRUPT_DATA, "T9 + one zero byte");
+        store8(t + n, 0xA5);
+        assert(brotli_decompress(t, n + 1, d, _BRV_MIB16) == 0 - ERR_CORRUPT_DATA, "T9 + one 0xA5 byte");
+        _put_str(t + n, "garbage-16-bytes", 16);
+        assert(brotli_decompress(t, n + 16, d, _BRV_MIB16) == 0 - ERR_CORRUPT_DATA, "T9 + 16 garbage bytes");
+        store8(t + n, 0);
+        store8(t + n + 1, 0);
+        store8(t + n + 2, 0);
+        store8(t + n + 3, 0);
+        assert(brotli_decompress(t, n + 4, d, _BRV_MIB16) == 0 - ERR_CORRUPT_DATA, "T9 + four zero bytes");
+        i = 0;
+        while (i < n) { store8(t + n + i, load8(s + i)); i = i + 1; }
+        assert(brotli_decompress(t, 2 * n, d, _BRV_MIB16) == 0 - ERR_CORRUPT_DATA, "T9 + a second valid stream");
+    }
+    return 0;
+}
+
+# T8: one flip digest line (scripts/brotli-manifest.py): every single-bit flip of the stream, decoded into cap bytes.
+fn _brv_flip(pp, pn, cap, want) {
+    var n = _brv_read(_brv_mkpath(pp, pn), _brv_s, _BRV_SMAX);
+    assert(n > 0 && n <= 4096, "T8 flip stream present");
+    if (n <= 0 || n > 4096) { return 0; }
+    var st = crc32_init();
+    var one[8];
+    var i = 0;
+    while (i < n * 8) {
+        var j = 0;
+        while (j < n) { store8(_brv_t + j, load8(_brv_s + j)); j = j + 1; }
+        store8(_brv_t + (i >> 3), load8(_brv_t + (i >> 3)) ^ (1 << (i & 7)));
+        var r = brotli_decompress(_brv_t, n, _brv_dst, cap);
+        if (r >= 0) {
+            store8(&one, 1);
+            store32(&one + 1, r);
+            crc32_update(st, &one, 5);
+            crc32_update(st, _brv_dst, r);
+        } else {
+            store8(&one, 0);
+            crc32_update(st, &one, 1);
+        }
+        i = i + 1;
+    }
+    assert(crc32_final(st) == want, "T8 bit-flip digest matches the oracles");
+    return 0;
+}
+
+fn test_t5_manifest() {
+    _brv_man_len = _brv_read("tests/data/brotli/MANIFEST.tsv", _brv_man, 65536);
+    assert(_brv_man_len > 0 && _brv_man_len < 65536, "T5 MANIFEST.tsv present");
+    if (_brv_man_len <= 0) { return 0; }
+    var p = _brv_man;
+    var end = _brv_man + _brv_man_len;
+    var hdr_rows = 0 - 1;
+    var hdr_flips = 0 - 1;
+    var flips = 0;
+    var flip_run = 0;
+    var err_rows = 0;
+    var hdr_headers = 0 - 1;
+    var headers = 0;
+    var hdr_want = 0;
+    while (p < end) {
+        var q = p;
+        while (q < end && load8(q) != 10) { q = q + 1; }
+        var nf = _brv_split(p, q - p);
+        if (nf >= 5 && _brv_lit_eq(_brv_f(0), _brv_n(0), "#brotli-manifest") == 1) {
+            hdr_rows = _brv_dec(_brv_f(2) + 5, _brv_n(2) - 5);
+            hdr_flips = _brv_dec(_brv_f(3) + 12, _brv_n(3) - 12);
+            hdr_headers = _brv_dec(_brv_f(4) + 8, _brv_n(4) - 8);
+        } else {
+            if (nf == 8 && _brv_lit_eq(_brv_f(0), _brv_n(0), "#header") == 1) {
+                headers = headers + 1;
+                _brv_hook_line();
+            }
+            if (nf == 4 && _brv_lit_eq(_brv_f(0), _brv_n(0), "#flip") == 1) {
+                flips = flips + 1;
+                flip_run = flip_run + 1;
+                _brv_flip(_brv_f(1), _brv_n(1), _brv_dec(_brv_f(2), _brv_n(2)), _brv_hexn(_brv_f(3), _brv_n(3)));
+            } else {
+                if (nf == 7 && _brv_lit_eq(_brv_f(0), _brv_n(0), "path") == 0) {
+                    _brv_rows = _brv_rows + 1;
+                    var stage = _brv_stage(_brv_f(1), _brv_n(1));
+                    var err = _brv_err(_brv_f(2), _brv_n(2));
+                    assert(stage != 99 && err >= 0, "T5 row fields parse");
+                    if (stage >= 3) { hdr_want = hdr_want + 1; }
+                    _brv_run = _brv_run + 1;
+                    var n = _brv_read(_brv_mkpath(_brv_f(0), _brv_n(0)), _brv_s, _BRV_SMAX);
+                    assert(n > 0 && n < _BRV_SMAX, "T5 corpus stream present");
+                    var out_len = _brv_dec(_brv_f(3), _brv_n(3));
+                    if (err == 0) {
+                        _brv_ok_row(n, out_len, _brv_hexn(_brv_f(4), _brv_n(4)));
+                    } else {
+                        err_rows = err_rows + 1;
+                        assert(brotli_decompress(_brv_s, n, _brv_dst, _BRV_MIB16) == 0 - err,
+                          "T5 reject row returns its exact ERR_* class");
+                        assert(decompress(FORMAT_BROTLI, _brv_s, n, _brv_dst, _BRV_MIB16) == 0 - err,
+                          "T5 reject row via decompress(FORMAT_BROTLI)");
+                    }
+                }
+            }
+        }
+        p = q + 1;
+    }
+    assert(hdr_rows == _brv_rows, "T5 manifest row count matches its header");
+    assert(hdr_flips == flips, "T5 manifest flip-digest count matches its header");
+    assert(hdr_headers == headers && headers == hdr_want, "T5 one #header line per command-loop row");
+    assert(_brv_run == _brv_rows && err_rows > 0 && flip_run > 0, "T5 every manifest row runs");
+    print_num(_brv_run); syscall(1, 1, " rows run, ", 11);
+    print_num(err_rows); syscall(1, 1, " rejects, ", 10);
+    print_num(_brv_trunc); syscall(1, 1, " truncations, ", 14);
+    print_num(flip_run); println(" flip digests");
+    print_num(_brv_hook_rows); syscall(1, 1, " first headers, ", 16);
+    print_num(_brv_hook_prefixes); println(" header prefixes");
+    return 0;
+}
+
+# ================================================================
+# T6: output caps
+# ================================================================
+
+fn test_t6_caps() {
+    var n = _brv_read("tests/data/brotli/crafted/uncompressed_5nibble_70000.br", _brv_s, _BRV_SMAX);
+    assert(n > 70000, "T6 stream present");
+    var s = _brv_s;
+    var d = _brv_dst;
+    assert(brotli_decompress_capped(s, n, d, 70000, 70000) == 70000, "T6 cap == size decodes");
+    var c1 = crc32(d, 70000);
+    assert(c1 == 0x9a1aba2f, "T6 capped output CRC-32");
+    assert(brotli_decompress(s, n, d, 70000) == 70000, "T6 uncapped decodes");
+    assert(crc32(d, 70000) == c1, "T6 capped and uncapped outputs identical");
+    assert(brotli_decompress_capped(s, n, d, 70000, 69999) == 0 - ERR_OUTPUT_LIMIT, "T6 cap size-1 refused");
+    assert(brotli_decompress_capped(s, n, d, 69999, 70000) == 0 - ERR_BUFFER_TOO_SMALL,
+      "T6 cap above dst_cap clamps: BUFFER_TOO_SMALL first");
+    # The bound fires at the meta-block header: dst is untouched.
+    var i = 0;
+    while (i < 16) { store8(d + i, 0xA5); i = i + 1; }
+    assert(brotli_decompress(s, n, d, 65536) == 0 - ERR_BUFFER_TOO_SMALL, "T6 dst_cap 65536 refused");
+    assert(load8(d) == 0xA5 && load8(d + 15) == 0xA5, "T6 no byte written before the bound check");
+    # Argument validation.
+    assert(brotli_decompress_capped(s, n, d, 70000, 0) == 0 - ERR_INVALID_INPUT, "T6 max_output 0");
+    assert(brotli_decompress_capped(s, n, d, 70000, 0 - 1) == 0 - ERR_INVALID_INPUT, "T6 max_output -1");
+    assert(brotli_decompress_capped(s, n, d, 0, 70000) == 0 - ERR_INVALID_INPUT, "T6 capped dst_cap 0");
+    assert(brotli_decompress_capped(s, 0 - 1, d, 70000, 70000) == 0 - ERR_INVALID_INPUT, "T6 capped src_len -1");
+    assert(brotli_decompress(s, 0, d, 70000) == 0 - ERR_INVALID_INPUT, "T6 src_len 0");
+    assert(brotli_decompress(s, 0 - 1, d, 70000) == 0 - ERR_INVALID_INPUT, "T6 src_len -1");
+    assert(brotli_decompress(0, n, d, 70000) == 0 - ERR_INVALID_INPUT, "T6 src == 0");
+    assert(brotli_decompress(s, n, 0, 70000) == 0 - ERR_INVALID_INPUT, "T6 dst == 0 with dst_cap > 0");
+    assert(brotli_decompress(s, n, d, 0 - 1) == 0 - ERR_INVALID_INPUT, "T6 dst_cap -1");
+    assert(decompress(FORMAT_BROTLI, s, 0 - 1, d, 70000) == 0 - ERR_INVALID_INPUT, "T6 decompress src_len -1");
+    # dst == 0 with dst_cap == 0 is allowed for an empty stream.
+    assert(brotli_decompress("\x3b", 1, 0, 0) == 0, "T6 empty stream into dst 0 / cap 0");
+    assert(compress(FORMAT_BROTLI, s, 16, d, 70000) == 0 - ERR_UNSUPPORTED_FORMAT, "T6 compress is unsupported");
+    assert(detect_format("\x3b\x3b", 2) != FORMAT_BROTLI, "T6 detect_format never returns Brotli");
+    return 0;
+}
+
+# Bit writer for in-memory streams (LSB-first).
+var _bw_p = 0;
+var _bw_acc = 0;
+var _bw_n = 0;
+fn _bw_put(v, n) {
+    _bw_acc = _bw_acc | (v << _bw_n);
+    _bw_n = _bw_n + n;
+    while (_bw_n >= 8) {
+        store8(_bw_p, _bw_acc & 255);
+        _bw_p = _bw_p + 1;
+        _bw_acc = _bw_acc >> 8;
+        _bw_n = _bw_n - 8;
+    }
+    return 0;
+}
+
+fn _bw_align() {
+    if (_bw_n > 0) { store8(_bw_p, _bw_acc & 255); _bw_p = _bw_p + 1; }
+    _bw_acc = 0;
+    _bw_n = 0;
+    return 0;
+}
+
+# Uncompressed meta-block header (ISLAST = 0) for mlen bytes; the caller writes the payload.
+fn _bw_unc_header(mlen) {
+    var m = mlen - 1;
+    var nib = 4;
+    while (nib < 6 && (m >> (4 * nib)) != 0) { nib = nib + 1; }
+    _bw_put(0, 1);
+    _bw_put(nib - 4, 2);
+    var i = 0;
+    while (i < nib) { _bw_put((m >> (4 * i)) & 15, 4); i = i + 1; }
+    _bw_put(1, 1);
+    _bw_align();
+    return 0;
+}
+
+# 16 MiB ceiling: exactly 16 MiB passes the default; 16 MiB + 1 needs the capped entry.
+# Reference CRC-32s from `brotli -dc` 1.2.0 on the same streams.
+fn test_t6_ceiling() {
+    var src = alloc(_BRV_MIB16 + 64);
+    _bw_p = src;
+    _bw_acc = 0;
+    _bw_n = 0;
+    _bw_put(0, 1);                          # WBITS 16
+    _bw_unc_header(_BRV_MIB16);
+    var i = 0;
+    while (i < _BRV_MIB16) { store8(_bw_p + i, (i * 7 + (i >> 9)) & 255); i = i + 1; }
+    _bw_p = _bw_p + _BRV_MIB16;
+    var mark = _bw_p;
+    _bw_put(1, 1);                          # ISLAST, ISLASTEMPTY
+    _bw_put(1, 1);
+    _bw_align();
+    var len_a = _bw_p - src;
+    assert(len_a == 16777221, "T6 16 MiB stream length");
+    var d = _brv_dst;
+    assert(brotli_decompress(src, len_a, d, _BRV_MIB16) == _BRV_MIB16, "T6 exactly 16 MiB passes the default");
+    assert(crc32(d, _BRV_MIB16) == 0x79c1dcd3, "T6 16 MiB output CRC-32 (brotli -d)");
+    assert(brotli_decompress(src, len_a, d, _BRV_MIB16 - 1) == 0 - ERR_BUFFER_TOO_SMALL, "T6 16 MiB, cap - 1");
+    # Append a 1-byte meta-block: 16 MiB + 1.
+    _bw_p = mark;
+    _bw_unc_header(1);
+    store8(_bw_p, 0x5a);
+    _bw_p = _bw_p + 1;
+    _bw_put(1, 1);
+    _bw_put(1, 1);
+    _bw_align();
+    var len_b = _bw_p - src;
+    assert(len_b == 16777225, "T6 16 MiB + 1 stream length");
+    assert(brotli_decompress(src, len_b, d, _BRV_MIB16 + 1) == 0 - ERR_OUTPUT_LIMIT,
+      "T6 default refuses 16 MiB + 1");
+    assert(brotli_decompress_capped(src, len_b, d, _BRV_MIB16 + 1, _BRV_MIB16 + 1) == _BRV_MIB16 + 1,
+      "T6 capped with max_output 16 MiB + 1 succeeds");
+    assert(crc32(d, _BRV_MIB16 + 1) == 0x461f15d5, "T6 16 MiB + 1 output CRC-32 (brotli -d)");
+    assert(decompress(FORMAT_BROTLI, src, len_b, d, _BRV_MIB16 + 1) == 0 - ERR_OUTPUT_LIMIT,
+      "T6 decompress(FORMAT_BROTLI) keeps the default ceiling");
+    return 0;
+}
+
+# ================================================================
+# T3: prefix codes, table builder, context maps, block switching
+# ================================================================
+
+var _brv_bs = 0;       # bit-stream scratch (65536 B)
+var _brv_lens = 0;     # u8 code lengths per symbol (704 + slack)
+var _brv_codes = 0;    # i64 canonical code per symbol
+var _brv_tab = 0;      # u16 table scratch (4096 entries)
+var _brv_tab2 = 0;     # second table scratch
+var _brv_cnt = 0;      # i64 x 16 length histogram
+var _brv_srt = 0;      # u16 symbols sorted by (len, sym)
+var _brv_leaf = 0;     # i64 leaf lengths (random code generator)
+var _brv_perm = 0;     # i64 symbol permutation
+var _brv_cl18 = 0;     # u8 x 18 code-length-code lengths
+var _brv_clc = 0;      # i64 x 18 code-length-code canonical codes
+var _brv_map = 0;      # u8 context map scratch
+var _brv_map2 = 0;     # expected context map
+var _brv_rng = 0x2545f4914f6cdd1d;
+
+fn _brv_b2_init() {
+    _brv_bs = alloc(65536);
+    _brv_lens = alloc(1024);
+    _brv_codes = alloc(8192);
+    _brv_tab = alloc(8192 + 64);
+    _brv_tab2 = alloc(8192 + 64);
+    _brv_cnt = alloc(128);
+    _brv_srt = alloc(2048);
+    _brv_leaf = alloc(8192);
+    _brv_perm = alloc(8192);
+    _brv_cl18 = alloc(32);
+    _brv_clc = alloc(256);
+    _brv_map = alloc(16384 + 64);
+    _brv_map2 = alloc(16384 + 64);
+    return 0;
+}
+
+fn _brv_rand(n) {
+    _brv_rng = _brv_rng * 6364136223846793005 + 1442695040888963407;
+    return (_brv_rng >> 33) % n;
+}
+
+fn _bw_start() {
+    _bw_p = _brv_bs;
+    _bw_acc = 0;
+    _bw_n = 0;
+    return 0;
+}
+
+# Align and return the stream length.
+fn _bw_len() {
+    _bw_align();
+    return _bw_p - _brv_bs;
+}
+
+fn _brv_zero(p, n) {
+    var i = 0;
+    while (i < n) { store8(p + i, 0); i = i + 1; }
+    return 0;
+}
+
+# Canonical codes (RFC 7932 §3.2: by length, then symbol) for lens[0..alpha) into codes.
+fn _brv_canon(lens, alpha, codes) {
+    var bl[128];
+    var nx[128];
+    var i = 0;
+    while (i < 16) { store64(&bl + i * 8, 0); i = i + 1; }
+    var s = 0;
+    while (s < alpha) {
+        var l = load8(lens + s);
+        if (l != 0) { store64(&bl + l * 8, load64(&bl + l * 8) + 1); }
+        s = s + 1;
+    }
+    var code = 0;
+    var len = 1;
+    while (len < 16) {
+        code = (code + load64(&bl + (len - 1) * 8)) << 1;
+        store64(&nx + len * 8, code);
+        len = len + 1;
+    }
+    s = 0;
+    while (s < alpha) {
+        var l2 = load8(lens + s);
+        if (l2 != 0) {
+            store64(codes + s * 8, load64(&nx + l2 * 8));
+            store64(&nx + l2 * 8, load64(&nx + l2 * 8) + 1);
+        }
+        s = s + 1;
+    }
+    return 0;
+}
+
+# Histogram + (len, sym)-sorted symbol list of lens[0..alpha) into _brv_cnt / _brv_srt.
+fn _brv_hist(lens, alpha) {
+    var i = 0;
+    while (i < 16) { store64(_brv_cnt + i * 8, 0); i = i + 1; }
+    var k = 0;
+    var len = 1;
+    while (len < 16) {
+        var s = 0;
+        while (s < alpha) {
+            if (load8(lens + s) == len) {
+                store16(_brv_srt + (k << 1), s);
+                k = k + 1;
+                store64(_brv_cnt + len * 8, load64(_brv_cnt + len * 8) + 1);
+            }
+            s = s + 1;
+        }
+        len = len + 1;
+    }
+    return k;
+}
+
+# Emit symbol s with its canonical code (MSB-first code bits, i.e. bit-reversed into the stream).
+fn _bw_sym(codes, lens, s) {
+    var l = load8(lens + s);
+    if (l > 0) { _bw_put(_brd_rev(load64(codes + s * 8), l), l); }
+    return 0;
+}
+
+# One code-length-code length via the static prefix code, found through the decoder's own LUT
+# (its CRC is pinned in T1).
+fn _bw_clcl(v) {
+    var ix = 0;
+    while (ix < 16) {
+        if (((BRD_CLCL_VALUE >> (ix << 2)) & 15) == v) {
+            var nb = (BRD_CLCL_BITS >> (ix << 2)) & 15;
+            _bw_put(ix & ((1 << nb) - 1), nb);
+            return 0;
+        }
+        ix = ix + 1;
+    }
+    return 0;
+}
+
+# HSKIP + code-length-code lengths from _brv_cl18, stopping where the reader stops (space <= 0).
+fn _bw_clc_header(hskip) {
+    _bw_put(hskip, 2);
+    var space = 32;
+    var i = hskip;
+    while (i < 18) {
+        var v = load8(_brv_cl18 + _brd_cl_order(i));
+        _bw_clcl(v);
+        if (v != 0) {
+            space = space - (32 >> v);
+            if (space <= 0) { break; }
+        }
+        i = i + 1;
+    }
+    _brv_canon(_brv_cl18, 18, _brv_clc);
+    return 0;
+}
+
+# The complete "all 18" code-length code: symbols 0..13 length 4, 14..17 length 5.
+fn _brv_cl18_all() {
+    var i = 0;
+    while (i < 18) {
+        var l = 4;
+        if (i >= 14) { l = 5; }
+        store8(_brv_cl18 + i, l);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _bw_cl(sym) {
+    return _bw_sym(_brv_clc, _brv_cl18, sym);
+}
+
+# Complex prefix code for lens[0..alpha) (complete), code lengths written literally.
+fn _bw_complex(lens, alpha) {
+    _brv_cl18_all();
+    _bw_clc_header(0);
+    var last = 0;
+    var s = 0;
+    while (s < alpha) {
+        if (load8(lens + s) != 0) { last = s; }
+        s = s + 1;
+    }
+    s = 0;
+    while (s <= last) {
+        _bw_cl(load8(lens + s));
+        s = s + 1;
+    }
+    return 0;
+}
+
+# Random complete prefix code over alpha symbols with max length maxl: random leaf splitting
+# (half the time biased to deep chains), leaves assigned to a random symbol subset. Returns the
+# number of used symbols; lengths in _brv_lens.
+fn _brv_rand_code(alpha, maxl) {
+    var lim = alpha;
+    if (maxl < 12 && (1 << maxl) < lim) { lim = 1 << maxl; }
+    var n = 2 + _brv_rand(lim - 1);
+    var lf = _brv_leaf;
+    store64(lf, 1);
+    store64(lf + 8, 1);
+    var cnt = 2;
+    var deep = _brv_rand(2);
+    while (cnt < n) {
+        var i = _brv_rand(cnt);
+        if (deep == 1 && _brv_rand(4) != 0) { i = cnt - 1; }
+        while (load64(lf + i * 8) >= maxl) {
+            i = i + 1;
+            if (i == cnt) { i = 0; }
+        }
+        var l = load64(lf + i * 8) + 1;
+        store64(lf + i * 8, l);
+        store64(lf + cnt * 8, l);
+        cnt = cnt + 1;
+    }
+    var j = 0;
+    while (j < alpha) { store64(_brv_perm + j * 8, j); j = j + 1; }
+    j = alpha - 1;
+    while (j > 0) {
+        var r = _brv_rand(j + 1);
+        var tmp = load64(_brv_perm + j * 8);
+        store64(_brv_perm + j * 8, load64(_brv_perm + r * 8));
+        store64(_brv_perm + r * 8, tmp);
+        j = j - 1;
+    }
+    _brv_zero(_brv_lens, alpha);
+    j = 0;
+    while (j < n) {
+        store8(_brv_lens + load64(_brv_perm + j * 8), load64(lf + j * 8));
+        j = j + 1;
+    }
+    return n;
+}
+
+# Encode every used symbol of lens (ascending) after the current stream position, read them back
+# through table tab, and check symbol + bits consumed. Returns the mismatch count.
+fn _brv_decode_all(tab, lens, alpha) {
+    var bad = 0;
+    var s = 0;
+    while (s < alpha) {
+        var l = load8(lens + s);
+        if (l != 0) {
+            var b0 = _brv_bitpos();
+            var v = _brd_sym(tab);
+            if (v != s || _brv_bitpos() - b0 != l) { bad = bad + 1; }
+        }
+        s = s + 1;
+    }
+    return bad;
+}
+
+fn _bw_all_syms(lens, alpha) {
+    _brv_canon(lens, alpha, _brv_codes);
+    var s = 0;
+    while (s < alpha) {
+        _bw_sym(_brv_codes, lens, s);
+        s = s + 1;
+    }
+    return 0;
+}
+
+# Bound on table entries per alphabet (zlib `enough`, root 8, max 15: tables.txt ENOUGH_ROOT8_MAX15;
+# 18 uses the 26 bound: an 18-symbol complete code is a complete code over 26 symbols).
+fn _brv_bound(alpha) {
+    if (alpha <= 26) { return 396; }
+    if (alpha <= 256) { return 632; }
+    if (alpha <= 258) { return 632; }
+    if (alpha <= 272) { return 646; }
+    if (alpha <= 520) { return 896; }
+    return 1080;
+}
+
+# T3 property: 2,000 random complete codes over alphabets 18/26/258/272/704, max length 1..15:
+# direct build, and the same code through the complex-code reader (the table must be identical and
+# fit the §4.4 bound); every symbol decodes with exactly its code length.
+fn test_t3_builder_random() {
+    assert(_brd_ws_ensure() == 0 && _brd_ws != 0, "T3 workspace allocated");
+    var bad_bound = 0;
+    var bad_reader = 0;
+    var bad_table = 0;
+    var bad_decode = 0;
+    var subtables = 0;
+    var it = 0;
+    while (it < 2000) {
+        var k5 = it % 5;
+        var alpha = 18;
+        if (k5 == 1) { alpha = 26; }
+        if (k5 == 2) { alpha = 258; }
+        if (k5 == 3) { alpha = 272; }
+        if (k5 == 4) { alpha = 704; }
+        var maxl = 1 + _brv_rand(15);
+        _brv_rand_code(alpha, maxl);
+        _brv_hist(_brv_lens, alpha);
+        var top = _brd_build(_brv_tab, 4096, _brv_cnt, _brv_srt);
+        if (top < 256 || top > _brv_bound(alpha)) { bad_bound = bad_bound + 1; }
+        if (top > 256) { subtables = subtables + 1; }
+        _bw_start();
+        _bw_complex(_brv_lens, alpha);
+        _bw_all_syms(_brv_lens, alpha);
+        var n = _bw_len();
+        _brd_reader_init(_brv_bs, n);
+        var r = _brd_read_code(alpha, _brv_tab2, _brv_bound(alpha));
+        if (r != top) { bad_reader = bad_reader + 1; }
+        if (r == top && top > 0) {
+            var i = 0;
+            while (i < top) {
+                if (load16(_brv_tab + (i << 1)) != load16(_brv_tab2 + (i << 1))) { bad_table = bad_table + 1; i = top; }
+                i = i + 1;
+            }
+            bad_decode = bad_decode + _brv_decode_all(_brv_tab2, _brv_lens, alpha);
+        }
+        it = it + 1;
+    }
+    assert(bad_bound == 0, "T3 random codes: table size within the §4.4 bound");
+    assert(bad_reader == 0, "T3 random codes: complex-code reader builds the same size");
+    assert(bad_table == 0, "T3 random codes: reader table identical to the direct build");
+    assert(bad_decode == 0, "T3 random codes: every symbol decodes with its code length");
+    assert(subtables > 500, "T3 random codes: second-level tables exercised");
+    return 0;
+}
+
+# Parse "a,b,c" decimals into _brv_cnt[1..15].
+fn _brv_parse_hist(s) {
+    var i = 0;
+    while (i < 16) { store64(_brv_cnt + i * 8, 0); i = i + 1; }
+    var len = 1;
+    var v = 0;
+    var p = s;
+    while (load8(p) != 0) {
+        var ch = load8(p);
+        if (ch == 44) {
+            store64(_brv_cnt + len * 8, v);
+            len = len + 1;
+            v = 0;
+        } else {
+            v = v * 10 + ch - 48;
+        }
+        p = p + 1;
+    }
+    store64(_brv_cnt + len * 8, v);
+    return len;
+}
+
+# One exact-fit cell: the histogram builds to exactly `top` entries; cap == top succeeds and
+# decodes every symbol, cap == top - 1 fails closed.
+fn _brv_exact(alpha, hist, top) {
+    assert(_brv_parse_hist(hist) == 15, "T3 exact-fit histogram has 15 counts");
+    var sum = 0;
+    var kraft = 0;
+    var len = 1;
+    while (len < 16) {
+        sum = sum + load64(_brv_cnt + len * 8);
+        kraft = kraft + (load64(_brv_cnt + len * 8) << (15 - len));
+        len = len + 1;
+    }
+    assert(sum == alpha && kraft == 32768, "T3 exact-fit histogram is a complete code over the alphabet");
+    var j = 0;
+    while (j < alpha) { store64(_brv_perm + j * 8, j); j = j + 1; }
+    j = alpha - 1;
+    while (j > 0) {
+        var r = _brv_rand(j + 1);
+        var tmp = load64(_brv_perm + j * 8);
+        store64(_brv_perm + j * 8, load64(_brv_perm + r * 8));
+        store64(_brv_perm + r * 8, tmp);
+        j = j - 1;
+    }
+    var k = 0;
+    len = 1;
+    while (len < 16) {
+        var c = load64(_brv_cnt + len * 8);
+        while (c > 0) {
+            store8(_brv_lens + load64(_brv_perm + k * 8), len);
+            k = k + 1;
+            c = c - 1;
+        }
+        len = len + 1;
+    }
+    _brv_hist(_brv_lens, alpha);
+    assert(_brd_build(_brv_tab, top, _brv_cnt, _brv_srt) == top, "T3 exact fit: cap == bound builds to the bound");
+    _bw_start();
+    _bw_all_syms(_brv_lens, alpha);
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brv_decode_all(_brv_tab, _brv_lens, alpha) == 0, "T3 exact fit: every symbol decodes");
+    assert(_brd_build(_brv_tab2, top - 1, _brv_cnt, _brv_srt) == 0 - ERR_CORRUPT_DATA,
+      "T3 exact fit: cap == bound - 1 fails closed");
+    # The same code through the complex-code reader with the bound as its capacity.
+    _bw_start();
+    _bw_complex(_brv_lens, alpha);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(alpha, _brv_tab2, top) == top, "T3 exact fit: reader at cap == bound");
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(alpha, _brv_tab2, top - 1) == 0 - ERR_CORRUPT_DATA, "T3 exact fit: reader at bound - 1");
+    return 0;
+}
+
+fn _brv_ka(id, hist, top) {
+    _brv_parse_hist(hist);
+    var alpha = 0;
+    var len = 1;
+    while (len < 16) {
+        alpha = alpha + load64(_brv_cnt + len * 8);
+        len = len + 1;
+    }
+    var k = 0;
+    len = 1;
+    while (len < 16) {
+        var c = load64(_brv_cnt + len * 8);
+        while (c > 0) {
+            store8(_brv_lens + k, len);
+            k = k + 1;
+            c = c - 1;
+        }
+        len = len + 1;
+    }
+    _brv_hist(_brv_lens, alpha);
+    assert(_brd_build(_brv_tab, 4096, _brv_cnt, _brv_srt) == top, "T3 known-answer table size");
+    _bw_start();
+    _bw_all_syms(_brv_lens, alpha);
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brv_decode_all(_brv_tab, _brv_lens, alpha) == 0 && id > 0, "T3 known-answer table decodes");
+    return 0;
+}
+
+fn test_t3_exact_fit() {
+    _brv_exact(26, "1,1,1,1,1,1,0,0,5,1,9,1,1,1,2", 396);
+    _brv_exact(256, "1,1,0,0,0,0,0,0,119,1,1,33,33,65,2", 630);
+    _brv_exact(258, "1,1,0,0,0,0,0,0,121,1,1,1,65,65,2", 632);
+    _brv_exact(272, "1,1,0,0,0,0,0,0,119,9,9,1,1,1,130", 646);
+    _brv_exact(520, "0,0,0,0,0,0,0,0,509,5,1,1,1,1,2", 896);
+    _brv_exact(704, "0,0,0,0,0,0,0,0,505,1,1,1,65,1,130", 1080);
+    # Known-answer subtable sizes (NextTableBitSize): two 9-bit codes under one prefix -> 2 entries;
+    # 9 + 10 + 10 under one prefix -> 4; four 9-bit codes under two prefixes -> 2 + 2.
+    _brv_ka(1, "1,1,1,1,1,1,1,1,2,0,0,0,0,0,0", 258);
+    _brv_ka(2, "0,0,0,0,0,0,0,255,1,2,0,0,0,0,0", 260);
+    _brv_ka(3, "0,0,0,0,0,0,0,254,4,0,0,0,0,0,0", 260);
+    # Capacity guards below the root.
+    _brv_hist(_brv_lens, 704);
+    assert(_brd_build(_brv_tab, 255, _brv_cnt, _brv_srt) == 0 - ERR_CORRUPT_DATA, "T3 build with cap 255 fails closed");
+    _bw_start();
+    _bw_put(1, 2);
+    _bw_put(0, 2);
+    _bw_put(77, 8);
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(256, _brv_tab, 255) == 0 - ERR_CORRUPT_DATA, "T3 NSYM=1 with cap 255 fails closed");
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(256, _brv_tab, 256) == 256, "T3 NSYM=1 with cap 256 builds");
+    return 0;
+}
+
+# Simple codes: NSYM 1..4, tree-select 0/1, all 24 orders of 4 distinct symbols, at 8 and 10
+# symbol bits. Lengths follow the listed order; codes are canonical over (len, sym).
+fn _brv_simple_cells(alpha, s0, s1, s2, s3) {
+    var syms[32];
+    store64(&syms, s0);
+    store64(&syms + 8, s1);
+    store64(&syms + 16, s2);
+    store64(&syms + 24, s3);
+    var abits = 0;
+    var x = alpha - 1;
+    while (x > 0) { abits = abits + 1; x = x >> 1; }
+    var cells = 0;
+    var bad = 0;
+    var a = 0;
+    while (a < 4) {
+        var b = 0;
+        while (b < 4) {
+            var c = 0;
+            while (c < 4) {
+                var d = 6 - a - b - c;
+                if (a != b && a != c && b != c && d >= 0 && d < 4 && d != a && d != b && d != c) {
+                    var ord[32];
+                    store64(&ord, load64(&syms + a * 8));
+                    store64(&ord + 8, load64(&syms + b * 8));
+                    store64(&ord + 16, load64(&syms + c * 8));
+                    store64(&ord + 24, load64(&syms + d * 8));
+                    var kind = 0;
+                    while (kind < 4) {
+                        var nsym = 2 + kind;
+                        var tsel = 0;
+                        if (kind == 3) { nsym = 4; tsel = 1; }
+                        var lens = 0x11;
+                        if (nsym == 3) { lens = 0x221; }
+                        if (nsym == 4) { lens = 0x2222; }
+                        if (tsel == 1) { lens = 0x3321; }
+                        _brv_zero(_brv_lens, alpha);
+                        var i = 0;
+                        while (i < nsym) {
+                            store8(_brv_lens + load64(&ord + i * 8), (lens >> (4 * i)) & 15);
+                            i = i + 1;
+                        }
+                        _brv_canon(_brv_lens, alpha, _brv_codes);
+                        _bw_start();
+                        _bw_put(1, 2);
+                        _bw_put(nsym - 1, 2);
+                        i = 0;
+                        while (i < nsym) { _bw_put(load64(&ord + i * 8), abits); i = i + 1; }
+                        if (nsym == 4) { _bw_put(tsel, 1); }
+                        i = nsym - 1;
+                        while (i >= 0) { _bw_sym(_brv_codes, _brv_lens, load64(&ord + i * 8)); i = i - 1; }
+                        var n = _bw_len();
+                        _brd_reader_init(_brv_bs, n);
+                        if (_brd_read_code(alpha, _brv_tab, 632) != 256) { bad = bad + 1; }
+                        i = nsym - 1;
+                        while (i >= 0) {
+                            var sv = load64(&ord + i * 8);
+                            var b0 = _brv_bitpos();
+                            if (_brd_sym(_brv_tab) != sv) { bad = bad + 1; }
+                            if (_brv_bitpos() - b0 != load8(_brv_lens + sv)) { bad = bad + 1; }
+                            i = i - 1;
+                        }
+                        cells = cells + 1;
+                        kind = kind + 1;
+                    }
+                }
+                c = c + 1;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    assert(cells == 96, "T3 simple codes: 24 orders x 4 kinds");
+    assert(bad == 0, "T3 simple codes decode canonically over (len, sym)");
+    return 0;
+}
+
+fn _brv_simple_stream(alpha, nsym, s0, s1, s2, s3) {
+    var abits = 0;
+    var x = alpha - 1;
+    while (x > 0) { abits = abits + 1; x = x >> 1; }
+    _bw_start();
+    _bw_put(1, 2);
+    _bw_put(nsym - 1, 2);
+    _bw_put(s0, abits);
+    if (nsym > 1) { _bw_put(s1, abits); }
+    if (nsym > 2) { _bw_put(s2, abits); }
+    if (nsym > 3) {
+        _bw_put(s3, abits);
+        _bw_put(0, 1);
+    }
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    return n;
+}
+
+fn test_t3_simple() {
+    _brv_simple_cells(256, 3, 250, 1, 77);
+    _brv_simple_cells(704, 703, 0, 512, 9);
+    _brv_simple_cells(26, 25, 0, 13, 2);
+    # NSYM = 1: a 0-bit code decodes with no input left.
+    var n = _brv_simple_stream(704, 1, 700, 0, 0, 0);
+    assert(_brd_read_code(704, _brv_tab, 1080) == 256, "T3 NSYM=1 fills the root");
+    assert(_brd_sym(_brv_tab) == 700 && _brd_sym(_brv_tab) == 700, "T3 NSYM=1 decodes with 0 bits");
+    _brd_reader_init(_brv_bs, 2);
+    assert(_brd_bits(2) == 1 && _brd_bits(2) == 0 && _brd_bits(10) == 700, "T3 NSYM=1 stream layout");
+    assert(_brv_bitpos() == 14 && n == 2, "T3 NSYM=1 consumes 14 bits");
+    # Exactly 8 bits (alphabet 16): the 0-bit symbol decodes with no bits left at all.
+    n = _brv_simple_stream(16, 1, 9, 0, 0, 0);
+    assert(n == 1 && _brd_read_code(16, _brv_tab, 396) == 256, "T3 NSYM=1 over 16 symbols is exactly one byte");
+    assert(_brd_nb == 0 && _brd_ip == _brd_end, "T3 NSYM=1: input fully consumed");
+    assert(_brd_sym(_brv_tab) == 9, "T3 NSYM=1: 0-bit symbol at end of input");
+    assert(_brd_bits(1) == 0 - ERR_CORRUPT_DATA, "T3 NSYM=1: nothing left");
+    # Symbol >= alphabet, duplicates, truncation.
+    _brv_simple_stream(26, 2, 26, 0, 0, 0);
+    assert(_brd_read_code(26, _brv_tab, 396) == 0 - ERR_INVALID_HUFFMAN, "T3 simple: symbol == alphabet (26)");
+    _brv_simple_stream(26, 2, 0, 25, 0, 0);
+    assert(_brd_read_code(26, _brv_tab, 396) == 256, "T3 simple: symbol alphabet-1 accepted");
+    _brv_simple_stream(704, 3, 5, 704, 6, 0);
+    assert(_brd_read_code(704, _brv_tab, 1080) == 0 - ERR_INVALID_HUFFMAN, "T3 simple: symbol 704 >= 704");
+    _brv_simple_stream(65, 2, 1, 100, 0, 0);
+    assert(_brd_read_code(65, _brv_tab, 896) == 0 - ERR_INVALID_HUFFMAN, "T3 simple: 7-bit symbol 100 >= 65");
+    _brv_simple_stream(520, 4, 519, 3, 400, 2);
+    assert(_brd_read_code(520, _brv_tab, 896) == 256, "T3 simple: distance alphabet 520, 10-bit symbols");
+    _brv_simple_stream(256, 2, 9, 9, 0, 0);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_INVALID_HUFFMAN, "T3 simple: duplicate pair");
+    _brv_simple_stream(256, 4, 1, 2, 3, 1);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_INVALID_HUFFMAN, "T3 simple: duplicate first/last of 4");
+    _brv_simple_stream(256, 4, 1, 2, 3, 3);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_INVALID_HUFFMAN, "T3 simple: duplicate last pair of 4");
+    n = _brv_simple_stream(256, 4, 1, 2, 3, 4);
+    _brd_reader_init(_brv_bs, n - 1);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_CORRUPT_DATA, "T3 simple: truncated is ERR_CORRUPT_DATA");
+    return 0;
+}
+
+# Complex codes: code-length-code checks, repeat semantics, space checks.
+fn test_t3_complex() {
+    # Code-length code incomplete: lengths 2, 2 then zeros (space 16).
+    _brv_zero(_brv_cl18, 18);
+    store8(_brv_cl18 + 1, 2);
+    store8(_brv_cl18 + 2, 2);
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_put(0, 32);
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_INVALID_HUFFMAN, "T3 complex: incomplete code-length code");
+    # Over-subscribed: 2, 1, 1 (space -8).
+    store8(_brv_cl18 + 3, 1);
+    store8(_brv_cl18 + 4, 1);
+    store8(_brv_cl18 + 2, 0);
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_put(0, 32);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_INVALID_HUFFMAN,
+      "T3 complex: over-subscribed code-length code");
+    # No code-length code at all.
+    _brv_zero(_brv_cl18, 18);
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_put(0, 32);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(256, _brv_tab, 632) == 0 - ERR_INVALID_HUFFMAN, "T3 complex: empty code-length code");
+    # One code-length symbol (8) with HSKIP 3: a 0-bit code, every literal gets length 8.
+    store8(_brv_cl18 + 8, 3);
+    _bw_start();
+    _bw_clc_header(3);
+    var hb = _bw_n + 8 * (_bw_p - _brv_bs);
+    _bw_put(0xA5, 8);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(256, _brv_tab, 632) == 256, "T3 complex: lone code-length symbol 8 -> all literals length 8");
+    assert(_brv_bitpos() == hb, "T3 complex: the lone code-length symbol consumes no bits");
+    assert(_brd_sym(_brv_tab) == 0xA5, "T3 complex: all-8 literal code decodes");
+    # Lone code-length symbol 0: every length 0, space never reaches 0.
+    _brv_zero(_brv_cl18, 18);
+    store8(_brv_cl18 + 0, 1);
+    _bw_start();
+    _bw_clc_header(0);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(26, _brv_tab, 396) == 0 - ERR_INVALID_HUFFMAN, "T3 complex: all-zero lengths");
+    # A code-length code with one code of each length 1..5 (plus a second 5): 8:1 0:2 16:3 17:4 7:5 9:5.
+    _brv_zero(_brv_cl18, 18);
+    store8(_brv_cl18 + 8, 1);
+    store8(_brv_cl18 + 0, 2);
+    store8(_brv_cl18 + 16, 3);
+    store8(_brv_cl18 + 17, 4);
+    store8(_brv_cl18 + 7, 5);
+    store8(_brv_cl18 + 9, 5);
+    _bw_start();
+    _bw_clc_header(0);
+    # lengths: 7, 17(x=0: 3 zeros), 9, 9, 0, 8, 16(x=0: +3 eights), then 249 x 8.
+    _bw_cl(7);
+    _bw_cl(17);
+    _bw_put(0, 3);
+    _bw_cl(9);
+    _bw_cl(9);
+    _bw_cl(0);
+    _bw_cl(8);
+    _bw_cl(16);
+    _bw_put(0, 2);
+    var i = 0;
+    while (i < 249) { _bw_cl(8); i = i + 1; }
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    var r = _brd_read_code(704, _brv_tab, 1080);
+    assert(r >= 256, "T3 complex: code-length code with lengths 1..5 accepted");
+    var l = _brd_ws + BRD_WS_LENS;
+    assert(load8(l) == 7 && load8(l + 1) == 0 && load8(l + 3) == 0 && load8(l + 4) == 9 && load8(l + 5) == 9,
+      "T3 complex: lengths 7, 0 x 3, 9, 9");
+    assert(load8(l + 6) == 0 && load8(l + 7) == 8 && load8(l + 10) == 8 && load8(l + 259) == 8,
+      "T3 complex: literal 0, then 8 x 253");
+    # Repeat semantics: initial prev = 8; 17 runs extend (rep - 2) << 3; a new code resets.
+    _brv_cl18_all();
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_cl(16);
+    _bw_put(0, 2);     # 3 x 8 (prev starts at 8)            syms 0..2
+    _bw_cl(17);
+    _bw_put(7, 3);     # 10 zeros                             3..12
+    _bw_cl(17);
+    _bw_put(7, 3);     # (10-2)<<3 + 10 = 74: 64 more zeros    13..76
+    _bw_cl(16);
+    _bw_put(1, 2);     # new run of 8s: 4                      77..80
+    _bw_cl(16);
+    _bw_put(2, 2);     # (4-2)<<2 + 5 = 13: 9 more            81..89
+    _bw_cl(0);         # literal 0 resets rep                  90
+    _bw_cl(16);
+    _bw_put(0, 2);     # 3 x 8 (rep restarted)                 91..93
+    _bw_cl(7);         # prev = 7                              94
+    _bw_cl(16);
+    _bw_put(0, 2);     # 3 x 7                                 95..97
+    i = 0;
+    while (i < 229) { _bw_cl(8); i = i + 1; }   # 98..326
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    r = _brd_read_code(704, _brv_tab, 1080);
+    assert(r >= 256, "T3 complex: repeat-code stream builds");
+    _brv_zero(_brv_lens, 704);
+    i = 0;
+    while (i < 327) {
+        var want = 8;
+        if (i >= 3 && i <= 76) { want = 0; }
+        if (i == 90) { want = 0; }
+        if (i >= 94 && i <= 97) { want = 7; }
+        store8(_brv_lens + i, want);
+        i = i + 1;
+    }
+    var bad = 0;
+    i = 0;
+    while (i < 327) {
+        if (load8(l + i) != load8(_brv_lens + i)) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert(bad == 0, "T3 complex: repeat codes 16 / 17 expand per RFC 7932 §3.5");
+    _bw_start();
+    _bw_all_syms(_brv_lens, 704);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brv_decode_all(_brv_tab, _brv_lens, 704) == 0, "T3 complex: repeat-code table decodes");
+    # Repeat past the alphabet end: 10 zeros then (10-2)<<3 + 10 = 74 > 26.
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_cl(17);
+    _bw_put(7, 3);
+    _bw_cl(17);
+    _bw_put(7, 3);
+    _bw_put(0, 16);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(26, _brv_tab, 396) == 0 - ERR_INVALID_HUFFMAN, "T3 complex: repeat past the alphabet");
+    # A repeat ending exactly at the alphabet end is fine: 2 x 1 then zeros.
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_cl(1);
+    _bw_cl(1);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(26, _brv_tab, 396) == 256, "T3 complex: two length-1 symbols stop at space 0");
+    # Incomplete: one length-1 symbol, then zeros to the alphabet end.
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_cl(1);
+    i = 0;
+    while (i < 25) { _bw_cl(0); i = i + 1; }
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(26, _brv_tab, 396) == 0 - ERR_INVALID_HUFFMAN,
+      "T3 complex: lone length-1 symbol is incomplete");
+    # Over-subscribed: 2, 1, 1.
+    _bw_start();
+    _bw_clc_header(0);
+    _bw_cl(2);
+    _bw_cl(1);
+    _bw_cl(1);
+    _bw_put(0, 16);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(26, _brv_tab, 396) == 0 - ERR_INVALID_HUFFMAN, "T3 complex: over-subscribed lengths");
+    # Lengths that run past the alphabet with space left: 26 x length 5 is only 26/32.
+    _bw_start();
+    _bw_clc_header(0);
+    i = 0;
+    while (i < 26) { _bw_cl(5); i = i + 1; }
+    _bw_put(0, 16);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(26, _brv_tab, 396) == 0 - ERR_INVALID_HUFFMAN,
+      "T3 complex: alphabet exhausted with space left");
+    # Truncation anywhere inside a complex code is ERR_CORRUPT_DATA.
+    _brv_rand_code(272, 15);
+    _bw_start();
+    _bw_complex(_brv_lens, 272);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_code(272, _brv_tab, 646) > 0, "T3 complex: random 272-symbol code reads");
+    var need = _brv_bitpos();
+    bad = 0;
+    var k = 1;
+    while (k * 8 < need) {
+        _brd_reader_init(_brv_bs, k);
+        if (_brd_read_code(272, _brv_tab, 646) != 0 - ERR_CORRUPT_DATA) { bad = bad + 1; }
+        k = k + 1;
+    }
+    assert(bad == 0 && k > 4, "T3 complex: every truncated prefix is ERR_CORRUPT_DATA");
+    return 0;
+}
+
+# Context maps: NTREES 1, RLE + IMTF, RLE overflow, NTREES 256, and a random property sweep.
+fn _bw_varlen8(v) {
+    if (v == 0) { _bw_put(0, 1); return 0; }
+    _bw_put(1, 1);
+    if (v == 1) { _bw_put(0, 3); return 0; }
+    var n = 0;
+    while ((2 << n) <= v) { n = n + 1; }
+    _bw_put(n, 3);
+    _bw_put(v - (1 << n), n);
+    return 0;
+}
+
+fn test_t3_cmap() {
+    # Varlen8 round trip over 0..255.
+    var bad = 0;
+    var v = 0;
+    while (v < 256) {
+        _bw_start();
+        _bw_varlen8(v);
+        var n0 = _bw_len();
+        _brd_reader_init(_brv_bs, n0);
+        if (_brd_varlen8() != v) { bad = bad + 1; }
+        v = v + 1;
+    }
+    assert(bad == 0, "T3 VarLenUint8 decodes 0..255");
+    # NTREES = 1: map zeroed, one bit.
+    store8(_brv_map, 9);
+    store8(_brv_map + 63, 9);
+    _bw_start();
+    _bw_varlen8(0);
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_cmap(64, _brv_map) == 1 && _brv_bitpos() == 1, "T3 cmap: NTREES 1 reads one bit");
+    assert(load8(_brv_map) == 0 && load8(_brv_map + 63) == 0, "T3 cmap: NTREES 1 zeroes the map");
+    # NTREES = 3, RLEMAX = 2, simple code {0, 1, 2, 4} (2 bits each, canonical by symbol).
+    _bw_start();
+    _bw_varlen8(2);
+    _bw_put(1, 1);
+    _bw_put(1, 4);
+    _bw_put(1, 2);
+    _bw_put(3, 2);
+    _bw_put(0, 3);
+    _bw_put(1, 3);
+    _bw_put(2, 3);
+    _bw_put(4, 3);
+    _bw_put(0, 1);
+    # codes: 0 -> 00, 1 -> 01 (stream bits 10 = 2), 2 -> 10 (stream 1), 4 -> 11 (3)
+    _bw_put(3, 2);                  # 4: value 2
+    _bw_put(2, 2);
+    _bw_put(1, 1);                  # 1 + x=1: 3 zeros
+    _bw_put(1, 2);
+    _bw_put(3, 2);                  # 2 + x=3: 7 zeros
+    _bw_put(0, 2);                  # 0
+    var i = 0;
+    while (i < 6) { _bw_put(1, 2); _bw_put(3, 2); i = i + 1; }   # 42 zeros
+    i = 0;
+    while (i < 3) { _bw_put(2, 2); _bw_put(1, 1); i = i + 1; }   # 9 zeros
+    _bw_put(3, 2);                  # value 2 (entry 63)
+    var mark = _bw_p;
+    var markbit = _bw_n;
+    _bw_put(1, 1);                  # IMTF
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_cmap(64, _brv_map) == 3, "T3 cmap: RLE + IMTF map reads NTREES 3");
+    bad = 0;
+    i = 0;
+    while (i < 63) {
+        if (load8(_brv_map + i) != 2) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert(bad == 0 && load8(_brv_map + 63) == 1, "T3 cmap: RLE + IMTF expands to 2 x 63, 1");
+    # Without IMTF the raw values stand.
+    store8(mark, load8(mark) & (255 ^ (1 << markbit)));
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_cmap(64, _brv_map) == 3, "T3 cmap: RLE map without IMTF");
+    assert(load8(_brv_map) == 2 && load8(_brv_map + 1) == 0 && load8(_brv_map + 62) == 0 && load8(_brv_map + 63) == 2,
+      "T3 cmap: raw RLE values");
+    # RLE run past the map end (63 + 2 > 64).
+    _bw_start();
+    _bw_varlen8(2);
+    _bw_put(1, 1);
+    _bw_put(1, 4);
+    _bw_put(1, 2);
+    _bw_put(3, 2);
+    _bw_put(0, 3);
+    _bw_put(1, 3);
+    _bw_put(2, 3);
+    _bw_put(4, 3);
+    _bw_put(0, 1);
+    i = 0;
+    while (i < 9) { _bw_put(1, 2); _bw_put(3, 2); i = i + 1; }   # 63 zeros
+    _bw_put(2, 2);
+    _bw_put(0, 1);                  # run of 2
+    _bw_put(0, 8);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_cmap(64, _brv_map) == 0 - ERR_CORRUPT_DATA, "T3 cmap: RLE run past the end");
+    # Map code symbol >= NTREES + RLEMAX.
+    _bw_start();
+    _bw_varlen8(2);
+    _bw_put(1, 1);
+    _bw_put(1, 4);
+    _bw_put(1, 2);
+    _bw_put(1, 2);
+    _bw_put(0, 3);
+    _bw_put(5, 3);
+    _bw_put(0, 8);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_cmap(64, _brv_map) == 0 - ERR_INVALID_HUFFMAN, "T3 cmap: code symbol >= NTREES + RLEMAX");
+    # NTREES = 256 without RLE: symbol 255 maps to tree 255.
+    _bw_start();
+    _bw_varlen8(255);
+    _bw_put(0, 1);
+    _bw_put(1, 2);
+    _bw_put(0, 2);
+    _bw_put(255, 8);
+    _bw_put(0, 1);
+    n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    assert(_brd_read_cmap(64, _brv_map) == 256, "T3 cmap: NTREES 256");
+    assert(load8(_brv_map) == 255 && load8(_brv_map + 63) == 255, "T3 cmap: 0-bit symbol 255 -> tree 255");
+    # Random property sweep: random NTREES / RLEMAX, a random complete code for the map alphabet,
+    # random entries and runs, optional IMTF. The decoded map equals a reference expansion and
+    # every entry is < NTREES.
+    var bad_eq = 0;
+    var bad_range = 0;
+    var mtf[256];
+    var it = 0;
+    while (it < 300) {
+        var nt = 2 + _brv_rand(255);
+        var rle = _brv_rand(17);
+        var alpha = nt + rle;
+        var size = 4 << _brv_rand(9);            # 4 .. 1024
+        var plain = 0;
+        while (plain == 0) {                     # the code needs a non-run symbol to end on
+            _brv_rand_code(alpha, 1 + _brv_rand(15));
+            i = 0;
+            while (i < alpha) {
+                if (load8(_brv_lens + i) != 0 && (i == 0 || i > rle)) { plain = 1; }
+                i = i + 1;
+            }
+        }
+        _bw_start();
+        _bw_varlen8(nt - 1);
+        if (rle > 0) {
+            _bw_put(1, 1);
+            _bw_put(rle - 1, 4);
+        } else {
+            _bw_put(0, 1);
+        }
+        _bw_complex(_brv_lens, alpha);
+        _brv_canon(_brv_lens, alpha, _brv_codes);
+        var pos = 0;
+        var x = 0;
+        while (pos < size) {
+            var s = _brv_rand(alpha);
+            while (load8(_brv_lens + s) == 0) {
+                s = s + 1;
+                if (s == alpha) { s = 0; }
+            }
+            if (s >= 1 && s <= rle) {
+                x = _brv_rand(1 << s);
+                if (pos + (1 << s) + x > size) {
+                    s = 0;
+                    while (load8(_brv_lens + s) == 0 || (s >= 1 && s <= rle)) { s = s + 1; }
+                }
+            }
+            _bw_sym(_brv_codes, _brv_lens, s);
+            if (s >= 1 && s <= rle) {
+                _bw_put(x, s);
+                var e = pos + (1 << s) + x;
+                while (pos < e) { store8(_brv_map2 + pos, 0); pos = pos + 1; }
+            } else {
+                var val = 0;
+                if (s > rle) { val = s - rle; }
+                store8(_brv_map2 + pos, val);
+                pos = pos + 1;
+            }
+        }
+        var imtf = _brv_rand(2);
+        _bw_put(imtf, 1);
+        n = _bw_len();
+        if (imtf == 1) {
+            i = 0;
+            while (i < 256) { store8(&mtf + i, i); i = i + 1; }
+            i = 0;
+            while (i < size) {
+                var idx = load8(_brv_map2 + i);
+                var mv = load8(&mtf + idx);
+                store8(_brv_map2 + i, mv);
+                var j = idx;
+                while (j > 0) { store8(&mtf + j, load8(&mtf + j - 1)); j = j - 1; }
+                store8(&mtf, mv);
+                i = i + 1;
+            }
+        }
+        _brd_reader_init(_brv_bs, n);
+        if (_brd_read_cmap(size, _brv_map) != nt) { bad_eq = bad_eq + 1; }
+        i = 0;
+        while (i < size) {
+            if (load8(_brv_map + i) != load8(_brv_map2 + i)) { bad_eq = bad_eq + 1; i = size; }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < size) {
+            if (load8(_brv_map + i) >= nt) { bad_range = bad_range + 1; }
+            i = i + 1;
+        }
+        it = it + 1;
+    }
+    assert(bad_eq == 0, "T3 cmap property: decoded maps equal the reference expansion");
+    assert(bad_range == 0, "T3 cmap property: every entry < NTREES");
+    return 0;
+}
+
+# Block switching over hand-built trees: NBLTYPES 3, type code NSYM 4 {0,1,2,3} (2 bits each),
+# count code NSYM 1 {0} (0 bits; count = 1 + 2 extra bits). Codes 0, 1, 1, 3, 0, 2 give types
+# 1 (previous starts at 1), 2, 0 (wrap), 1, 0, 0.
+fn test_t3_block_switch() {
+    _bw_start();
+    _bw_put(1, 2);
+    _bw_put(3, 2);
+    _bw_put(0, 3);
+    _bw_put(1, 3);
+    _bw_put(2, 3);
+    _bw_put(3, 3);
+    _bw_put(0, 1);
+    _bw_put(1, 2);
+    _bw_put(0, 2);
+    _bw_put(0, 5);
+    var hb = 8 * (_bw_p - _brv_bs) + _bw_n;
+    # type code (canonical by symbol: 0 -> 00, 1 -> 01 = stream 2, 2 -> 10 = stream 1, 3 -> 11), extra
+    _bw_put(0, 2);
+    _bw_put(0, 2);
+    _bw_put(2, 2);
+    _bw_put(3, 2);
+    _bw_put(2, 2);
+    _bw_put(2, 2);
+    _bw_put(3, 2);
+    _bw_put(1, 2);
+    _bw_put(0, 2);
+    _bw_put(0, 2);
+    _bw_put(1, 2);
+    _bw_put(1, 2);
+    var n = _bw_len();
+    _brd_reader_init(_brv_bs, n);
+    var ws = _brd_ws;
+    assert(_brd_read_code(5, ws + BRD_WS_TAB_BT + 2 * 1264, 632) == 256, "T3 block switch: type tree");
+    assert(_brd_read_code(26, ws + BRD_WS_TAB_BC + 2 * 792, 396) == 256, "T3 block switch: count tree");
+    assert(_brv_bitpos() == hb, "T3 block switch: trees consumed their bits");
+    store64(&_brd_nbt + 16, 3);
+    store64(&_brd_btype + 16, 0);
+    store64(&_brd_bprev + 16, 1);
+    var bad = 0;
+    var want = 0x001021;    # types 1, 2, 0, 1, 0, 0 as nibbles
+    var wlen = 0x212341;    # counts 1 + extra: 1, 4, 3, 2, 1, 2
+    var i = 0;
+    while (i < 6) {
+        var t = _brd_block_switch(2);
+        if (t != ((want >> (4 * i)) & 15)) { bad = bad + 1; }
+        if (load64(&_brd_btype + 16) != t) { bad = bad + 1; }
+        if (load64(&_brd_blen + 16) != ((wlen >> (4 * i)) & 15)) { bad = bad + 1; }
+        i = i + 1;
+    }
+    assert(bad == 0, "T3 block switch: ring semantics (code 0 = previous, 1 = current + 1, wrap)");
+    while (_brd_bits(1) >= 0) { i = i + 1; }
+    assert(_brd_block_switch(2) == 0 - ERR_CORRUPT_DATA, "T3 block switch: truncated switch");
+    return 0;
+}
+
+# Distance LUT against the RFC 7932 §4 formula for every NPOSTFIX and NDIRECT.
+fn test_t3_dlut() {
+    var bad = 0;
+    var cells = 0;
+    var np = 0;
+    while (np < 4) {
+        var nd4 = 0;
+        while (nd4 < 16) {
+            var nd = nd4 << np;
+            _brd_dlut(np, nd);
+            var d = _brd_ws + BRD_WS_DLUT;
+            var end = 16 + nd + (48 << np);
+            var dc = 16;
+            while (dc < end) {
+                var e = load64(d + dc * 8);
+                if (dc < 16 + nd) {
+                    if (e != dc - 15) { bad = bad + 1; }
+                } else {
+                    var x = dc - nd - 16;
+                    var ndb = 1 + (x >> (np + 1));
+                    var hcode = x >> np;
+                    var lcode = x & ((1 << np) - 1);
+                    var off = ((2 + (hcode & 1)) << ndb) - 4;
+                    if ((e >> 32) != ndb) { bad = bad + 1; }
+                    if ((e & 0xFFFFFFFF) != (off << np) + lcode + nd + 1) { bad = bad + 1; }
+                }
+                cells = cells + 1;
+                dc = dc + 1;
+            }
+            nd4 = nd4 + 1;
+        }
+        np = np + 1;
+    }
+    assert(bad == 0, "T3 distance LUT matches the RFC formula");
+    assert(cells == 13320, "T3 distance LUT: all 64 (NPOSTFIX, NDIRECT) pairs covered");
+    return 0;
+}
+
+# T10: the header-only frame loop (_brd_decode(..., header_only = 1)), driven by the manifest's
+# #header lines (one per row that needs the command loop). The first compressed meta-block header
+# must parse, end at the reference decoder's bit position, and leave its state: NBLTYPES, initial
+# block counts, NPOSTFIX / NDIRECT, NTREES and the CRC-32 of context modes + literal map + distance
+# map. For streams of 1,024 B or less every prefix is exactly: header complete -> 0, else
+# ERR_CORRUPT_DATA.
+var _brv_hook_rows = 0;
+var _brv_hook_prefixes = 0;
+
+# idx-th comma-separated decimal of field k.
+fn _brv_csv(k, idx) {
+    var p = _brv_f(k);
+    var n = _brv_n(k);
+    var i = 0;
+    var at = 0;
+    var v = 0;
+    while (i < n) {
+        var ch = load8(p + i);
+        if (ch == 44) {
+            if (at == idx) { return v; }
+            at = at + 1;
+            v = 0;
+        } else {
+            v = v * 10 + ch - 48;
+        }
+        i = i + 1;
+    }
+    return v;
+}
+
+fn _brv_hook_line() {
+    var bitpos = _brv_dec(_brv_f(2), _brv_n(2));
+    var mcrc = _brv_hexn(_brv_f(7), _brv_n(7));
+    var nb[24];
+    var bl[24];
+    var c = 0;
+    while (c < 3) {
+        store64(&nb + c * 8, _brv_csv(3, c));
+        store64(&bl + c * 8, _brv_csv(4, c));
+        c = c + 1;
+    }
+    var np = _brv_csv(5, 0);
+    var nd = _brv_csv(5, 1);
+    var ntl = _brv_csv(6, 0);
+    var ntd = _brv_csv(6, 1);
+    var n = _brv_read(_brv_mkpath(_brv_f(1), _brv_n(1)), _brv_s, _BRV_SMAX);
+    assert(n > 0 && n < _BRV_SMAX, "T10 hook stream present");
+    if (n <= 0) { return 0; }
+    var r = _brd_decode(_brv_s, n, _brv_dst, _BRV_MIB16, 0, 1);
+    _brv_hook_rows = _brv_hook_rows + 1;
+    assert(r == 0, "T10 hook: the first compressed meta-block header parses");
+    assert(_brv_bitpos() == bitpos, "T10 hook: header ends at the reference bit position");
+    var bad = 0;
+    c = 0;
+    while (c < 3) {
+        if (load64(&_brd_nbt + c * 8) != load64(&nb + c * 8)) { bad = bad + 1; }
+        var want = load64(&bl + c * 8);
+        if (load64(&nb + c * 8) == 1) { want = BRD_BLEN_NEVER; }
+        if (load64(&_brd_blen + c * 8) != want) { bad = bad + 1; }
+        if (load64(&_brd_btype + c * 8) != 0 || load64(&_brd_bprev + c * 8) != 1) { bad = bad + 1; }
+        c = c + 1;
+    }
+    assert(bad == 0, "T10 hook: NBLTYPES, initial block counts and block-type state match");
+    assert(_brd_npostfix == np && _brd_ndirect == nd, "T10 hook: NPOSTFIX / NDIRECT match");
+    assert(_brd_ntrees_l == ntl && _brd_ntrees_d == ntd, "T10 hook: NTREES match");
+    var ws = _brd_ws;
+    var st = crc32_init();
+    crc32_update(st, ws + BRD_WS_CMODE, load64(&nb));
+    crc32_update(st, ws + BRD_WS_CMAP_L, load64(&nb) << 6);
+    crc32_update(st, ws + BRD_WS_CMAP_D, load64(&nb + 16) << 2);
+    assert(crc32_final(st) == mcrc, "T10 hook: context modes and maps match (CRC-32)");
+    if (n <= 1024 && r == 0) {
+        bad = 0;
+        var k = 1;
+        while (k < n) {
+            var w = 0 - ERR_CORRUPT_DATA;
+            if (k * 8 >= bitpos) { w = 0; }
+            if (_brd_decode(_brv_s, k, _brv_dst, _BRV_MIB16, 0, 1) != w) { bad = bad + 1; }
+            _brv_hook_prefixes = _brv_hook_prefixes + 1;
+            k = k + 1;
+        }
+        assert(bad == 0, "T10 hook: header prefixes are ERR_CORRUPT_DATA until the header is complete");
+    }
+    return 0;
+}
+
+# T10: workspace allocation failure is ERR_OOM, latches nothing, and releases the lock.
+fn test_t10_oom() {
+    var n = _brv_read("tests/data/brotli/small/records_4k.q5w12.br", _brv_s, _BRV_SMAX);
+    assert(n == 223, "T10 OOM stream present");
+    _brotli_reset_tables();
+    assert(_brd_ws == 0, "T10 reset clears the workspace pointer");
+    _sankoch_alloc_set_fail_at(0);
+    assert(brotli_decompress(_brv_s, n, _brv_dst, _BRV_MIB16) == 0 - ERR_OOM, "T10 workspace OOM is ERR_OOM");
+    assert(_brd_ws == 0, "T10 OOM latches no workspace");
+    _sankoch_alloc_set_fail_at(0 - 1);
+    assert(brotli_decompress(_brv_s, n, _brv_dst, _BRV_MIB16) == 4096, "T10 retry after OOM succeeds (lock released)");
+    var w = _brd_ws;
+    assert(w != 0, "T10 retry allocated the workspace");
+    _sankoch_alloc_set_fail_at(0);
+    assert(decompress(FORMAT_BROTLI, _brv_s, n, _brv_dst, _BRV_MIB16) == 4096, "T10 warm workspace allocates nothing");
+    assert(_brd_ws == w, "T10 workspace reused");
+    _sankoch_alloc_set_fail_at(0 - 1);
+    # Streams without a compressed meta-block never allocate.
+    n = _brv_read("tests/data/brotli/small/hello.q0.br", _brv_s, _BRV_SMAX);
+    _brotli_reset_tables();
+    _sankoch_alloc_set_fail_at(0);
+    assert(brotli_decompress(_brv_s, n, _brv_dst, _BRV_MIB16) == 13, "T10 uncompressed-only stream needs no workspace");
+    assert(_brd_ws == 0, "T10 no workspace for an uncompressed-only stream");
+    _sankoch_alloc_set_fail_at(0 - 1);
+    assert(_brd_ws_ensure() == 0 && _brd_ws != 0, "T10 workspace re-armed");
+    return 0;
+}
+
+# ================================================================
+# T11: command loop
+# ================================================================
+
+# One _brd_copy cell: fill a 4 KB buffer with a pattern, copy (pos, dist, len) through the decoder
+# and a bytewise forward copy on a twin, and compare the WHOLE buffer (guard bytes past pos + len
+# included). Returns the number of differing cells (0 or 1).
+fn _brv_copy_cell(buf, twin, pos, dist, len) {
+    var i = 0;
+    while (i < 4096) {
+        var v = (i * 37 + (i >> 5) + dist * 11) & 255;
+        store8(buf + i, v);
+        store8(twin + i, v);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < len) {
+        store8(twin + pos + i, load8(twin + pos + i - dist));
+        i = i + 1;
+    }
+    var saved = _brd_out;
+    _brd_out = buf;
+    _brd_copy(pos, dist, len);
+    _brd_out = saved;
+    i = 0;
+    while (i < 4096) {
+        if (load8(buf + i) != load8(twin + i)) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_t11_copy() {
+    var buf = alloc(4096);
+    var twin = alloc(4096);
+    var bad = 0;
+    var cells = 0;
+    var dist = 1;
+    while (dist <= 24) {
+        var len = 0;
+        while (len <= 40) {
+            bad = bad + _brv_copy_cell(buf, twin, 100, dist, len);
+            cells = cells + 1;
+            len = len + 1;
+        }
+        dist = dist + 1;
+    }
+    assert(bad == 0 && cells == 984, "T11 copy: distances 1..24 x lengths 0..40, forward copy, no slack write");
+    bad = 0;
+    var d = 1;
+    while (d <= 1100) {
+        bad = bad + _brv_copy_cell(buf, twin, 1100, d, 2900);
+        bad = bad + _brv_copy_cell(buf, twin, 1100, d, 2899);
+        if (d < 16) { d = d + 1; } else { d = d + 97; }
+    }
+    assert(bad == 0, "T11 copy: long overlapping and non-overlapping copies (2,899 / 2,900 B)");
+    return 0;
+}
+
+# Output bounds on compressed streams (T6 parity): the 13-byte 16 MiB bomb fails at its header with
+# no byte written; a 1 MiB overlapping copy honours dst_cap, max_output and the clamp.
+fn test_t11_caps() {
+    var s = _brv_s;
+    var d = _brv_dst;
+    var n = _brv_read("tests/data/brotli/crafted/bomb_16mib_max_mlen.br", s, _BRV_SMAX);
+    assert(n == 13, "T11 bomb stream present");
+    var i = 0;
+    while (i < 16) { store8(d + i, 0xA5); i = i + 1; }
+    assert(brotli_decompress(s, n, d, 65536) == 0 - ERR_BUFFER_TOO_SMALL, "T11 bomb into 64 KiB: BUFFER_TOO_SMALL");
+    assert(brotli_decompress_capped(s, n, d, _BRV_MIB16, 65536) == 0 - ERR_OUTPUT_LIMIT,
+      "T11 bomb with max_output 64 KiB is ERR_OUTPUT_LIMIT");
+    assert(load8(d) == 0xA5 && load8(d + 15) == 0xA5, "T11 bomb: nothing written before the header check");
+    n = _brv_read("tests/data/brotli/crafted/mlen_6nibbles_copy_1mib.br", s, _BRV_SMAX);
+    assert(n == 13, "T11 1 MiB stream present");
+    var size = 1048577;
+    assert(brotli_decompress_capped(s, n, d, size, size) == size, "T11 1 MiB: cap == size decodes");
+    var c1 = crc32(d, size);
+    assert(c1 == 0x5331fb39, "T11 1 MiB output CRC-32 (brotli -d)");
+    assert(brotli_decompress(s, n, d, size + 64) == size && crc32(d, size) == c1, "T11 1 MiB uncapped identical");
+    assert(brotli_decompress_capped(s, n, d, size, size - 1) == 0 - ERR_OUTPUT_LIMIT,
+      "T11 1 MiB: cap size - 1 refused");
+    assert(brotli_decompress_capped(s, n, d, size - 1, size) == 0 - ERR_BUFFER_TOO_SMALL,
+      "T11 1 MiB: cap above dst_cap clamps, BUFFER_TOO_SMALL first");
+    return 0;
+}
+
+# ================================================================
+# T4: static dictionary references and transforms
+# ================================================================
+
+var _BRV_GUARD = 0xA5A5A5A5A5A5A5A5;
+
+# All 1,633,984 (length 4..24, word, transform 0..120) expansions through _brd_dict, in that order,
+# streamed into a CRC-32 as [length byte][bytes]. The reference C BrotliTransformDictionaryWord
+# output in the same layout (19,295,456 B, sha256 52e53fe9...f59b; RFC 7932 §8 Ferment / Omit
+# matched it with 0 mismatches) has CRC-32 0x7904b903, and scripts/brotli_ref_decoder.py's
+# transform_word reproduces it. rem = 37 (the longest expansion) must admit every one. Each
+# expansion is written between guard bytes: none before its start, and the 3 bytes after its end
+# stay intact (C ToUpperCase reaches up to 2 bytes past the word).
+fn test_t4_transforms() {
+    _brd_init_tables();
+    var buf = alloc(64);
+    store64(buf, _BRV_GUARD);
+    _brd_out = buf + 8;
+    var st = crc32_init();
+    var one[8];
+    var n = 0;
+    var bad = 0;
+    var over = 0;
+    var zero = 0;
+    var maxl = 0;
+    var len = 4;
+    while (len <= 24) {
+        var nd = _brotli_dict_ndbits(len);
+        var nw = 1 << nd;
+        var w = 0;
+        while (w < nw) {
+            var t = 0;
+            while (t < 121) {
+                store64(buf + 8, _BRV_GUARD);
+                store64(buf + 16, _BRV_GUARD);
+                store64(buf + 24, _BRV_GUARD);
+                store64(buf + 32, _BRV_GUARD);
+                store64(buf + 40, _BRV_GUARD);
+                _brd_pos = 0;
+                var r = _brd_dict(len, w | (t << nd), 37);
+                if (r < 0 || r > 37) {
+                    bad = bad + 1;
+                } else {
+                    var e = buf + 8 + r;
+                    if (load8(e) != 0xA5 || load8(e + 1) != 0xA5 || load8(e + 2) != 0xA5) { over = over + 1; }
+                    store8(&one, r);
+                    crc32_update(st, &one, 1);
+                    crc32_update(st, buf + 8, r);
+                    if (r == 0) { zero = zero + 1; }
+                    if (r > maxl) { maxl = r; }
+                }
+                n = n + 1;
+                t = t + 1;
+            }
+            w = w + 1;
+        }
+        len = len + 1;
+    }
+    assert(n == 1633984 && bad == 0, "T4 all 1,633,984 expansions succeed with rem = 37");
+    assert(crc32_final(st) == 0x7904b903, "T4 golden CRC-32 of every expansion (reference C transform)");
+    assert(zero == 50176 && maxl == 37, "T4 50,176 empty expansions, longest 37 bytes");
+    assert(over == 0, "T4 no expansion writes past its end (3 guard bytes each)");
+    assert(load64(buf) == _BRV_GUARD, "T4 no expansion writes before its start");
+    return 0;
+}
+
+# Fill n bytes at p with the 0xA5 guard.
+fn _brv_guard(p, n) {
+    var i = 0;
+    while (i < n) { store8(p + i, 0xA5); i = i + 1; }
+    return 0;
+}
+
+# 1 when the n bytes at p are all 0xA5.
+fn _brv_guarded(p, n) {
+    var i = 0;
+    while (i < n) {
+        if (load8(p + i) != 0xA5) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# RFC 7932 §8 Ferment on one character, for every byte value c and n = 1..3 bytes left in the word:
+# the byte classes (a..z, other < 192, 2-byte leads 192..223, 3-byte leads >= 224), the step returned,
+# and no store at or past p + n (guard bytes). The dictionary never makes some of these cases observable
+# (it holds no continuation byte at a character start, no 2-byte lead as a word's last byte), so they are
+# pinned here directly.
+fn test_t4_ferment() {
+    var buf = alloc(16);
+    var p = buf + 4;
+    var bad = 0;
+    var c = 0;
+    while (c < 256) {
+        var n = 1;
+        while (n <= 3) {
+            _brv_guard(buf, 16);
+            store8(p, c);
+            if (n > 1) { store8(p + 1, 0x88); }
+            if (n > 2) { store8(p + 2, 0x99); }
+            var step = _brd_ferment(p, n);
+            var w0 = c;
+            var w1 = 0x88;
+            var w2 = 0x99;
+            var want = 1;
+            if (c >= 97 && c <= 122) { w0 = c - 32; }
+            if (c >= 192 && c < 224) {
+                want = 2;
+                w1 = 0xa8;
+            }
+            if (c >= 224) {
+                want = 3;
+                w2 = 0x9c;
+            }
+            if (step != want || load8(p) != w0) { bad = bad + 1; }
+            if (n > 1 && load8(p + 1) != w1) { bad = bad + 1; }
+            if (n > 2 && load8(p + 2) != w2) { bad = bad + 1; }
+            if (_brv_guarded(buf, 4) != 1 || _brv_guarded(p + n, 12 - n) != 1) { bad = bad + 1; }
+            n = n + 1;
+        }
+        c = c + 1;
+    }
+    assert(bad == 0, "T4 Ferment: 768 cells (byte x bytes left), steps, XOR masks, nothing past the word");
+    return 0;
+}
+
+# Spot cells, argument / bound / error classes (nothing written on any error), position and ring
+# independence, and the one-time dictionary self-check.
+fn test_t4_dict_cells() {
+    _brd_init_tables();
+    var buf = alloc(128);
+    var d = buf + 8;
+    _brd_out = d;
+    _brd_pos = 0;
+    _brv_guard(buf, 128);
+    assert(_brd_dict(4, 0, 64) == 4 && _brv_lit_eq(d, 4, "time") == 1, "T4 transform 0 on word 0 of length 4 is time");
+    assert(_brv_guarded(d + 4, 64) == 1, "T4 identity writes exactly the word");
+    _brv_guard(buf, 128);
+    assert(_brd_dict(4, 42 << 10, 64) == 0, "T4 transform 42 (OmitLast4) on length 4: empty");
+    assert(_brd_dict(4, 34 << 10, 64) == 0, "T4 transform 34 (OmitFirst4) on length 4: empty");
+    assert(_brd_dict(4, 34 << 10, 0) == 0, "T4 an empty expansion fits rem = 0");
+    assert(_brv_guarded(buf, 128) == 1, "T4 empty expansions write nothing");
+    # Address 34,815: transform 33 (" " + word + ", ") on the last 4-byte word (d9 88 d8 b4).
+    assert(_brd_dict(4, (34 << 10) - 1, 64) == 7, "T4 transform 33 on word 1023 of length 4: 7 bytes");
+    assert(load8(d) == 32 && load8(d + 1) == 0xd9 && load8(d + 4) == 0xb4 && load8(d + 5) == 44 && load8(d + 6) == 32,
+      "T4 transform 33 bytes: prefix, word, suffix");
+    # UppercaseAll (transform 44, no affixes) on "zh:" + 3-byte UTF-8 lead 0xe5 at the word end.
+    _brv_guard(buf, 128);
+    assert(_brd_dict(4, 436 | (44 << 10), 64) == 4, "T4 UppercaseAll on word 436 of length 4");
+    assert(load8(d) == 90 && load8(d + 1) == 72 && load8(d + 2) == 58 && load8(d + 3) == 0xe5,
+      "T4 UppercaseAll: ZH: then the trailing lead byte unchanged");
+    assert(_brv_guarded(d + 4, 64) == 1, "T4 UppercaseAll: a lead byte at the word end is not fermented past the word");
+    # The last dictionary word (length 24, word 31) with the last transform (120: " " + UppercaseFirst
+    # + "='"): reads the final dictionary bytes, 3-byte Ferment on the first character.
+    _brv_guard(buf, 128);
+    assert(_brd_dict(24, (121 << 5) - 1, 64) == 27, "T4 largest address of length 24: 27 bytes");
+    assert(crc32(d, 27) == 0xbde25fc7 && load8(d + 3) == 0xbd, "T4 last word x transform 120 bytes (brdec)");
+    assert(_brv_guarded(d + 27, 64) == 1, "T4 last word x transform 120 writes exactly 27 bytes");
+    assert(_brd_dict(24, (121 << 5) - 1, 27) == 27, "T4 27-byte expansion fits rem = 27");
+    _brv_guard(buf, 128);
+    assert(_brd_dict(24, (121 << 5) - 1, 26) == 0 - ERR_CORRUPT_DATA, "T4 expansion longer than rem: ERR_CORRUPT_DATA");
+    assert(_brd_dict(4, 0, 3) == 0 - ERR_CORRUPT_DATA, "T4 4-byte word into rem 3");
+    assert(_brd_dict(24, 121 << 5, 64) == 0 - ERR_MATCH_OUT_OF_RANGE, "T4 transform 121 at length 24");
+    assert(_brd_dict(4, 121 << 10, 64) == 0 - ERR_MATCH_OUT_OF_RANGE, "T4 transform 121 at length 4");
+    assert(_brd_dict(9, 1 << 40, 64) == 0 - ERR_MATCH_OUT_OF_RANGE, "T4 huge address");
+    assert(_brd_dict(3, 0, 64) == 0 - ERR_MATCH_OUT_OF_RANGE && _brd_dict(25, 0, 64) == 0 - ERR_MATCH_OUT_OF_RANGE,
+      "T4 lengths 3 and 25");
+    assert(_brd_dict(0, 0, 64) == 0 - ERR_MATCH_OUT_OF_RANGE && _brd_dict(0 - 1, 0, 64) == 0 - ERR_MATCH_OUT_OF_RANGE,
+      "T4 lengths 0 and -1");
+    assert(_brv_guarded(buf, 128) == 1, "T4 no rejected call writes");
+    # Writes at _brd_out + _brd_pos, leaves _brd_pos and the distance ring alone.
+    _brd_pos = 5;
+    _brd_r0 = 101;
+    _brd_r1 = 102;
+    _brd_r2 = 103;
+    _brd_r3 = 104;
+    assert(_brd_dict(5, 1, 64) == 5, "T4 word 1 of length 5 at position 5");
+    assert(_brv_guarded(buf, 13) == 1 && _brv_guarded(d + 10, 64) == 1 && _brd_pos == 5,
+      "T4 writes at _brd_pos only, _brd_pos not advanced");
+    assert(crc32(d + 5, 5) == crc32(_brotli_dict_data() + 4096 + 5, 5), "T4 word bytes from DOFFSET[5] + 5");
+    assert(_brd_r0 == 101 && _brd_r1 == 102 && _brd_r2 == 103 && _brd_r3 == 104, "T4 the distance ring is untouched");
+    _brd_pos = 0;
+    # One-time self-check: a corrupted literal fails closed, and so does the _brd_dict_ok hook.
+    var cp = alloc(122785);
+    var i = 0;
+    while (i < 122784) { store8(cp + i, load8(_brd_dict_addr + i)); i = i + 1; }
+    store8(cp + 100000, load8(cp + 100000) ^ 4);
+    var lit = _brd_dict_addr;
+    _brd_dict_addr = cp;
+    _brd_dict_ok = 0;
+    _brv_guard(buf, 128);
+    assert(_brd_dict(4, 0, 64) == 0 - ERR_CHECKSUM_MISMATCH && _brd_dict_ok == 0 - 1,
+      "T4 a corrupted dictionary literal is ERR_CHECKSUM_MISMATCH and latches bad");
+    _brd_dict_addr = lit;
+    assert(_brd_dict(4, 0, 64) == 0 - ERR_CHECKSUM_MISMATCH && _brv_guarded(buf, 128) == 1,
+      "T4 a failed self-check stays failed for the process (nothing written)");
+    _brd_dict_ok = 0;
+    assert(_brd_dict(4, 0, 64) == 4 && _brd_dict_ok == 1, "T4 the real literal passes the self-check");
+    return 0;
+}
+
+# The profile-link-gate vector (scripts/profile-link-gate.sh VECBR: brotli -q 11 -w 22 of its PG_TEXT
+# x 4; UTF8 mode, RLE + IMTF literal map, 7 dictionary references) and the _brd_dict_ok hook on
+# whole streams: a failed self-check rejects dictionary streams only; the check itself is lazy.
+fn test_t4_streams() {
+    var v = alloc(80);
+    _brd_hex_into(v, "1b4b01408d946ee62210b661aa0b49ce6f5939a068b09c0a7b830d38602f817df15168f09095", 38);
+    _brd_hex_into(v + 38, "2a33ed9139d6d8b92390852f38ee8f94935a5f8ae510fbcda6ff281b5269639d0f3109cc00", 37);
+    var t = "sankoch profile link gate: the quick brown fox jumps over the lazy dog 0123456789. ";
+    var want = alloc(332);
+    var i = 0;
+    while (i < 332) { store8(want + i, load8(t + i % 83)); i = i + 1; }
+    var wc = crc32(want, 332);
+    var d = _brv_dst;
+    assert(brotli_decompress(v, 75, d, 396) == 332 && crc32(d, 332) == wc, "T4 link-gate vector is PG_TEXT x 4");
+    assert(brotli_decompress_capped(v, 75, d, 396, 332) == 332 && crc32(d, 332) == wc, "T4 link-gate vector, capped");
+    assert(decompress(FORMAT_BROTLI, v, 75, d, 332) == 332 && crc32(d, 332) == wc, "T4 link-gate vector, decompress()");
+    assert(brotli_decompress(v, 75, d, 331) == 0 - ERR_BUFFER_TOO_SMALL, "T4 link-gate vector one byte short");
+    var n = _brv_read("tests/data/brotli/google/64x.compressed", _brv_s, _BRV_SMAX);
+    assert(n == 10, "T4 dictionary-free stream present");
+    _brd_dict_ok = 0 - 1;
+    assert(brotli_decompress(v, 75, d, 396) == 0 - ERR_CHECKSUM_MISMATCH, "T4 hook: dictionary stream fails closed");
+    assert(decompress(FORMAT_BROTLI, v, 75, d, 396) == 0 - ERR_CHECKSUM_MISMATCH, "T4 hook: via decompress()");
+    assert(brotli_decompress(_brv_s, n, d, 64) == 64, "T4 hook: a dictionary-free stream still decodes");
+    _brd_dict_ok = 0;
+    assert(brotli_decompress(_brv_s, n, d, 64) == 64 && _brd_dict_ok == 0, "T4 no self-check without a reference");
+    assert(brotli_decompress(v, 75, d, 396) == 332 && _brd_dict_ok == 1, "T4 self-check runs at the first reference");
+    assert(crc32(d, 332) == wc, "T4 link-gate vector after the self-check");
+    return 0;
+}
+
+# Thread CPU time (CLOCK_THREAD_CPUTIME_ID = 3 on x86_64 and aarch64): time other processes take
+# on the core is not charged.
+fn _brv_now() {
+    var ts[16];
+    var nr = 228;                                    # clock_gettime: x86_64 228, aarch64 113
+    if (SYS_LSEEK != 8) { nr = 113; }
+    syscall(nr, 3, &ts);
+    return load64(&ts) * 1000000000 + load64(&ts + 8);
+}
+
+# Bytewise reference IMTF (RFC 7932 §7.3) over map[0..size).
+fn _brv_imtf_ref(map, size) {
+    var mtf[256];
+    var i = 0;
+    while (i < 256) { store8(&mtf + i, i); i = i + 1; }
+    i = 0;
+    while (i < size) {
+        var idx = load8(map + i);
+        var v = load8(&mtf + idx);
+        store8(map + i, v);
+        while (idx > 0) { store8(&mtf + idx, load8(&mtf + idx - 1)); idx = idx - 1; }
+        store8(&mtf, v);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_t12_imtf() {
+    assert(_brd_ws_ensure() == 0, "T12 workspace");
+    var mtf = _brd_ws + BRD_WS_MTF;
+    var a = alloc(16384);
+    var b = alloc(16384);
+    var bad = 0;
+    var it = 0;
+    while (it < 400) {
+        var size = 1 + _brv_rand(16384);
+        var mode = it % 4;                           # 0 uniform, 1 high (>= 248), 2 low (< 8), 3 all 255
+        var i = 0;
+        while (i < size) {
+            var x = _brv_rand(256);
+            if (mode == 1) { x = 248 + (x & 7); }
+            if (mode == 2) { x = x & 7; }
+            if (mode == 3) { x = 255; }
+            store8(a + i, x);
+            store8(b + i, x);
+            i = i + 1;
+        }
+        store64(mtf + 256, 0x5a5a5a5a5a5a5a5a);     # slack after the list must stay untouched
+        store64(mtf - 8, 0x3c3c3c3c3c3c3c3c);
+        _brd_imtf(a, size);
+        _brv_imtf_ref(b, size);
+        i = 0;
+        while (i < size) {
+            if (load8(a + i) != load8(b + i)) { bad = bad + 1; i = size; }
+            i = i + 1;
+        }
+        if (load64(mtf + 256) != 0x5a5a5a5a5a5a5a5a || load64(mtf - 8) != 0x3c3c3c3c3c3c3c3c) { bad = bad + 1; }
+        it = it + 1;
+    }
+    assert(bad == 0, "T12 word-wise IMTF equals the bytewise reference, no store outside the list");
+    # Adversarial IMTF work budget, relative: 20 decodes of adv_imtf_256_trunc against 20 runs of
+    # the bytewise reference over the same 16,384 x 255 moves, best of 3 each, thread CPU time.
+    var n = _brv_read("tests/data/brotli/crafted/adv_imtf_256_trunc.br", _brv_s, _BRV_SMAX);
+    assert(n == 76, "T12 adv_imtf_256_trunc present (76 B)");
+    if (n != 76) { return 0; }
+    var best = 0;
+    var best_ref = 0;
+    var r = 0;
+    var ok = 1;
+    while (r < 3) {
+        var t = _brv_now();
+        var k = 0;
+        while (k < 20) {
+            if (brotli_decompress(_brv_s, n, _brv_dst, 64) != 0 - ERR_CORRUPT_DATA) { ok = 0; }
+            k = k + 1;
+        }
+        t = _brv_now() - t;
+        if (best == 0 || t < best) { best = t; }
+        var tr = 0;
+        k = 0;
+        while (k < 20) {
+            var j = 0;
+            while (j < 16384) { store8(b + j, 255); j = j + 1; }
+            var t0 = _brv_now();
+            _brv_imtf_ref(b, 16384);
+            tr = tr + _brv_now() - t0;
+            k = k + 1;
+        }
+        if (best_ref == 0 || tr < best_ref) { best_ref = tr; }
+        r = r + 1;
+    }
+    assert(ok == 1, "T12 adv_imtf_256_trunc is ERR_CORRUPT_DATA after the IMTF work");
+    assert(best * 2 <= best_ref, "T12 adversarial IMTF decode costs <= 1/2 of the bytewise reference");
+    syscall(1, 1, "T12 adversarial IMTF: decode us/KB ", 35);
+    print_num(best * 1024 / (20 * n) / 1000);
+    syscall(1, 1, ", decode / bytewise reference x100 = ", 37);
+    print_num(best * 100 / best_ref);
+    println("");
+    return 0;
+}
+
+fn main() {
+    _brv_init();
+    _brv_b2_init();
+    test_t1_tables();
+    test_t1_wbits_map();
+    test_t1_ws_layout();
+    test_t2_dictionary();
+    test_reader_bits();
+    test_reader_sym();
+    test_t3_builder_random();
+    test_t3_exact_fit();
+    test_t3_simple();
+    test_t3_complex();
+    test_t3_cmap();
+    test_t3_block_switch();
+    test_t3_dlut();
+    test_t5_manifest();
+    test_t10_oom();
+    test_t6_caps();
+    test_t6_ceiling();
+    test_t11_copy();
+    test_t11_caps();
+    test_t4_ferment();
+    test_t4_dict_cells();
+    test_t4_streams();
+    test_t4_transforms();
+    test_t12_imtf();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

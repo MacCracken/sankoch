@@ -166,6 +166,42 @@ fn bench_d(name, fmt, src, slen, dst, dcap, iters) {
     return dlen;
 }
 
+# File read for committed streams (verbatim git_object.tcyr _read_repro; raw open/read/close).
+# Runs from the repo root, like `cyrius bench` in CI. Returns bytes read, or < 0.
+fn _bench_read(path, buf, max) {
+    var fd = syscall(2, path, 0, 0);   # SYS_OPEN, O_RDONLY
+    if (fd < 0) { return fd; }
+    var n = 0;
+    while (n < max) {
+        var r = syscall(0, fd, buf + n, max - n);  # SYS_READ
+        if (r <= 0) { break; }
+        n = n + r;
+    }
+    syscall(3, fd);                    # SYS_CLOSE
+    return n;
+}
+
+# Brotli decode line: bench_d, then decimal MB/s (out * 10^9 / ns_per_op / 10^6, one decimal).
+fn bench_br(name, path, buf, bmax, out, ocap, iters) {
+    var bl = _bench_read(path, buf, bmax);
+    if (bl <= 0) { _print("  SKIP "); _print(name); _print(" ("); _print(path); _print(" missing)"); _nl(); return 0; }
+    var dlen = decompress(FORMAT_BROTLI, buf, bl, out, ocap);
+    if (dlen <= 0) { _print("  SKIP "); _print(name); _nl(); return 0; }
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) { decompress(FORMAT_BROTLI, buf, bl, out, ocap); i = i + 1; }
+    var ns_per = (time_ns() - start) / iters;
+    if (ns_per < 1) { ns_per = 1; }
+    var mbx10 = dlen * 10000 / ns_per;       # 10^9 / 10^6 * 10
+    _print("  "); _print(name);
+    _print("  in="); _print_int(bl);
+    _print("  out="); _print_int(dlen);
+    _print("  ns/op="); _print_int(ns_per);
+    _print("  MB/s="); _print_int(mbx10 / 10); _print("."); _print_int(mbx10 % 10);
+    _nl();
+    return dlen;
+}
+
 # LZ4 frame compress benchmark (direct — no FORMAT_LZ4F in the generic API).
 fn bench_lz4f_c(name, src, slen, dst, dcap, iters) {
     var clen = lz4f_compress(src, slen, dst, dcap);
@@ -515,6 +551,24 @@ fn main() {
     fill_text(src4k, 4096);
     clen = compress(FORMAT_ZSTD, src4k, 4096, c, 16384);
     bench_d("zstd d text  4K", FORMAT_ZSTD, c, clen, d, 16384, iters);
+    println("");
+
+    # ---- brotli decode (2.8.0) — informational, not SIZE-gated (decode-only codec).
+    # Streams: tests/data/brotli/ (google testdata, MIT; brotli 1.2.0 CLI output). The font line
+    # reads build/brotli-smoke/font.q11w22.br, written by scripts/brotli-smoke.sh from rekha's
+    # LiberationSans (OFL, not committed): SKIP when absent (CI).
+    println("--- brotli decode (RFC 7932) ---");
+    var bbuf = alloc(262144);
+    var bout = alloc(524288);
+    bench_br("brotli d text q11 152K", "tests/data/brotli/google/alice29.txt.compressed",
+      bbuf, 262144, bout, 524288, 20);
+    bench_br("brotli d text q5   32K", "tests/data/brotli/small/alice29_32k.q5w16.br", bbuf, 262144, bout, 524288, 50);
+    bench_br("brotli d font q11w22 401K", "build/brotli-smoke/font.q11w22.br", bbuf, 262144, bout, 524288, 10);
+    bench_br("brotli d zeros    256K", "tests/data/brotli/google/zeros.compressed", bbuf, 262144, bout, 524288, 50);
+    bench_br("brotli d stored    10K", "tests/data/brotli/google/random_org_10k.bin.compressed",
+      bbuf, 262144, bout, 524288, 200);
+    bench_br("brotli d records  68K", "tests/data/brotli/small/bswitch_records_68k.q11w16.br",
+      bbuf, 262144, bout, 524288, 20);
     println("");
 
     # ---- ratio-capped decompress (2.4.5) — informational, not SIZE-gated.

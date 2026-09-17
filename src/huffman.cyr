@@ -290,6 +290,7 @@ fn huff_decode_cl(br): i64 {
 
 # Build the literal/length Huffman table from code lengths.
 fn huff_build_litlen(lengths, count): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     _huff_alloc_tables();
     _huff_litlen_count = count;
     # Dynamic tables overwrite fixed — force rebuild on next huff_build_fixed()
@@ -306,6 +307,7 @@ fn huff_build_litlen(lengths, count): i64 {
 
 # Build the distance Huffman table from code lengths.
 fn huff_build_dist(lengths, count): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     _huff_alloc_tables();
     _huff_dist_count = count;
     var i = 0;
@@ -320,6 +322,7 @@ fn huff_build_dist(lengths, count): i64 {
 
 # Build the code-length Huffman table from code lengths.
 fn huff_build_cl(lengths, count): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     _huff_alloc_tables();
     _huff_cl_count = count;
     var i = 0;
@@ -341,6 +344,7 @@ var _huff_fixed_litlen_lens = 0;
 
 # Build the fixed Huffman tables defined in RFC 1951 Section 3.2.6.
 fn huff_build_fixed(): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     if (_huff_fixed_built == 1) { return 0; }
     if (_huff_fixed_litlen_lens == 0) {
         _huff_fixed_litlen_lens = _sankoch_alloc(2304);
@@ -405,6 +409,7 @@ fn _huff_ensure_hcl_ws(): i64 {
 }
 
 fn huff_compute_lengths(freqs, num_symbols, out_lens, min_codes, max_bits): i64 {
+    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
     var count = 0;
     var i = 0;
     while (i < num_symbols) {
@@ -679,5 +684,26 @@ fn _huff_redistribute(out_lens, num_symbols, sorted_sym, n, max_bits): i64 {
         }
         L = L + 1;
     }
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# The shared litlen/dist/code-length tables (gated by `_huff_tables_allocd`),
+# the fixed-tree cache (gated by `_huff_fixed_built`) and the optimal-length
+# workspace.
+# ---------------------------------------------------------------------------
+fn _huffman_reset_tables(): i64 {
+    _huff_tables_allocd = 0;
+    _huff_litlen_fast = 0; _huff_litlen_lens = 0; _huff_litlen_codes = 0;
+    _huff_dist_fast = 0; _huff_dist_lens = 0; _huff_dist_codes = 0;
+    _huff_cl_fast = 0; _huff_cl_lens = 0; _huff_cl_codes = 0;
+    _huff_fixed_built = 0; _huff_fixed_litlen_lens = 0;
+    _hcl_ws = 0;
     return 0;
 }

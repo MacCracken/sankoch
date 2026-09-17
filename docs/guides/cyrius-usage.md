@@ -10,7 +10,7 @@ Toolchain pinned in `cyrius.cyml`:
 
 ```toml
 [package]
-cyrius = "6.4.68"
+cyrius = "X.Y.Z"   # the pin; see cyrius.cyml for the current value
 ```
 
 CI reads the pin from the manifest; locally you can install that version
@@ -100,7 +100,18 @@ timing totals. Throughput numbers archived in `docs/benchmarks/`.
 ```bash
 cyrius distlib                           # → dist/sankoch.cyr (full)
 cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe)
+cyrius distlib brotli                    # → dist/sankoch-brotli.cyr (Brotli decode only)
+cyrius distlib woff                      # → dist/sankoch-woff.cyr (zlib closure + Brotli, web fonts)
+bash scripts/profile-link-gate.sh --list-profiles   # every profile cyrius.cyml defines
 ```
+
+12 bundles as of 2.8.0: full, core, zlib, gzip, xz, bzip2, zstd, tar, zip, zipall, brotli, woff.
+The list lives only in `cyrius.cyml`. CI and release loop over `--list-profiles`, and a new
+`[lib.<name>]` needs a `probe_body_<name>` in the link gate.
+
+**One sankoch bundle per program.** Profiles are closures, not layers. Two in one program collide on
+`runtime.cyr`'s globals (see `docs/architecture/003-per-profile-reset-dispatch.md`), so pick the
+smallest single profile that carries every codec you need.
 
 `cyrius distlib` reads `[lib].modules` from `cyrius.cyml`, strips
 `include` lines, and concatenates the listed files into a single
@@ -112,33 +123,38 @@ cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-saf
 (types + xxhash32 + lz4_decode; no alloc, no syscalls, no mutex)
 consumed by the AGNOS initrd loader as `lib/sankoch-core.cyr`.
 
-CI regenerates both bundles and asserts they match the committed
-files — `dist/sankoch.cyr` and `dist/sankoch-core.cyr` are tracked
-artifacts, not generated ephemerals.
+CI regenerates every bundle and asserts each matches the committed, tracked file.
+Bundles are tracked artifacts, not generated ephemerals. A new bundle needs its
+`!dist/` re-include in `.gitignore`.
+
+**Link gate** (2.8.0): `bash scripts/profile-link-gate.sh` proves each committed bundle links and runs.
+It checks reset registration, builds a reachable-call probe, decodes reference-CLI vectors before
+and after `alloc_reset()`, and requires the reset to stay reachable from `_sankoch_lock` under
+`--agnos`. Use `--bundle-dir DIR` to test other bundles (the directory must be inside the repo).
 
 ### Quality gates
 
 ```bash
 cyrius lint src/*.cyr programs/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr
-cyrius fmt  src/*.cyr --check   # prints formatted output; compare to file
+for f in src/*.cyr programs/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcyr; do
+  cyrius fmt --check "$f" > /dev/null 2>&1 || echo "needs fmt: $f"   # ONE file per call
+done
 cyrius vet  src/lib.cyr         # audit include dependencies
+python3 scripts/nul-literal-gate.py   # no NUL in string literals (docs/architecture/004)
+python3 scripts/brotli_dict2cyr.py docs/sources/brotli/dictionary.bin build/brotli_dict.regen.cyr \
+  && cmp build/brotli_dict.regen.cyr src/brotli_dict.cyr   # generated module is current
+bash scripts/brotli-smoke.sh          # local only: differential vs brotli -d 1.2.0 (needs the CLI)
 ```
 
 Sankoch is stdlib-only, so there is no `cyrius.lock` and no
 `cyrius deps --verify` gate — the stdlib snapshot is implicitly pinned
-by the toolchain version (`cyrius = "6.4.68"` in `cyrius.cyml`). Add
+by the toolchain version (the `cyrius = "X.Y.Z"` pin in `cyrius.cyml`). Add
 `cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
 ever added under `[deps.*]`.
 
-All four run in CI. `fmt --check` emits the formatted source; CI diffs
-against the committed file and fails on drift. To apply the fix
-in-place (Cyrius 5.5.22+, current pin 6.4.68):
-
-```bash
-cyrfmt --write src/checksum.cyr    # or -w
-```
-
-Idempotent — re-running on a clean file is a no-op (mtime unchanged).
+All of these except `brotli-smoke.sh` run in CI. `cyrius fmt --check <file>` reports drift **only through
+its exit code** (Cyrius 6.5.35+), and it exits 0 on drift when given more than one file, so check one
+file per call and read `$?`. Bare `cyrius fmt <file>` rewrites the file in place.
 
 ### Fuzz
 
@@ -179,8 +195,9 @@ The release workflow: runs CI → verifies `VERSION == tag` → builds
 with `CYRIUS_DCE=1` → verifies ELF → tests → fuzz → regenerates
 bundle → archives src tarball + `dist/sankoch.cyr` + SHA256SUMS →
 creates a GitHub Release. No `cyrius.lock` is shipped — sankoch is
-stdlib-only (zero git deps), so the stdlib pin via `cyrius = "6.4.68"`
-in `cyrius.cyml` is the lockfile.
+stdlib-only (zero git deps), so the `cyrius = "X.Y.Z"` pin in
+`cyrius.cyml` is the lockfile. The release also regenerates and publishes every profile bundle
+(the list comes from `cyrius.cyml` via `profile-link-gate.sh --list-profiles`) after the link gate.
 
 ## Gotchas
 

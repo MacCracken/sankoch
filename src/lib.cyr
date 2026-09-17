@@ -10,7 +10,8 @@
 #   decompress(format, src, src_len, dst, dst_cap)       -> len or -err
 #   detect_format(src, src_len)                          -> Format or -err
 #   plus stream_*, lz4f_*, zlib_*_dict, deflate_*_dict,
-#   and {deflate,zlib,gzip}_enc_init_dict (v2.2.0+)
+#   and {deflate,zlib,gzip}_enc_init_dict (v2.2.0+),
+#   brotli_decompress / brotli_decompress_capped (2.8.0, decode only)
 
 # --- Standard library dependencies (order matters) ---
 include "lib/syscalls.cyr"
@@ -48,6 +49,8 @@ include "src/gzip.cyr"
 include "src/xz.cyr"
 include "src/bzip2.cyr"
 include "src/zstd.cyr"
+include "src/brotli_dict.cyr"
+include "src/brotli.cyr"
 include "src/tar.cyr"
 include "src/zip.cyr"
 include "src/zip_methods.cyr"
@@ -56,7 +59,7 @@ include "src/stream.cyr"
 # The shared runtime seam — the API lock (`_sankoch_lock`/`_unlock`) + the alloc
 # seam (`_sankoch_alloc`) — lives in runtime.cyr (extracted 2.4.9) so a lean
 # distlib profile (`[lib.zlib]`) can pull it without this file's format-dispatch
-# API + `_sankoch_reset_tables` (which references every codec's globals).
+# API + the full `_sankoch_reset_tables` below (which calls every codec's reset).
 include "src/runtime.cyr"
 
 # ============================================================================
@@ -67,57 +70,27 @@ include "src/runtime.cyr"
 # first use.
 # ============================================================================
 
-# Test-only: zero every lazy-global table pointer + its "built" flag so
-# the next public-API call re-allocates them from scratch. Lets the
-# fault-injection suite (2.3.7) re-trigger first-call OOM at each
-# lazy-init site even after earlier tests warmed the globals. All these
-# live in one flat namespace after the include concatenation.
+# The FULL bundle's arena-reset dispatcher: every memoizing module in [lib].
+# Each `_<module>_reset_tables` lives at the end of its own module and zeroes
+# exactly the lazy globals that module owns; this function only fans out. It is
+# what `_sankoch_arena_guard` (runtime.cyr) calls after an `alloc_reset()`, and
+# what the 2.3.7 OOM fault-injection sweep calls to re-trigger first-call inits.
+#
+# Each distlib profile carries its own `_sankoch_reset_tables` in
+# `src/reset_<profile>.cyr` calling only the modules in its closure — see the
+# registration rule in src/runtime.cyr, which is also why this list is NOT in
+# runtime.cyr (2.7.10–2.7.15 shipped every profile calling this function without
+# defining it, so no profile consumer could link a real call).
 fn _sankoch_reset_tables(): i64 {
-    crc32_table = 0;
-    _lz77_head = 0; _lz77_prev = 0;
-    _lz4_htab = 0;
-    _huff_tables_allocd = 0;
-    _huff_litlen_fast = 0; _huff_litlen_lens = 0; _huff_litlen_codes = 0;
-    _huff_dist_fast = 0; _huff_dist_lens = 0; _huff_dist_codes = 0;
-    _huff_cl_fast = 0; _huff_cl_lens = 0; _huff_cl_codes = 0;
-    _huff_fixed_built = 0; _huff_fixed_litlen_lens = 0;
-    _hcl_ws = 0;
-    _deflate_enc_fixed_built = 0;
-    _deflate_enc_lit_codes = 0; _deflate_enc_lit_lens = 0;
-    _deflate_enc_dist_codes = 0; _deflate_enc_dist_lens = 0;
-    # 2.7.9 fixed-vs-dynamic chooser. `_dyn_cost_bw` must be cleared with its
-    # buffer: the lazy-init guard keys on `_dyn_cost_buf`, so a reset that
-    # zeroed only one of the pair would leave `_dyn_header_bits` writing
-    # through a stale bitwriter — which is exactly how it was found (the
-    # detect_error OOM sweep segfaulted).
-    _dyn_cost_buf = 0; _dyn_cost_bw = 0;
-    _deflate_len_lookup_built = 0; _deflate_len_lookup = 0;
-    _deflate_dist_lookup_built = 0; _deflate_dist_lookup = 0;
-    _dh_ws = 0;
-    _ddec_cl_lens = 0; _ddec_all_lens = 0; _ddec_cl_order = 0;
-    _dyn_sym_buf = 0;
-    _dyn_lit_freq = 0; _dyn_dist_freq = 0;
-    _dyn_opt_lit_lens = 0; _dyn_opt_dist_lens = 0;
-    _dyn_opt_lit_codes = 0; _dyn_opt_dist_codes = 0;
-    _dyn_lit_fast_tmp = 0; _dyn_dist_fast_tmp = 0;
-    # xz / bzip2 / crc64 lazy globals (2.5.9 I-1): the pre-2.5.9 reset omitted every
-    # xz/bzip2 pointer, so the OOM fault-injection sweep could never re-trigger their
-    # first-call inits — the M-8 encoder latches shipped unseen. Reset the guard
-    # pointers + the new completion flags so a swept fault lands on a real lazy-init.
-    crc64_table = 0; crc32bz_table = 0;
-    _xz_probs = 0; _xze_tmp = 0; _xze_prices = 0; _xze_dp_ready = 0;
-    _bz_tables_ready = 0; _bze_ready = 0;
-    # zstd lazy globals + the 2.5.10 pools. zstd now routes through _sankoch_alloc
-    # (2.5.10 L-5), so its first-call OOM sites are finally reachable by the sweep —
-    # but only if these guards are cleared first.
-    _z_lit = 0; _z_huff_sym = 0; _z_huff_nb = 0;
-    _z_pool_tab = 0; _z_pool_next = 0; _z_pool_scratch = 0;
-    _z_pool_weight = 0; _z_pool_wscr = 0; _z_pool_wtab = 0; _z_pool_rd = 0;
-    _ze_ctp = 0; _ze_oom = 0;
-    _ze_huff_ready = 0; _ze_cnt = 0;
-    _ze_lz_ready = 0; _ze_head = 0;
-    _ze_plan_ready = 0; _ze_pmode = 0;
-    _ze_ct_ll = 0; _ze_ct_of = 0; _ze_ct_ml = 0;
+    _checksum_reset_tables();
+    _huffman_reset_tables();
+    _lz77_reset_tables();
+    _lz4_reset_tables();
+    _deflate_reset_tables();
+    _xz_reset_tables();
+    _bzip2_reset_tables();
+    _zstd_reset_tables();
+    _brotli_reset_tables();
     return 0;
 }
 
@@ -171,6 +144,7 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
         # unlocked inner (2.5.9 M-12 wrapped the public entry in _sankoch_lock).
         return _zstd_compress_inner(src, src_len, dst, dst_cap, level);
     }
+    # FORMAT_BROTLI lands here too: decode-only codec (2.8.0).
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
@@ -211,11 +185,16 @@ fn _decompress_inner(format, src, src_len, dst, dst_cap): i64 {
     if (format == FORMAT_ZSTD) {
         return _zstd_decompress_inner(src, src_len, dst, dst_cap);   # lock already held (M-12)
     }
+    if (format == FORMAT_BROTLI) {
+        return _brotli_decompress_inner(src, src_len, dst, dst_cap, 0);   # lock already held
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
 # Detect compression format from magic bytes.
-# Returns FORMAT_* or negative error. LZ4 + raw DEFLATE have no magic.
+# Returns FORMAT_* or negative error. LZ4, raw DEFLATE and Brotli have no magic:
+# a Brotli stream's first byte can be anything (incl. 0x1f or 0x78), so one may be
+# misclassified here. Callers must know the format; WOFF2 does.
 fn detect_format(src, src_len): i64 {
     if (src_len < 2) {
         return 0 - ERR_INVALID_INPUT;

@@ -15,6 +15,7 @@ Every algorithm in sankoch traces to a published specification or paper.
 | RFC 8878 | Zstandard Compression and the 'application/zstd' Media Type | zstd.cyr | https://www.rfc-editor.org/rfc/rfc8878 |
 | .xz File Format | The .xz File Format Specification + LZMA/LZMA2 (Tukaani) | xz.cyr | https://tukaani.org/xz/xz-file-format.txt |
 | bzip2 Format | bzip2/libbzip2 file format (BWT + MTF/RLE2 + Huffman) | bzip2.cyr | https://sourceware.org/bzip2/manual/manual.html |
+| RFC 7932 | Brotli Compressed Data Format (incl. Appendix A dictionary; errata 6977) | brotli.cyr, brotli_dict.cyr | https://www.rfc-editor.org/rfc/rfc7932 |
 
 ## Foundational Papers
 
@@ -32,6 +33,8 @@ Every algorithm in sankoch traces to a published specification or paper.
 | zlib (inflate.c, deflate.c) | C | Gailly & Adler — the canonical DEFLATE impl |
 | lz4 (lz4.c) | C | Yann Collet — reference LZ4 impl |
 | miniz | C | Rich Geldreich — minimal single-file DEFLATE |
+| google/brotli v1.2.0 (`c/dec/decode.c`, MIT) | C | Brotli cross-check for tables, transforms and edge cases; dictionary and tables in [`brotli/`](brotli/README.md) |
+| zlib `examples/enough.c` 1.5 | C | Mark Adler — maximum Huffman table sizes; justifies the Brotli decoder's table caps (`brotli/probe/enough_results.tsv`) |
 
 ## Explanatory Resources
 

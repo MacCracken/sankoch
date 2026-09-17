@@ -1,0 +1,59 @@
+# brotli_smoke.cyr — decode build/brotli-smoke/in.br via sankoch's brotli_decompress_capped into a
+# 64 MiB buffer and write build/brotli-smoke/out. Driven by scripts/brotli-smoke.sh, which compares
+# the verdict and bytes against the reference `brotli -d`. Paths are repo-relative (run from the
+# repo root) and under build/, not /tmp, so a run survives a reboot mid-investigation.
+#
+# Exit: 0 decoded; 20 + err on a decode error (ERR_CORRUPT_DATA -> 23, ERR_UNSUPPORTED_FORMAT
+# -> 24); 1-4 on I/O failure. Nothing is written on a decode error.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(SYS_LSEEK, fd, 0, 2);   # per-arch number (x86_64 8, aarch64 62)
+    syscall(SYS_LSEEK, fd, 0, 0);
+    var buf = alloc(sz + 1);
+    var off = 0;
+    while (off < sz) {
+        var n = sys_read(fd, buf + off, sz - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+fn run() {
+    var buf = read_all("build/brotli-smoke/in.br");
+    if (buf == 0) { return 1; }
+    var cap = 1 << 26;               # 64 MiB
+    var dst = alloc(cap);
+    if (dst == 0) { return 2; }
+    var n = brotli_decompress_capped(buf, g_len, dst, cap, cap);
+    if (n < 0) { return 20 + (0 - n); }
+
+    var fd = sys_open("build/brotli-smoke/out", 577, 0x1A4);
+    if (fd < 0) { return 3; }
+    var w = 0;
+    while (w < n) {
+        var k = sys_write(fd, dst + w, n - w);
+        if (k <= 0) { break; }
+        w = w + k;
+    }
+    sys_close(fd);
+    if (w != n) { return 4; }
+    return 0;
+}
+
+fn _entry() {
+    var rc = run();
+    sys_exit(rc);
+    return 0;
+}
+_entry();

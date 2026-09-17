@@ -131,11 +131,498 @@ fn test_repeated_resets_do_not_leak_the_canary_check() {
     return 0;
 }
 
+# ---------------------------------------------------------------------------
+# 2.8.0 — the globals the 2.7.10 reset never listed.
+#
+# 2.7.10's `_sankoch_reset_tables` was one hand-kept list in lib.cyr, and three
+# memoized arena slabs were not on it: the xz BT4 match-finder tables
+# (`_xzbt_son` / `_head4` / `_head3`, gated by `_xzbt_ready` — 8.8 MB), the zstd
+# optimal-parser slabs (`_zo_*`, gated by `_zo_alloced`, levels >= 7) and the
+# zstd FSE weight-table scratch (`_ze_wcnt` / `_ze_wnorm`). After an
+# alloc_reset() each of those stayed "built" and the next call wrote through
+# it. The cells below give the stale addresses to a caller first, so a missed
+# global shows up as clobbered caller bytes, not as a flaky decode.
+# ---------------------------------------------------------------------------
+
+# Word-wise fill/check: the victims here are megabytes, and the byte loops above
+# would dominate the suite's runtime.
+fn _ar_fill64(p, words, v): i64 {
+    var i = 0;
+    while (i < words) {
+        store64(p + i * 8, v);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _ar_bad64(p, words, v): i64 {
+    var bad = 0;
+    var i = 0;
+    while (i < words) {
+        if (load64(p + i * 8) != v) { bad = bad + 1; }
+        i = i + 1;
+    }
+    return bad;
+}
+
+# Compressible-but-not-trivial input: a skewed alphabet with short repeats, so the
+# encoders take their match finders AND their entropy-coded literal paths (zstd's
+# Huffman literals race the FSE weight description on exactly this shape).
+fn _ar_text(p, n, seed): i64 {
+    var r = seed;
+    var i = 0;
+    while (i < n) {
+        r = (r * 1103515245 + 12345) & 0x7FFFFFFF;
+        var k = (r >> 16) & 255;
+        if (i >= 64 && (k & 7) == 0) {
+            var back = 1 + ((r >> 8) % 60);
+            store8(p + i, load8(p + i - back));
+        } else {
+            store8(p + i, 97 + ((k * k) >> 11));
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Codec ids for _ar_codec.
+enum ArCodec {
+    AR_XZ = 1;
+    AR_ZSTD6 = 2;
+    AR_ZSTD9 = 3;
+    AR_BZIP2 = 4;
+    AR_LZ4 = 5;
+    AR_LZ4F = 6;
+    AR_GZIP = 7;
+    AR_DEFLATE1 = 8;
+}
+
+fn _ar_compress(codec, src, n, dst, cap): i64 {
+    if (codec == AR_XZ) { return xz_compress(src, n, dst, cap); }
+    if (codec == AR_ZSTD6) { return zstd_compress_level(src, n, dst, cap, 6); }
+    if (codec == AR_ZSTD9) { return zstd_compress_level(src, n, dst, cap, 9); }
+    if (codec == AR_BZIP2) { return bzip2_compress(src, n, dst, cap); }
+    if (codec == AR_LZ4) { return lz4_compress(src, n, dst, cap); }
+    if (codec == AR_LZ4F) { return lz4f_compress(src, n, dst, cap); }
+    if (codec == AR_GZIP) { return gzip_compress(src, n, dst, cap); }
+    return deflate_compress_level(src, n, dst, cap, 1);
+}
+
+fn _ar_decompress(codec, src, n, dst, cap): i64 {
+    if (codec == AR_XZ) { return xz_decompress(src, n, dst, cap); }
+    if (codec == AR_ZSTD6 || codec == AR_ZSTD9) { return zstd_decompress(src, n, dst, cap); }
+    if (codec == AR_BZIP2) { return bzip2_decompress(src, n, dst, cap); }
+    if (codec == AR_LZ4) { return lz4_decompress(src, n, dst, cap); }
+    if (codec == AR_LZ4F) { return lz4f_decompress(src, n, dst, cap); }
+    if (codec == AR_GZIP) { return gzip_decompress(src, n, dst, cap); }
+    return deflate_decompress(src, n, dst, cap);
+}
+
+# One round-trip; returns 1 when the bytes come back exactly.
+fn _ar_codec_rt(codec, n, seed): i64 {
+    var src = alloc(n);
+    _ar_text(src, n, seed);
+    var cap = n * 2 + 4096;
+    var comp = alloc(cap);
+    var clen = _ar_compress(codec, src, n, comp, cap);
+    if (clen <= 0) { return 0; }
+    var back = alloc(n + 64);
+    var dlen = _ar_decompress(codec, comp, clen, back, n + 64);
+    if (dlen != n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (load8(back + i) != load8(src + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Warm `codec` so every lazy slab it owns is memoized, reset the arena, hand EVERY
+# byte the warm-up used to the caller, then run the codec again. The caller's bytes
+# must survive and the round-trip must still be exact.
+fn _ar_codec_survives(codec, n, name): i64 {
+    alloc_reset();
+    assert_eq(_ar_codec_rt(codec, n, 7), 1, name);
+    var words = (alloc_used() + 64) / 8;
+
+    alloc_reset();
+    var victim = alloc(words * 8);
+    _ar_fill64(victim, words, 0x5A5AC3C3A5A53C3C);
+
+    assert_eq(_ar_codec_rt(codec, n, 7), 1, name);
+    assert_eq(_ar_bad64(victim, words, 0x5A5AC3C3A5A53C3C), 0, name);
+    return 0;
+}
+
+fn test_xz_bt4_tables_survive_a_reset() {
+    # `_xzbt_ready` was never cleared: the second xz_compress wrote its 8.8 MB BT4
+    # tree through the caller's memory.
+    _ar_codec_survives(AR_XZ, 65536, "xz: BT4 match-finder tables rebuilt after alloc_reset");
+    return 0;
+}
+
+fn test_zstd_optimal_parser_survives_a_reset() {
+    # `_zo_alloced` was never cleared: level >= 7 wrote the optimal-parse price/
+    # offset/length arrays through the caller's memory.
+    _ar_codec_survives(AR_ZSTD9, 65536, "zstd L9: optimal-parser slabs rebuilt after alloc_reset");
+    return 0;
+}
+
+fn test_zstd_fse_weight_scratch_survives_a_reset() {
+    # `_ze_wcnt` / `_ze_wnorm` were never cleared: the Huffman-literal weight race
+    # wrote its FSE histogram through the caller's memory.
+    _ar_codec_survives(AR_ZSTD6, 65536, "zstd L6: FSE weight scratch rebuilt after alloc_reset");
+    return 0;
+}
+
+fn test_every_alloc_bearing_codec_survives_a_reset() {
+    # The codecs whose globals WERE listed in 2.7.10, held to the same bar so the
+    # 2.8.0 per-module split cannot drop one silently.
+    _ar_codec_survives(AR_BZIP2, 32768, "bzip2 survives alloc_reset");
+    _ar_codec_survives(AR_LZ4, 32768, "lz4 block survives alloc_reset");
+    _ar_codec_survives(AR_LZ4F, 32768, "lz4f frame survives alloc_reset");
+    _ar_codec_survives(AR_GZIP, 32768, "gzip (dynamic) survives alloc_reset");
+    _ar_codec_survives(AR_DEFLATE1, 32768, "deflate L1 (fixed) survives alloc_reset");
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# Brotli (2.8.0): decode-only, one lazily allocated workspace slab (`_brd_ws`).
+# ---------------------------------------------------------------------------
+
+# brotli 1.2.0 `-q 11 -w 22` of the profile-link-gate payload (75 B -> 332 B): one
+# compressed meta-block, UTF8 context mode, literal context map with RLE + IMTF,
+# 7 static-dictionary references. Hex text keeps the literal NUL-free.
+var AR_BR_HEX1 = "1b4b01408d946ee62210b661aa0b49ce6f5939a068b09c0a7b830d38602f817df15168f09095";
+var AR_BR_HEX2 = "2a33ed9139d6d8b92390852f38ee8f94935a5f8ae510fbcda6ff281b5269639d0f3109cc00";
+var AR_BR_TEXT = "sankoch profile link gate: the quick brown fox jumps over the lazy dog 0123456789. ";
+
+fn _ar_nib(c): i64 {
+    if (c >= 97) { return c - 87; }
+    return c - 48;
+}
+
+# One Brotli decode of the link-gate vector; returns 1 when all 332 bytes are exact.
+fn _ar_brotli_rt(): i64 {
+    var n1 = strlen(AR_BR_HEX1) / 2;
+    var n = n1 + strlen(AR_BR_HEX2) / 2;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var hx = AR_BR_HEX1 + i * 2;
+        if (i >= n1) { hx = AR_BR_HEX2 + (i - n1) * 2; }
+        store8(src + i, (_ar_nib(load8(hx)) << 4) | _ar_nib(load8(hx + 1)));
+        i = i + 1;
+    }
+    var tl = strlen(AR_BR_TEXT);
+    var out = alloc(tl * 4 + 64);
+    if (brotli_decompress(src, n, out, tl * 4 + 64) != tl * 4) { return 0; }
+    i = 0;
+    while (i < tl * 4) {
+        if (load8(out + i) != load8(AR_BR_TEXT + (i % tl))) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn test_brotli_workspace_survives_a_reset() {
+    # Same bar as _ar_codec_survives: warm, measure the arena, reset, hand every byte
+    # to a victim, decode again. A `_brd_ws` that survived the reset would decode
+    # its prefix-code tables straight through the victim.
+    alloc_reset();
+    assert_eq(_ar_brotli_rt(), 1, "brotli: warm decode exact");
+    assert(_brd_ws != 0, "brotli: workspace built by the warm decode");
+    var old_ws = _brd_ws;
+    var words = (alloc_used() + 64) / 8;
+    assert(old_ws + 1373616 <= _heap_base + words * 8, "brotli: workspace inside the measured arena span");
+
+    alloc_reset();
+    var victim = alloc(words * 8);
+    _ar_fill64(victim, words, 0x5A5AC3C3A5A53C3C);
+    assert_eq(_ar_brotli_rt(), 1, "brotli: decode exact after alloc_reset");
+    assert_eq(_ar_bad64(victim, words, 0x5A5AC3C3A5A53C3C), 0, "brotli: caller memory untouched after alloc_reset");
+    assert(_brd_ws != 0, "brotli: workspace rebuilt after alloc_reset");
+    assert(_brd_ws < victim || _brd_ws >= victim + words * 8, "brotli: workspace not inside the victim");
+    return 0;
+}
+
+fn test_reset_tables_zeroes_every_memoized_pointer() {
+    # The contract, stated directly: after `_sankoch_reset_tables()` every memoized
+    # arena pointer and every flag that gates one is 0. Warm every codec first so a
+    # global that is merely never-built cannot pass by accident.
+    alloc_reset();
+    _ar_codec_rt(AR_XZ, 16384, 3);
+    _ar_codec_rt(AR_ZSTD6, 16384, 3);
+    _ar_codec_rt(AR_ZSTD9, 16384, 3);
+    _ar_codec_rt(AR_BZIP2, 16384, 3);
+    _ar_codec_rt(AR_LZ4, 16384, 3);
+    _ar_codec_rt(AR_GZIP, 16384, 3);
+    _ar_codec_rt(AR_DEFLATE1, 16384, 3);
+    assert(_xzbt_son != 0, "warm: xz BT4 built");
+    assert(_zo_alloced == 1, "warm: zstd optimal parser built");
+    assert(_ze_wcnt != 0, "warm: zstd FSE weight scratch built");
+    assert_eq(_ar_brotli_rt(), 1, "warm: brotli decode exact");
+    assert(_brd_ws != 0, "warm: brotli workspace built");
+
+    _sankoch_reset_tables();
+    # xz BT4 + zstd optimal parser + zstd FSE weights (the three 2.7.10 missed).
+    assert_eq(_xzbt_ready, 0, "reset: _xzbt_ready");
+    assert_eq(_xzbt_son | _xzbt_head4 | _xzbt_head3, 0, "reset: xz BT4 tables");
+    assert_eq(_zo_alloced, 0, "reset: _zo_alloced");
+    assert_eq(_zo_price | _zo_off | _zo_mlen | _zo_litlen | _zo_rep0 | _zo_rep1
+      | _zo_rep2 | _zo_bof | _zo_mt_len | _zo_mt_ofb | _zo_mt_boff | _zo_litfreq
+      | _zo_llfreq | _zo_mlfreq | _zo_offreq, 0, "reset: zstd optimal-parser slabs");
+    assert_eq(_ze_wcnt | _ze_wnorm, 0, "reset: zstd FSE weight scratch");
+    # Pointers that were gated by a cleared flag but left dangling themselves.
+    assert_eq(_xze_oc | _xze_os | _xze_o0 | _xze_o1 | _xze_o2 | _xze_o3 | _xze_olen
+      | _xze_okind | _xze_odist | _xze_stk_len | _xze_stk_kind | _xze_stk_dist
+      | _xze_ml | _xze_md | _xze_lpc, 0, "reset: xz DP scratch pointers");
+    assert_eq(_bz_limit | _bz_base | _bz_perm | _bz_minlens | _bz_len | _bz_selector
+      | _bz_selmtf | _bz_inuse | _bz_seq | _bz_mtf | _bz_unzftab | _bz_cftab | _bz_tt,
+      0, "reset: bzip2 decode tables");
+    assert_eq(_bze_rle | _bze_ptr | _bze_tmp | _bze_rank | _bze_nrank | _bze_cnt
+      | _bze_lcol | _bze_mtfv | _bze_efreq | _bze_hlen | _bze_hcode | _bze_rfreq
+      | _bze_sel | _bze_selmtf | _bze_yy | _bze_unseq | _bze_seq2 | _bze_inuse2
+      | _bze_heap | _bze_hwt | _bze_hpar, 0, "reset: bzip2 encode tables");
+    assert_eq(_ze_nb | _ze_wt | _ze_code | _ze_tmp | _ze_tmp2 | _ze_hw | _ze_hp | _ze_ha
+      | _ze_hsym, 0, "reset: zstd Huffman encode slabs");
+    assert_eq(_zs_ll | _zs_ml | _zs_off | _zs_ofv | _zs_llc | _zs_ofc | _zs_mlc | _zs_lit
+      | _ze_prev | _ze_head_save, 0, "reset: zstd LZ slabs");
+    assert_eq(_ze_pct | _ze_plog | _ze_pnorm | _ze_palpha | _ze_prle | _ze_phist | _ze_ncbuf,
+      0, "reset: zstd sequence-plan slabs");
+    assert_eq(_z_huff_ready | _z_fse_ll | _z_fse_of | _z_fse_ml, 0, "reset: zstd decode table slots");
+    # The 2.7.10 list, unchanged.
+    assert_eq(crc32_table | crc64_table | crc32bz_table, 0, "reset: checksum tables");
+    assert_eq(_lz77_head | _lz77_prev | _lz4_htab, 0, "reset: lz77 / lz4 hash tables");
+    assert_eq(_huff_tables_allocd | _huff_litlen_fast | _huff_litlen_lens | _huff_litlen_codes
+      | _huff_dist_fast | _huff_dist_lens | _huff_dist_codes | _huff_cl_fast | _huff_cl_lens
+      | _huff_cl_codes | _huff_fixed_built | _huff_fixed_litlen_lens | _hcl_ws, 0,
+      "reset: huffman tables");
+    assert_eq(_deflate_enc_fixed_built | _deflate_enc_lit_codes | _deflate_enc_lit_lens
+      | _deflate_enc_dist_codes | _deflate_enc_dist_lens | _dyn_cost_buf | _dyn_cost_bw
+      | _deflate_len_lookup_built | _deflate_len_lookup | _deflate_dist_lookup_built
+      | _deflate_dist_lookup | _dh_ws | _ddec_cl_lens | _ddec_all_lens | _ddec_cl_order
+      | _dyn_sym_buf | _dyn_lit_freq | _dyn_dist_freq | _dyn_opt_lit_lens
+      | _dyn_opt_dist_lens | _dyn_opt_lit_codes | _dyn_opt_dist_codes | _dyn_lit_fast_tmp
+      | _dyn_dist_fast_tmp, 0, "reset: deflate tables");
+    assert_eq(_xz_probs | _xze_tmp | _xze_prices | _xze_dp_ready | _bz_tables_ready
+      | _bze_ready, 0, "reset: xz / bzip2 flags");
+    assert_eq(_z_lit | _z_huff_sym | _z_huff_nb | _z_pool_tab | _z_pool_next
+      | _z_pool_scratch | _z_pool_weight | _z_pool_wscr | _z_pool_wtab | _z_pool_rd
+      | _ze_ctp | _ze_oom | _ze_huff_ready | _ze_cnt | _ze_lz_ready | _ze_head
+      | _ze_plan_ready | _ze_pmode | _ze_ct_ll | _ze_ct_of | _ze_ct_ml, 0,
+      "reset: zstd pools + flags");
+    assert_eq(_brd_ws, 0, "reset: brotli workspace");
+    return 0;
+}
+
+# ---------------------------------------------------------------------------
+# 2.8.0 — the detector itself: entries that skipped it, and a canary it could
+# not see.
+# ---------------------------------------------------------------------------
+
+# Builders consumers call directly, with no _sankoch_lock and (before 2.8.0) no
+# arena guard of their own. Each id warms one builder.
+enum ArBuilder {
+    ARB_CRC64 = 1;
+    ARB_CRC64_STATE = 2;
+    ARB_CRC32BZ = 3;
+    ARB_LZ77 = 4;
+    ARB_HUFF_LITLEN = 5;
+    ARB_HUFF_DIST = 6;
+    ARB_HUFF_CL = 7;
+    ARB_HUFF_FIXED = 8;
+    ARB_HUFF_LENGTHS = 9;
+}
+
+fn _ar_builder(id): i64 {
+    if (id == ARB_CRC64) { return crc64_init_table(); }
+    if (id == ARB_CRC64_STATE) { crc64_init(); return 0; }
+    if (id == ARB_CRC32BZ) { return crc32_bzip2_init_table(); }
+    if (id == ARB_LZ77) { return lz77_init(); }
+    if (id == ARB_HUFF_FIXED) { return huff_build_fixed(); }
+    var lens[2304];   # 288 x 8
+    var i = 0;
+    while (i < 288) {
+        store64(&lens + i * 8, 8);
+        i = i + 1;
+    }
+    if (id == ARB_HUFF_LITLEN) { return huff_build_litlen(&lens, 256); }
+    if (id == ARB_HUFF_DIST) { return huff_build_dist(&lens, 32); }
+    if (id == ARB_HUFF_CL) { return huff_build_cl(&lens, 16); }
+    i = 0;
+    while (i < 288) {
+        store64(&lens + i * 8, 1 + i % 13);   # used as frequencies
+        i = i + 1;
+    }
+    var out[2304];
+    return huff_compute_lengths(&lens, 286, &out, 2, 15);
+}
+
+var _ar_victim_words = 0;
+
+# Warm the builder, reset, give every byte to the caller, call it again. Returns
+# the victim; its size in words is left in _ar_victim_words.
+fn _ar_builder_survives(id, name): i64 {
+    alloc_reset();
+    _sankoch_reset_tables();   # so the warm-up allocates inside the victim's span
+    _sankoch_canary = 0;
+    _ar_builder(id);
+    var words = (alloc_used() + 64) / 8;
+    alloc_reset();
+    var victim = alloc(words * 8);
+    _ar_fill64(victim, words, 0x5A5AC3C3A5A53C3C);
+    _ar_builder(id);
+    assert_eq(_ar_bad64(victim, words, 0x5A5AC3C3A5A53C3C), 0, name);
+    _ar_victim_words = words;
+    return victim;
+}
+
+fn test_unlocked_public_builders_guard_the_arena() {
+    # Measured against the 2.8.0 reset before these entries got their own guard:
+    # crc64_init_table / crc64_init rewrote 2,043 caller bytes, crc32_bzip2_init_table
+    # 2,042, lz77_init 524,288, huff_build_litlen 8,701.
+    _ar_builder_survives(ARB_CRC64, "crc64_init_table guards the arena");
+    _ar_builder_survives(ARB_CRC64_STATE, "crc64_init guards the arena");
+    _ar_builder_survives(ARB_CRC32BZ, "crc32_bzip2_init_table guards the arena");
+    _ar_builder_survives(ARB_LZ77, "lz77_init guards the arena");
+    _ar_builder_survives(ARB_HUFF_LITLEN, "huff_build_litlen guards the arena");
+    _ar_builder_survives(ARB_HUFF_DIST, "huff_build_dist guards the arena");
+    _ar_builder_survives(ARB_HUFF_CL, "huff_build_cl guards the arena");
+    _ar_builder_survives(ARB_HUFF_LENGTHS, "huff_compute_lengths guards the arena");
+    # huff_build_fixed wrote nothing: it returned early on the stale built flag and
+    # kept tables that now live inside the caller's buffer.
+    var v = _ar_builder_survives(ARB_HUFF_FIXED, "huff_build_fixed guards the arena");
+    assert(_huff_litlen_fast < v || _huff_litlen_fast >= v + _ar_victim_words * 8,
+      "huff_build_fixed rebuilt its tables outside the caller's buffer");
+    # The rebuilt tables are right, not just elsewhere.
+    alloc_reset();
+    crc64_init_table();
+    var d = alloc(64);
+    _ar_fill(d, 64, 0x5A);
+    var c64 = crc64(d, 64);
+    crc32_bzip2_init_table();
+    var cbz = crc32_bzip2(d, 64);
+    alloc_reset();
+    var d2 = alloc(64);
+    _ar_fill(d2, 64, 0x5A);
+    crc64_init_table();
+    crc32_bzip2_init_table();
+    assert_eq(crc64(d2, 64), c64, "crc64 unchanged across an alloc_reset");
+    assert_eq(crc32_bzip2(d2, 64), cbz, "crc32_bzip2 unchanged across an alloc_reset");
+    return 0;
+}
+
+fn test_canary_outside_the_first_chunk_still_detects_a_reset() {
+    # alloc_reset() zeroes only the first chunk. A caller that fills it before
+    # sankoch's first call gets a canary in a later chunk that no reset zeroes.
+    # Measured before 2.8.0 (zlib): tables and _sankoch_mtx rebuilt in chunk 1 after
+    # a reset were never invalidated by the next one — the caller's buffer took
+    # them and the next zlib call hung in mutex_lock on caller-owned bytes.
+    alloc_reset();
+    _sankoch_canary = 0;   # re-arm from scratch, like a first call
+    var big = alloc(_heap_first_end - _heap_first_base);
+    assert(big != 0, "stranded canary: fill the first chunk");
+    crc32_init_table();
+    assert(_sankoch_canary < _heap_first_base || _sankoch_canary >= _heap_first_end,
+      "stranded canary: the canary really is outside the first chunk");
+
+    alloc_reset();
+    _ar_roundtrip("stranded canary: zlib round-trip after the first reset");
+    assert(_sankoch_canary >= _heap_first_base && _sankoch_canary < _heap_first_end,
+      "stranded canary: re-armed inside the first chunk once the heap came back");
+    var words = (alloc_used() + 64) / 8;
+
+    alloc_reset();
+    var victim = alloc(words * 8);
+    _ar_fill64(victim, words, 0x5A5AC3C3A5A53C3C);
+    _ar_roundtrip("stranded canary: zlib round-trip after the second reset");
+    assert_eq(_ar_bad64(victim, words, 0x5A5AC3C3A5A53C3C), 0,
+      "stranded canary: caller memory intact after the second reset");
+    return 0;
+}
+
+fn test_stranded_canary_does_not_misfire_in_steady_state() {
+    # The other direction of _sankoch_canary_stranded: a canary outside the first chunk
+    # while the bump pointer is ALSO still outside it is not a reset. Review (2.8.0): a
+    # predicate without the _heap_base check passed every other cell here, yet rebuilt the
+    # CRC table on every call (2.8x slower) and would zero live tables mid-stream.
+    alloc_reset();
+    _sankoch_canary = 0;
+    var big = alloc(_heap_first_end - _heap_first_base);
+    assert(big != 0, "steady stranded: fill the first chunk");
+    crc32_init_table();
+    assert(_sankoch_canary < _heap_first_base || _sankoch_canary >= _heap_first_end,
+      "steady stranded: the canary really is outside the first chunk");
+    var t = crc32_table;
+    var d = alloc(64);
+    _ar_fill(d, 64, 0x5A);
+    var want = crc32(d, 64);
+    var moved = 0;
+    var wrong = 0;
+    var i = 0;
+    while (i < 1000) {
+        crc32_init_table();
+        if (crc32_table != t) { moved = moved + 1; }
+        if (crc32(d, 64) != want) { wrong = wrong + 1; }
+        i = i + 1;
+    }
+    assert_eq(moved, 0, "steady stranded: no reset, so the guard never rebuilds a table");
+    assert_eq(wrong, 0, "steady stranded: crc32 unchanged over 1,000 calls");
+    return 0;
+}
+
+fn test_failed_canary_arm_still_detects_a_reset() {
+    # Review (2.8.0): a canary arm whose 8-byte alloc failed left _sankoch_canary = 0, the
+    # next guard took it for a first call and armed without resetting, and a crc32 after an
+    # alloc_reset() came out wrong. An injected OOM no longer reaches the canary...
+    alloc_reset();
+    _sankoch_reset_tables();
+    _sankoch_canary = 0;
+    _sankoch_alloc_set_fail_at(0);
+    assert_eq(crc32_init_table(), 0 - ERR_OOM, "failed arm: the injected OOM hits the table");
+    _sankoch_alloc_set_fail_at(0 - 1);
+    assert(_sankoch_canary != 0, "failed arm: an injected OOM does not disarm the detector");
+    # ...and a genuine arm failure is treated as a reset at the next guard.
+    alloc_reset();
+    _sankoch_reset_tables();
+    _sankoch_canary = 0;
+    var a = alloc(64);
+    _ar_fill(a, 64, 0x5A);
+    crc32_init_table();
+    var want = crc32(a, 64);
+    var words = (alloc_used() + 64) / 8;
+    _sankoch_canary = 0;          # the state a failed alloc(8) leaves
+    _sankoch_canary_lost = 1;
+    alloc_reset();
+    var victim = alloc(words * 8);
+    _ar_fill64(victim, words, 0x5A5AC3C3A5A53C3C);
+    var b = alloc(64);
+    _ar_fill(b, 64, 0x5A);
+    crc32_init_table();
+    assert_eq(crc32(b, 64), want, "failed arm: crc32 correct after an unseen-epoch reset");
+    assert_eq(_ar_bad64(victim, words, 0x5A5AC3C3A5A53C3C), 0, "failed arm: caller memory intact");
+    assert(_sankoch_canary != 0 && _sankoch_canary_lost == 0, "failed arm: re-armed");
+    return 0;
+}
+
 fn main(): i64 {
     test_crc32_table_does_not_write_through_a_stale_pointer();
     test_crc32_still_correct_after_a_reset();
     test_public_api_round_trip_survives_a_reset();
     test_repeated_resets_do_not_leak_the_canary_check();
+    # The inventory cell first: against an unfixed library it FAILS cleanly, where the
+    # survival cells after it write through stale slabs and can wedge the process.
+    test_reset_tables_zeroes_every_memoized_pointer();
+    test_xz_bt4_tables_survive_a_reset();
+    test_zstd_optimal_parser_survives_a_reset();
+    test_zstd_fse_weight_scratch_survives_a_reset();
+    test_every_alloc_bearing_codec_survives_a_reset();
+    test_brotli_workspace_survives_a_reset();
+    test_unlocked_public_builders_guard_the_arena();
+    test_failed_canary_arm_still_detects_a_reset();
+    test_stranded_canary_does_not_misfire_in_steady_state();
+    test_canary_outside_the_first_chunk_still_detects_a_reset();
     return assert_summary();
 }
 

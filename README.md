@@ -19,6 +19,7 @@ release in [`VERSION`](VERSION)).
 | xz / LZMA2      | `FORMAT_XZ`      | ✓     | —         | `xz -dc` / `xz -d`     |
 | bzip2           | `FORMAT_BZIP2`   | ✓     | —         | `bzip2 -dc` / `bzip2 -d` |
 | zstd            | `FORMAT_ZSTD`    | ✓     | —         | `zstd` / `zstd -d`     |
+| Brotli (decode) | `FORMAT_BROTLI`  | decode | —        | `brotli -d`            |
 
 zstd is a **full codec** — decode (`zstd_decompress` / `FORMAT_ZSTD`,
 v2.5.0+) and encode (`zstd_compress` / `compress(FORMAT_ZSTD, …)`, v2.5.5+):
@@ -55,6 +56,13 @@ within **~0.2 % of `xz -6`** on inputs that fit the window (was +7 %); a
 speed gap to xz's optimized C persists. `--check=sha256` streams are
 rejected (no SHA-256 primitive — fails closed rather than accept an
 unverified payload).
+
+Brotli is **decode-only** (`brotli_decompress` / `FORMAT_BROTLI`, v2.8.0+). It implements all of
+RFC 7932: context modeling, block switching, window sizes 10–24 bits, and the 122,784-byte static
+dictionary with its 121 transforms. It decodes one complete stream into a caller buffer, with a
+fail-closed output ceiling and trailing bytes rejected, as `brotli -d` does. It is validated
+byte-for-byte against `brotli -d` 1.2.0 (google testdata, quality 0–11 × window 10–24 sweeps, a
+WOFF2-shaped font stream) and fuzzed with guard-paged buffers. The encoder is scheduled for 2.8.1.
 
 ## Containers
 
@@ -101,6 +109,18 @@ gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)    -> byte
 # cap is poisoned (ERR_RATIO_LIMIT, surfaced by write/finish) mid-stream.
 var ctx = zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)   # also deflate_/gzip_
 ```
+
+### Brotli decode (v2.8.0+)
+
+```cyr
+brotli_decompress(src, src_len, dst, dst_cap)                     -> bytes or -err
+brotli_decompress_capped(src, src_len, dst, dst_cap, max_output)  -> bytes or -err  # max_output clamped to dst_cap, may exceed 16 MiB
+decompress(FORMAT_BROTLI, src, src_len, dst, dst_cap)             -> bytes or -err
+```
+
+`src` must be exactly one stream: bytes after it are `ERR_CORRUPT_DATA`. An output past `dst_cap`
+is `ERR_BUFFER_TOO_SMALL`, and one past the ceiling is `ERR_OUTPUT_LIMIT`; whichever bound is
+tighter reports first, as with zlib. Large Window Brotli is `ERR_UNSUPPORTED_FORMAT`.
 
 ### Caller-overridable output ceiling (v2.7.13+)
 
@@ -219,7 +239,15 @@ cyrius fuzz                              # all fuzz harness functions
 cyrius bench tests/bcyr/sankoch.bcyr     # throughput + sizes
 cyrius distlib                           # → dist/sankoch.cyr (full)
 cyrius distlib core                      # → dist/sankoch-core.cyr (kernel-safe)
+cyrius distlib brotli                    # → dist/sankoch-brotli.cyr (one profile; list below)
+bash scripts/profile-link-gate.sh        # every bundle links, runs, survives alloc_reset
 ```
+
+**Profiles** (`cyrius.cyml`, one bundle each under `dist/`): full, `core` (kernel-safe LZ4
+decode), `zlib`, `gzip`, `xz`, `bzip2`, `zstd`, `tar` (every envelope), `zip` (store + DEFLATE),
+`zipall` (every ZIP method), `brotli` (Brotli decode), and `woff` (the zlib closure + Brotli, for
+WOFF 1.0 + WOFF2). **Use one sankoch bundle per program.** Profiles are closures, not layers, and two
+in one program collide. Pick the smallest single profile that carries every codec you need.
 
 Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
 Current test / assertion / line totals live in [`docs/development/state.md`](docs/development/state.md).
@@ -243,12 +271,15 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | xz.cyr         | `.xz` de/compress — container + LZMA2 + LZMA range coder, optimal-parse encoder + BT4 match finder + 256 KB window | full    |
 | bzip2.cyr      | `.bz2` de/compress — bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 | full  |
 | zstd.cyr       | `.zst` de/compress (RFC 8878) — own FSE/Huffman, LZ77 + repcode parse, DP optimal parse at levels 7–9 | full    |
+| brotli.cyr     | Brotli decode (RFC 7932) — prefix codes, context maps + IMTF, block switching, command loop, dictionary transforms | full, brotli, woff |
+| brotli_dict.cyr | **Generated** RFC 7932 static dictionary literal (`scripts/brotli_dict2cyr.py`; never hand-edit) | full, brotli, woff |
 | tar.cyr        | Shared POSIX ustar/v7 tar pull-cursor; `tar_open_auto` sniffs gzip/xz/bzip2/zstd; path-traversal guards | full    |
 | zip.cyr        | PKZIP `.zip` container — in-memory reader + writer, methods 0/8, Zip64, streaming, Unix metadata | full    |
 | zip_methods.cyr | ZIP methods 12/93/95 (bzip2/zstd/xz), kept out of the lean `[lib.zip]` profile        | full    |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
-| runtime.cyr    | Shared runtime seam — `_sankoch_mtx` two-tier lock (agnos no-op) + `_sankoch_alloc` arena | full    |
-| lib.cyr        | Include chain + public API + format dispatch                                           | full    |
+| runtime.cyr    | Shared runtime seam — `_sankoch_mtx` two-tier lock (agnos no-op) + `_sankoch_alloc` arena + `alloc_reset()` detection | full    |
+| lib.cyr        | Include chain + public API + format dispatch + the full bundle's reset dispatcher       | full    |
+| reset_&lt;profile&gt;.cyr | One per alloc-bearing profile: that bundle's `_sankoch_reset_tables` over exactly its modules | one each |
 
 `core` modules form the `[lib.core]` profile → `dist/sankoch-core.cyr` (kernel-safe LZ4 batch decompress; no `alloc`, no syscalls, no mutex). Verified by `programs/core_smoke.cyr` (a CI tripwire that links only the core subset and asserts decompress still works).
 

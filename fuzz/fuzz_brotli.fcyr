@@ -1,0 +1,414 @@
+# sankoch — Brotli (RFC 7932) decoder fuzz harness (2.8.0)
+#
+# The decoder must never crash, hang, write out of bounds, or return anything but bytes written
+# or one of its 0 - ERR_* classes, on any input. Thirteen seeds (3,255 B, embedded as NUL-free hex:
+# the cyrius 6.6.4 string-interning hazard) start mutation from valid streams that reach every
+# path turning attacker-controlled indices into table addresses: the dictionary and transforms,
+# all four context modes, block switching in L / I / D with type / count trees, distance context
+# maps with IMTF, NPOSTFIX / NDIRECT, a 65,536-byte overlapping copy, and an adversarial
+# 256-tree distance-map IMTF, and an uncompressed meta-block whose length is not a multiple of 8.
+# Strategies (about 5,000 decodes):
+#   1. 1,500 random buffers of 1..1,024 B (half start with a seed's first byte, so WBITS parses);
+#   2. 2,000 seed mutations: 1-8 bit flips, byte overwrites, a 1-4 byte insert or delete;
+#   3. 750 random truncations of seeds;
+#   4. 750 splices: a prefix of seed A + a suffix of seed B.
+# Invariants on every input: r < 0 is an allowed ERR_* class, else 0 <= r <= 65,536;
+# decompress(FORMAT_BROTLI) agrees; an accepted input decodes again into a second buffer with the
+# same length and bytes; r > 0 fails closed one byte short (ERR_BUFFER_TOO_SMALL) and with
+# max_output = r - 1 (ERR_OUTPUT_LIMIT); every 97th input also runs a random max_output cap.
+# Out-of-bounds detection: every decode reads src from a copy that ends flush against a PROT_NONE
+# page, so a read past src_len faults. An accepted input decodes again at dst_cap = r into a buffer
+# that ends flush against a PROT_NONE page with 64 guard bytes before it, and the one-byte-short
+# and capped decodes use the same layout: a write past dst_cap faults, one before dst is counted.
+# Buffers are allocated once (the arena never frees). Seeds: tests/data/brotli/ (MANIFEST.tsv
+# gives each one's output length and CRC-32, re-checked here before fuzzing).
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_seed(s) {
+    _fuzz_state = s;
+    return 0;
+}
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+# Uniform-ish 0..n-1 from 24 LCG bits.
+fn _fz_rand(n) {
+    var v = _fuzz_next() | (_fuzz_next() << 8) | (_fuzz_next() << 16);
+    return v % n;
+}
+
+var _fz_pool = 0;      # decoded seed bytes
+var _fz_used = 0;
+var _fz_off: i64[16];  # seed k: bytes [off, off + len) of the pool
+var _fz_len: i64[16];
+var _fz_olen: i64[16]; # expected output length / CRC-32 (MANIFEST.tsv)
+var _fz_ocrc: i64[16];
+var _fz_nseeds = 0;
+var _fz_start = 0;
+var _fz_src = 0;       # mutation buffer
+var _fz_dst = 0;
+var _fz_dst2 = 0;
+var _fz_bad = 0;       # invariant violations
+var _fz_ok = 0;        # accepted inputs
+var _fz_runs = 0;
+var _fz_gsrc = 0;      # PROT_NONE page: src copies end flush against it
+var _fz_gdst = 0;      # PROT_NONE page: exact-cap outputs end flush against it
+
+# RW pages for n bytes followed by one PROT_NONE page; returns the guard page's address.
+fn _fz_guard_map(n) {
+    var pages = (n + 4095) & (0 - 4096);
+    var m = syscall(SYS_MMAP, 0, pages + 4096, 3, 34, 0 - 1, 0);   # PROT_READ|WRITE, MAP_PRIVATE|ANON
+    var nr = 10;                                     # mprotect: x86_64 10, aarch64 226
+    if (SYS_LSEEK != 8) { nr = 226; }
+    if (m <= 0 || syscall(nr, m + pages, 4096, 0) != 0) { return 0; }
+    return m + pages;
+}
+
+# Decode src[0..n) into a cap-byte window ending at the dst guard page, max_output mo (0 = none),
+# with 64 guard bytes (0xA5) before it; a changed guard byte is a violation.
+fn _fz_guarded(src, n, cap, mo) {
+    var d = _fz_gdst - cap;
+    var i = 0;
+    while (i < 64) { store8(d - 64 + i, 0xA5); i = i + 1; }
+    var r = 0;
+    if (mo == 0) { r = brotli_decompress(src, n, d, cap); }
+    else { r = brotli_decompress_capped(src, n, d, cap, mo); }
+    i = 0;
+    while (i < 64) {
+        if (load8(d - 64 + i) != 0xA5) { _fz_bad = _fz_bad + 1; i = 64; }
+        i = i + 1;
+    }
+    return r;
+}
+
+fn _fz_hexv(c) {
+    if (c >= 97) { return c - 87; }
+    return c - 48;
+}
+
+fn _fz_hex(h) {
+    var i = 0;
+    while (load8(h + i) != 0) {
+        store8(_fz_pool + _fz_used, (_fz_hexv(load8(h + i)) << 4) | _fz_hexv(load8(h + i + 1)));
+        _fz_used = _fz_used + 1;
+        i = i + 2;
+    }
+    return 0;
+}
+
+fn _fz_seed_end(olen, ocrc) {
+    var k = _fz_nseeds;
+    store64(&_fz_off + k * 8, _fz_start);
+    store64(&_fz_len + k * 8, _fz_used - _fz_start);
+    store64(&_fz_olen + k * 8, olen);
+    store64(&_fz_ocrc + k * 8, ocrc);
+    _fz_start = _fz_used;
+    _fz_nseeds = k + 1;
+    return 0;
+}
+
+fn _fz_seeds() {
+    # 0 small/records_4k.q5w12.br: 223 B -> 4096 B, CRC-32 7c736ce2
+    _fz_hex("c1f87f00202e18b3be940d388f4bf2a221b95164a7ebc16571d4def041ca4d1d0a1b634b702c571df87bb9dd9d9d5f2f");
+    _fz_hex("ff6e3edfbeee9e97b7bf5fffef2fcbfb87f25a62797ebc88df93c9bda6f6366defd3f731639f33bfa9a59a4e86108424");
+    _fz_hex("14a1113a611866534d274304221289c8889c288cb2a9a69321066224266246cc8985b16caae964888338898bb81177e2");
+    _fz_hex("613c9b6a3a19122041122261249c4498c8a69a4e86244892a4481a49271926b3a9a69321055224255246ca4985a96caa");
+    _fz_hex("e964488334498bb49176d2613a9b6a3a19322043322263649c4c98c9a79f00");
+    _fz_seed_end(4096, 0x7c736ce2);
+    # 1 small/utf8_706.q11w10.br: 362 B -> 706 B, CRC-32 b2b979c9
+    _fz_hex("a1081600e33cb06d15eb45f46d4edd84c586a8c893f7cc9a4e404a45fc053d8ffbad9114f240b0877b54b9d8751b4e06");
+    _fz_hex("682f17fa62d96d985d4a1364f837e3cf82c910b3a509ffb69be0c0786fdd38d004a35f946942896bba4d1f9f63aa05c2");
+    _fz_hex("a422d7920001650940508821d7d38be21a1f9eb1644cce385ba78cf2e5785df0dad0fc8cfb4277e413f6b949fb3f4d09");
+    _fz_hex("62d2d162fc39ccae6af72129dfe2cb549f25fc46b01c2f88928c89a26aba615ac9c0e38b1e052aaec6a3258591064d2c");
+    _fz_hex("7c8131aed720dacbdeb870b79ffd1930848388156b92704ded3de49871e26d8cb1fcf16f9ef96ee2db14a66e749fbe26");
+    _fz_hex("c79463c9b10594a00209ca0226c252680a5d61cc0fbf02a3cf0420b8049320121082af51460b0321087b6123cc848670");
+    _fz_hex("7255df33d30cd3209b4e1e2a340b059e409123c86158709143f433d84801a4c95060c69c8080c80d3fc42cddd5effcff");
+    _fz_hex("57bdd8137a788fe75a3cdcd36daef3f8dce9d197c9c9fc7d6703");
+    _fz_seed_end(706, 0xb2b979c9);
+    # 2 crafted/dict_all_121_transforms_all_lengths.br: 392 B -> 1892 B, CRC-32 7987adf2
+    _fz_hex("62ec0000841fc06e000000000000000000000000000000005415550f0000000000f03ffe07d80d002000a0aaaaaa7f83");
+    _fz_hex("2808904590fd02c53aa8c6e2c66bd0c60f1c7125bd7d69606b1ea902576e34e6cd13f57926443c25ab398d5da0c52b38");
+    _fz_hex("fa85c15056156babd3e4f5b96681745bd2ae5c4d07b6bd136bd7b5b74fd51ed46db8459a0c2d4b635bdb2438eb65129c");
+    _fz_hex("5a49e762fc8266f0c38a97b8364ca68a8329c78936f35955cbd4fabaf1c0b6d042bbd24ab7134ddfefe8d2fd6c94c438");
+    _fz_hex("f4108ffde48f5cdf99ff7e1ad23037227dd89d5604ea25c91b96f9f7c37ca0e700c1cf7a424ef7a49e164b73e62fedf1");
+    _fz_hex("ff74674a74ce063518166c54126f18d8798f779dd4939c85e54e2395df0e8f05d7c88a4abda470db41a9e271e9d25bcc");
+    _fz_hex("e5d7d35b4e515a4feaba395bedf6a0d58f437def07f11f6ce6306ac472cdde1aa7b34d9a18cdf2ee9eb988734ffb82eb");
+    _fz_hex("7ec5a2f66584836ba8c2bb28a30f3096dfd34caea94fef47b0b9bdc2fd2a2bbb8bd4ec975c1dacbc7b6bfc3dacca30ae");
+    _fz_hex("5331e999ff2aa901");
+    _fz_seed_end(1892, 0x7987adf2);
+    # 3 crafted/ctxmode_signed_3trees.br: 539 B -> 600 B, CRC-32 471f82cf
+    _fz_hex("e24a00c04392ce718e739ce31ce738c739ce010037064000002000425555152005480800e87ff3cf3f03180000000098");
+    _fz_hex("0100800100008001b831000200000190545555015280840180ff37fffc338001000000801900001800000018801b0320");
+    _fz_hex("00001000495555152005080400a424faf1330000000000c00c0000000000000eed02b050151111eef56c3a3e88572d10");
+    _fz_hex("75d38c93dc5b90af6ec9ddf1eea36850b776f0a0fab275683a34b57987353c3ab8414ea025cfe123b3735b8a3307f3e7");
+    _fz_hex("d1ac427f4dc41143ad2d18ebbc4252387f7b52d7efb5c0fabb2e5b334e6a75badb8025b50f1ea74f4ee1f598a36af03c");
+    _fz_hex("76cca62d535f204cf70414d273efebbd922a3ddd86dd11e54caef77ce581bfb340309e6e1f19c471ccda1b7dad76775d");
+    _fz_hex("52b1426b95a628434be129a671901c9503ee5d3ad40aa1e073856cd5763969d6eac2592cd8eaa1cf909045de6b928f7d");
+    _fz_hex("b28e11b77546ef9a5d758a839257d33188f9d5c254f701e87bcaf12824b2b42c872a5decf603ca4b1f075e2a8e1d85a7");
+    _fz_hex("c07b3d99dd2e35816de9164f6c60699f96b202f15f0d12bcdcbcf4550e235eeebd8ef0d8500f593ffc842b32c2658487");
+    _fz_hex("9d2a908e1e8cbfe9fc4b4ceacad1bdd4ed20a62765e28d6b6c2a242416a5079960090dae57531f3bd6fd50c7f724d84d");
+    _fz_hex("1a9353ecb8ec478dd782edb99a1752b93f4568fb1c588a331b39610dabe329d3ac96f980ef711e4fad0782fbe5a655af");
+    _fz_hex("e6d36ecc8bfea0d9473649");
+    _fz_seed_end(600, 0x471f82cf);
+    # 4 crafted/npostfix3_ndirect120.br: 331 B -> 6114 B, CRC-32 2de5a1f9
+    _fz_hex("22fc023f0070630000000000555555f5ffffffffffffffff0f6c0700000000000000000000000000000000a0aa020000");
+    _fz_hex("000000001800000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+    _fz_hex("0000000000000000000000000018d80e00a06100000000000000000000000000c03f0c0080c10000000000c0000000c0");
+    _fz_hex("1bfe889803c08693fec4db95afe526c33d6a731b33da4e4c37e81bb7ee781e9f5573d48b25caef8fb03a84c8cdba4ec3");
+    _fz_hex("3d17f05dee7ed80235124ae57807c726a47bc234fe6a5ee4abd94712c1ac099b9a65d81f9c5cc609ee6f4cbf3aacbd79");
+    _fz_hex("ecdb006e493e7f1d3f5474d5bdb73672e8e6f3d83761f41d2981235a8d7e3b7fca7176d9645f9cbc3ae904827a79b39a");
+    _fz_hex("804ffbfd6fa56f6b331ce74873e460412ad995a4d63666ad3b5db87d1543478e43d7b474cf2f9ee5c8c900");
+    _fz_seed_end(6114, 0x2de5a1f9);
+    # 5 synth/BlockSwitchMessage.br: 38 B -> 12 B, CRC-32 bf166253
+    _fz_hex("1b0b00d1e101c6e0e206040091b270fe7e11166200001c6c99c4000900803b6d020882000000");
+    _fz_seed_end(12, 0xbf166253);
+    # 6 synth/BlockCountMessage.br: 37 B -> 12 B, CRC-32 bf166253
+    _fz_hex("1b0b0011018cc1c50d08002265e1fcfd222cc4000038d832890112000077da041042000000");
+    _fz_seed_end(12, 0xbf166253);
+    # 7 crafted/bswitch_d3_dctx_implicit.br: 347 B -> 486 B, CRC-32 10219016
+    _fz_hex("a23c80d188a64011801112d7f5f505d80d0000002004000a094004800080ff67fcf31860371588420a00000000000000");
+    _fz_hex("000000000000aae10d6f0000000000000000000000000000000000000000000000000000000000000000000000000000");
+    _fz_hex("c0707000003261e300008a378683030018fad5edece265feba87c3a5c3d0a0ade7540ec393176937d52a96946f18c383");
+    _fz_hex("077bb4b7de5b3595b78c8fc1b9a55182929cf50d00a90da240e5567505840734bd0f3e3d3b27e0c9833767122dfe747c");
+    _fz_hex("4fcda06d28000560026c7b65691ba32e6bbf0080b402ebb6f2082e2c7830beaebd4a992b5578d2481c0e8cf7e8d7c5ab");
+    _fz_hex("d5a4af3e76e0b7caabcfef5358699f68238d520ea405a5417bf092257a0a75549a6145129c7810c9bcc2f80f0a2c79ef");
+    _fz_hex("5fc9536e2944c14a5317b30738567835414a0bae9cc47df622e11c76d56d694edd161978eb89937280bbf2e432b5566e");
+    _fz_hex("ea6845292fd5e9a93d5808");
+    _fz_seed_end(486, 0x10219016);
+    # 8 crafted/bswitch_reset_per_metablock.br: 260 B -> 219 B, CRC-32 d98d7f2a
+    _fz_hex("200860444a388f4801e4516301440019a53596f7de43555555555555555555555555555555d5ffffffffffffffffffff");
+    _fz_hex("ffffffffffbf21490863afb1b5b9e925a626275d637383a33721851591642494b0021b07000000000000000000000000");
+    _fz_hex("0000000000208418009c9044e55459294dd526f8b6aba85378f3de5dd7822e499e212b0ebcffd4c11f35a89c394c379c");
+    _fz_hex("f7195700a3900cc2c528a400e228a40012808cd21acb7befa1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeaffffffffffffff");
+    _fz_hex("ffffffffffffffffdf90248431d7d8dc7a89a9c949d7d8dce0c84a32212523c98495ee6414555851545594951355bd44");
+    _fz_hex("870495e7bb47a3f74b1e02ebd8d04a32f468b10b");
+    _fz_seed_end(219, 0xd98d7f2a);
+    # 9 crafted/bswitch_cmode_mixed_lsb6_utf8.br: 360 B -> 339 B, CRC-32 20435c38
+    _fz_hex("422a208a60e34035802500ce011b577a22a28848115144a488282252441411b1efdfb7efdfb7efdfb7efdfb7efdfb7ef");
+    _fz_hex("dfb7efdfb7efdf07b01d0001008001300600000000303006000300030060000066000060001800c0c0760004000002c0");
+    _fz_hex("1800000000c0c018000c000c00000003180000c00030008081ed00080000048031000000008081310018001800000300");
+    _fz_hex("800100800160000003db01000000048010000000008081310000000c00800106300000800160000003db010000000000");
+    _fz_hex("00000000000000000000000000000090c00fbf0100000000000000f07f4291348b53b67d7b5bb673937e4eaa7d0e5d76");
+    _fz_hex("ae3c77aeb8306cbb6a5c5d9fb26bfdc2ced7c0f6533b74873e4ad75f730af6050e069f93bb4def507c4e6e8f66a17f0e");
+    _fz_hex("e24bfc518e7fce92ae4c9a9d1d00db8e24c1ed7b16bf06c4ce7622ae25090d7e60c7df3f399e047172e5b66dbffa0eb1");
+    _fz_hex("126f73203f47f5eab5c6363bbf0bc1e7ec10fe430d12570f");
+    _fz_seed_end(339, 0x20435c38);
+    # 10 crafted/mlen_4nibbles_max_copy_65536.br: 14 B -> 65536 B, CRC-32 6a133edc
+    _fz_hex("e2ff1f005498585c1610ee3d8001");
+    _fz_seed_end(65536, 0x6a133edc);
+    # 11 crafted/adv_imtf_dist_256.br: 335 B -> 16 B, CRC-32 bb04570b
+    _fz_hex("e20180ff87801803f8bff81f41a150000104104000010410400001041040000104104000010410400001041040000104");
+    _fz_hex("104000010410400001041040000104104000010410400001041040000104104000010410400001041040000104104000");
+    _fz_hex("010410400001041040000104104000010410400001041040000104104000010410400001041040000104104000010410");
+    _fz_hex("400001041040000104104000010410400001041040000104104000010410400001041040000104104000010410400001");
+    _fz_hex("041040000104104000010410400001041040000104104000010410400001041040000104104000010410400001041040");
+    _fz_hex("000104104000010410400001041040000104104000010410400001041040000104104000010410400001041040000104");
+    _fz_hex("1040000104104000010410400001041040000104104000010410400001041040000104104000010410400001041080");
+    _fz_seed_end(16, 0xbb04570b);
+    # 12 small/hello.q0.br: 17 B -> 13 B, CRC-32 936b7328 (uncompressed meta-block, MLEN % 8 = 5)
+    _fz_hex("03068068656c6c6f2c2062726f746c6903");
+    _fz_seed_end(13, 0x936b7328);
+    return 0;
+}
+
+fn _fz_allowed(r) {
+    if (r == 0 - ERR_CORRUPT_DATA || r == 0 - ERR_UNSUPPORTED_FORMAT || r == 0 - ERR_INVALID_HUFFMAN) { return 1; }
+    if (r == 0 - ERR_MATCH_OUT_OF_RANGE || r == 0 - ERR_BUFFER_TOO_SMALL || r == 0 - ERR_OUTPUT_LIMIT) { return 1; }
+    return 0;
+}
+
+# Decode src[0..n) under every invariant. Returns r.
+fn _fz_check(n) {
+    var src = _fz_gsrc - n;
+    var c = 0;
+    while (c < n) { store8(src + c, load8(_fz_src + c)); c = c + 1; }
+    _fz_runs = _fz_runs + 1;
+    var r = brotli_decompress(src, n, _fz_dst, 65536);
+    if (r < 0) {
+        if (_fz_allowed(r) == 0) { _fz_bad = _fz_bad + 1; }
+    } else {
+        if (r > 65536) { _fz_bad = _fz_bad + 1; }
+    }
+    if (decompress(FORMAT_BROTLI, src, n, _fz_dst2, 65536) != r) { _fz_bad = _fz_bad + 1; }
+    if (r >= 0) {
+        _fz_ok = _fz_ok + 1;
+        if (_fz_guarded(src, n, r, 0) != r) { _fz_bad = _fz_bad + 1; }   # exact cap
+        var d = _fz_gdst - r;
+        var i = 0;
+        while (i < r) {
+            if (load8(_fz_dst + i) != load8(d + i)) {
+                _fz_bad = _fz_bad + 1;
+                i = r;
+            }
+            i = i + 1;
+        }
+    }
+    if (r > 0) {
+        if (_fz_guarded(src, n, r - 1, 0) != 0 - ERR_BUFFER_TOO_SMALL) { _fz_bad = _fz_bad + 1; }
+        if (r >= 2) {
+            if (_fz_guarded(src, n, r, r - 1) != 0 - ERR_OUTPUT_LIMIT) { _fz_bad = _fz_bad + 1; }
+        }
+    }
+    if (_fz_runs % 97 == 0) {
+        var cap = 1 + _fz_rand(4096);
+        var rc = brotli_decompress_capped(src, n, _fz_dst2, 65536, cap);
+        if (rc > cap || (rc < 0 && _fz_allowed(rc) == 0)) { _fz_bad = _fz_bad + 1; }
+    }
+    return r;
+}
+
+# Copy seed k into the mutation buffer; returns its length.
+fn _fz_load(k) {
+    var off = load64(&_fz_off + k * 8);
+    var len = load64(&_fz_len + k * 8);
+    var i = 0;
+    while (i < len) {
+        store8(_fz_src + i, load8(_fz_pool + off + i));
+        i = i + 1;
+    }
+    return len;
+}
+
+fn main() {
+    alloc_init();
+    crc32_init_table();
+    _fz_pool = alloc(4096);
+    _fz_src = alloc(4096 + 64);
+    _fz_dst = alloc(65536 + 64);
+    _fz_dst2 = alloc(65536 + 64);
+    _fz_gsrc = _fz_guard_map(4096);
+    _fz_gdst = _fz_guard_map(65536 + 64);
+    assert(_fz_gsrc != 0 && _fz_gdst != 0, "fuzz_brotli guard pages mapped");
+    _fz_seeds();
+    assert(_fz_used <= 4096, "fuzz_brotli seed pool fits 4 KB");
+
+    # Seeds decode to their manifest output.
+    var k = 0;
+    while (k < _fz_nseeds) {
+        var n = _fz_load(k);
+        var r = _fz_check(n);
+        assert(r == load64(&_fz_olen + k * 8), "fuzz_brotli seed decodes to its manifest length");
+        assert(r >= 0 && crc32(_fz_dst, r) == load64(&_fz_ocrc + k * 8), "fuzz_brotli seed output CRC-32");
+        k = k + 1;
+    }
+    println("fuzz_brotli: 13 seeds decode to their manifest output");
+
+    # 1. Random buffers.
+    _fuzz_seed(2808001);
+    var it = 0;
+    while (it < 1500) {
+        var len = 1 + _fz_rand(1024);
+        var i = 0;
+        while (i < len) {
+            store8(_fz_src + i, _fuzz_next());
+            i = i + 1;
+        }
+        if ((it & 1) == 0) { store8(_fz_src, load8(_fz_pool + load64(&_fz_off + _fz_rand(_fz_nseeds) * 8))); }
+        _fz_check(len);
+        it = it + 1;
+    }
+    println("fuzz_brotli: 1500 random-input tests passed");
+
+    # 2. Seed mutations.
+    _fuzz_seed(2808002);
+    it = 0;
+    while (it < 2000) {
+        var n2 = _fz_load(_fz_rand(_fz_nseeds));
+        var kind = _fz_rand(4);
+        if (kind == 0) {                             # 1-8 bit flips
+            var f = 1 + _fz_rand(8);
+            while (f > 0) {
+                var b = _fz_rand(n2 * 8);
+                store8(_fz_src + (b >> 3), load8(_fz_src + (b >> 3)) ^ (1 << (b & 7)));
+                f = f - 1;
+            }
+        } elif (kind == 1) {                         # 1-8 byte overwrites
+            var w = 1 + _fz_rand(8);
+            while (w > 0) {
+                store8(_fz_src + _fz_rand(n2), _fuzz_next());
+                w = w - 1;
+            }
+        } elif (kind == 2) {                         # insert 1-4 random bytes
+            var ins = 1 + _fz_rand(4);
+            var at = _fz_rand(n2 + 1);
+            var j = n2 - 1;
+            while (j >= at) {
+                store8(_fz_src + j + ins, load8(_fz_src + j));
+                j = j - 1;
+            }
+            j = 0;
+            while (j < ins) {
+                store8(_fz_src + at + j, _fuzz_next());
+                j = j + 1;
+            }
+            n2 = n2 + ins;
+        } else {                                     # delete 1-4 bytes
+            var del = 1 + _fz_rand(4);
+            if (del >= n2) { del = n2 - 1; }
+            var at2 = _fz_rand(n2 - del + 1);
+            var j2 = at2;
+            while (j2 + del < n2) {
+                store8(_fz_src + j2, load8(_fz_src + j2 + del));
+                j2 = j2 + 1;
+            }
+            n2 = n2 - del;
+        }
+        if (n2 > 0) { _fz_check(n2); }
+        it = it + 1;
+    }
+    println("fuzz_brotli: 2000 seed-mutation tests passed");
+
+    # 3. Truncations.
+    _fuzz_seed(2808003);
+    it = 0;
+    while (it < 750) {
+        var n3 = _fz_load(_fz_rand(_fz_nseeds));
+        var cut = 1 + _fz_rand(n3 - 1);
+        var r3 = _fz_check(cut);
+        if (r3 != 0 - ERR_CORRUPT_DATA) { _fz_bad = _fz_bad + 1; }   # a strict prefix is never a stream
+        it = it + 1;
+    }
+    println("fuzz_brotli: 750 truncation tests passed");
+
+    # 4. Splices.
+    _fuzz_seed(2808004);
+    it = 0;
+    while (it < 750) {
+        var a = _fz_rand(_fz_nseeds);
+        var bs = _fz_rand(_fz_nseeds);
+        var na = _fz_load(a);
+        var pa = 1 + _fz_rand(na);
+        var offb = load64(&_fz_off + bs * 8);
+        var nb = load64(&_fz_len + bs * 8);
+        var sb = _fz_rand(nb);
+        var i4 = sb;
+        while (i4 < nb) {
+            store8(_fz_src + pa + i4 - sb, load8(_fz_pool + offb + i4));
+            i4 = i4 + 1;
+        }
+        _fz_check(pa + nb - sb);
+        it = it + 1;
+    }
+    println("fuzz_brotli: 750 splice tests passed");
+
+    assert(_fz_bad == 0, "fuzz_brotli: every invariant held");
+    print_num(_fz_runs);
+    syscall(1, 1, " inputs, ", 9);
+    print_num(_fz_ok);
+    syscall(1, 1, " accepted, ", 11);
+    print_num(_fz_bad);
+    println(" invariant violations");
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

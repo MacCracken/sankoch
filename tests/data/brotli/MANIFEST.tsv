@@ -1,0 +1,362 @@
+#brotli-manifest	v1	rows=217	flipdigests=2	headers=120	kills=21
+path	needs	expect	out_len	out_crc32	stream_sha256	origin
+google/10x10y.compressed	cmds	ok	20	afd8538b	d666afc0f6c35d8d7796175aa9a68f16ba59afedee946d4bce9167f6c86e0b84	google/brotli v1.2.0 tests/testdata (MIT)
+google/64x.compressed	cmds	ok	64	f22aab7b	f0273c38c6a55c1d9ccb047da04bacdc4bb07acc44ff83871e6b3490dfc2c313	google/brotli v1.2.0 tests/testdata (MIT)
+google/alice29.txt.compressed	dict	ok	152089	66007dba	69e902ef5cd9247302e4f66c313271bcff32eeb38e5eec7ca7744cf98106d5c2	google/brotli v1.2.0 tests/testdata (MIT)
+google/backward65536.compressed	cmds	ok	65792	dc79acdc	757a524ce5fb43ea5e150b919ff635fd494142508d779f39e48e29ba1f61fb86	google/brotli v1.2.0 tests/testdata (MIT)
+google/cp1251-utf16le.compressed	cmds	ok	1554	0eb499f7	d69e14971ccd758e47ba4e6bb13df1b23fcfd3d9586674bd4b46130accffeca5	google/brotli v1.2.0 tests/testdata (MIT)
+google/cp852-utf8.compressed	dict	ok	706	b2b979c9	38f328ac5b0228a304ce18a7a81bd69dfbfd8d28baa7106e0d107e9eef4e6cee	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed	frame	ok	0	00000000	67586e98fad27da0b9968bc039a1ef34c939b9b8e523a8bef89d478608c5ecf6	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.00	frame	ok	0	00000000	67586e98fad27da0b9968bc039a1ef34c939b9b8e523a8bef89d478608c5ecf6	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.01	frame	ok	0	00000000	ac38783f6a3b2fe3b579718d6ba8493a456d800665b4433a0e7c823cff90a603	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.02	frame	ok	0	00000000	ef1534d0c6cfe8a961a19e64689dc8ba07d92b0498121852cc77c7fab995e9e2	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.03	frame	ok	0	00000000	433a0fdd4ca1453e5a512cfbbea0a51b8fd138de3198e064f8ed8f23f6b83572	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.04	frame	ok	0	00000000	e25be31e89368225296188140d8db9b7c6aef9060329a255bae3ac60b12cc2b1	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.05	frame	ok	0	00000000	89e451d0952dc7cef33e71a58cbf816825c210cfb5e9a61e0aa5f98d14b46302	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.06	frame	ok	0	00000000	83d9749292117a7555982bfdbec3c4bd6eebc4ccd972e62d55f08e74217a1adb	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.07	frame	ok	0	00000000	f8acfa9c2f5dc317a07919235f2c987d7632516e035bd75a41f0e5da8752cf6e	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.08	frame	ok	0	00000000	4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.09	frame	ok	0	00000000	ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.10	frame	ok	0	00000000	7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.11	frame	ok	0	00000000	19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.12	frame	ok	0	00000000	41b805ea7ac014e23556e98bb374702a08344268f92489a02f0880849394a1e4	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.13	frame	ok	0	00000000	380918b946a526640a40df5dced6516794f3d97bbd9e6bb553d037c4439f31c3	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.14	frame	ok	0	00000000	8a8de823d5ed3e12746a62ef169bcf372be0ca44f0a1236abc35df05d96928e1	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.15	frame	ok	0	00000000	58f7b0780592032e4d8602a3e8690fb2c701b2e1dd546e703445aabd6469734d	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.16	frame	ok	0	00000000	592b1bea772c8f6478bbf8ee7965c9697887d68fbbe07224c5d1680056cbe6de	google/brotli v1.2.0 tests/testdata (MIT)
+google/empty.compressed.17	frame	ok	0	00000000	95a77d2d0275fa7d30042c567a78025d5b79ed96967873de8d57e1d152b890c4	google/brotli v1.2.0 tests/testdata (MIT)
+google/monkey.compressed	dict	ok	843	299d10ec	37bcdd7a42a6c5b119926d5af0f0d4e9162304592a2ded12c8fe9b06bf3908d9	google/brotli v1.2.0 tests/testdata (MIT)
+google/quickfox.compressed	frame	ok	43	414fa339	319f52f063ba1fd6b50414d4f7f4ef77694bece4fa41f63968d96a375a8cfb02	google/brotli v1.2.0 tests/testdata (MIT)
+google/quickfox_repeated.compressed	dict	ok	176128	9ab18ce5	f732c7cfd6e33481e99352ed901b90647a6177dc3e34f5d1de1658c24e2d6e5a	google/brotli v1.2.0 tests/testdata (MIT)
+google/random_org_10k.bin.compressed	frame	ok	10000	114ead99	b20da1957453441b81ecfed5dea559fe00eb1cc89c6647c1c3348dc645830497	google/brotli v1.2.0 tests/testdata (MIT)
+google/ukkonooa.compressed	cmds	ok	119	4447121f	92f59fc5a282056ef34c9521920baf3bf609ca57c8abd5a286fb4833aede421e	google/brotli v1.2.0 tests/testdata (MIT)
+google/x.compressed	frame	ok	1	b7b2364b	cd094a625b695542a1d37b3a11ea849d8db9584a2f9df4e60cf6158bb39bbf61	google/brotli v1.2.0 tests/testdata (MIT)
+google/x.compressed.00	frame	ok	1	b7b2364b	69619f0d475e644c35ffeab36b4868a16a7382518d848c3a9a2c91db722c83ae	google/brotli v1.2.0 tests/testdata (MIT)
+google/x.compressed.01	frame	ok	1	b7b2364b	7ff671e6adc5e24be8269e7345ebcf16d94766ffcd95323e137e848c972efe47	google/brotli v1.2.0 tests/testdata (MIT)
+google/x.compressed.02	frame	ok	1	b7b2364b	c8d419e71a8bded7281954eda0a0f3cbe5aeeae31920fd5075b993089ce7cb0a	google/brotli v1.2.0 tests/testdata (MIT)
+google/x.compressed.03	cmds	ok	1	b7b2364b	42db916a1a0954936cdb099292d10851228037eba679af5bbe402106ef209aa5	google/brotli v1.2.0 tests/testdata (MIT)
+google/xyzzy.compressed	frame	ok	5	7d192963	c3f042a6be42887f842324d0e39dabd0d873e1676cd3dd2d7e2824242b318f14	google/brotli v1.2.0 tests/testdata (MIT)
+google/zeros.compressed	cmds	ok	262144	e20eea22	d1236d7fdab24209a747aa471f1bf33765b27adfd676355d4b4b310195dca49f	google/brotli v1.2.0 tests/testdata (MIT)
+google/zerosukkanooa.compressed	cmds	ok	262263	b83273c7	be9e662a29166105aa011613bbc1209e584c4e45d738334e69c4eb8626ecfe92	google/brotli v1.2.0 tests/testdata (MIT)
+synth/AllTransforms10.br	dict	ok	1533	9bbc02b8	8865a0ddd12a184ef426a2002c883f48be6a3aec19b40dcc2773e4cc5f63df3e	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/AllTransforms4.br	dict	ok	833	a887f4af	2104ca1f5315a32991aabcf64d86a2e71677391393140ecbbc8bc3835e1a06cf	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/BaseDictWord.br	dict	ok	4	6f949845	bd8399751491c8d9897d500d9fa1b6957a7b1c0a495f88f6befd41f70429c523	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/BaseDictWordFinishBlockOnRingbufferWrap.br	dict	ok	32	08bd6a77	b1d6016c33489d0f1487323b8dcde926afddab27b8a69f2e0ebbdee115cd0f68	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/BaseDictWordTooLong.br	dict	ERR_CORRUPT_DATA	0	00000000	314d8351b22d9055613c9a099b921f16cf70d35e47d306d03b5fcd4c1de92047	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/BlockCountMessage.br	cmds	ok	12	bf166253	c5eaaef366cf7eed139431e19755585e92f33702b4508732205196e306cad28c	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/BlockSwitchMessage.br	cmds	ok	12	bf166253	187827e49dc77997f88f07cb6b1be60bf82830cd00e4332884d12ff43070c7f9	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/ClClTreeDeficiency.br	codes	ERR_INVALID_HUFFMAN	0	00000000	8702253ceeaaa9a777594f4fc9df0226aae11181adf1655e73996f080efa6f6c	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/ClClTreeExcess.br	codes	ERR_INVALID_HUFFMAN	0	00000000	c1917e4b45848a2a8d1892c85b6b10ac32aa6c5a90bc5a92e2ca52b2f3e36b41	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/ComplexHuffmanCodeTwoSymbols.br	cmds	ok	2	9e83486d	285a97445206728af7f2fc4dd525110a70ba445eb2b97476b55e4ecefe69703b	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/CompressedUncompressedShortCompressed.br	cmds	ok	1032	320d10fa	13b677b74cdf9357cde1cf5040f50f601468cd18e3428b35333cfc47f5088a5a	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/CompressedUncompressedShortCompressedSmallWindow.br	cmds	ok	1032	320d10fa	ac3c5fa09a7a995a116822a07500d47f311be52e47a3ed17cf9c98ae4eb50583	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/CopyLengthTooLong.br	cmds	ERR_CORRUPT_DATA	0	00000000	26e5500b57cbf1920389ffef57dabc1f9d0670bc3eb0598f0e09b0947b7d2280	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/CopyTooLong.br	cmds	ERR_CORRUPT_DATA	0	00000000	9f4574a91ef9da68fa52831a54861bfd22901a01aad2f02e25c11542b10cc781	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/CustomHuffmanCode.br	cmds	ok	4	3491b4ff	fb80a1ebf06b93f714db2cae56bd90eeb409896827126bdd92beaeb85e04c857	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/DistanceLut.br	cmds	ok	12	b6bd3706	6ec98acacf2836eb7f2848d130ab980dc7c286850904a39df8f60c09903e451e	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/Empty.br	frame	ok	0	00000000	41b805ea7ac014e23556e98bb374702a08344268f92489a02f0880849394a1e4	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/HelloWorld.br	cmds	ok	11	0d4a1185	89cb5ec4cdc557f2da610cb6b35cff67cc841a0f8515d0227428fc5e56925a4b	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InsertTooLong.br	cmds	ERR_CORRUPT_DATA	0	00000000	5b7832fc00ae5f4d651708c92eb855629bb33d4d9dda9b0debf207bcc11d815d	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/IntactDistanceRingBuffer0.br	dict	ok	11	c954d15a	390d63c7c56ec9ca1f95d2a6649b96e6406a967660f5a5bf7eff660a9b572d0d	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/IntactDistanceRingBuffer1.br	dict	ok	10	2494f9d2	945acd5f066eb26233a1c0e8aaebf70b895aa144c7e1e7cdfe87c5bc5f2aa899	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/IntactDistanceRingBuffer2.br	dict	ok	16	1525523b	f84f33fd8cbfa5d768aba4013d3663aa115bf8aa5f34b1a478484e4f15b13ccd	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/IntactDistanceRingBufferNoDistanceValue0.br	dict	ok	24	21b8a021	09e568717efd015824855725ad024bb93001d8d3d05ed5c7b82986ac1eee5417	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/IntactDistanceRingBufferNoDistanceValue1.br	dict	ok	26	0b5495be	cf5c58d73c8ccc0846b3b23bda2b6dcd64886ed0905521e360faaaf5ced17811	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InvalidNoLastMetablock.br	cmds	ERR_CORRUPT_DATA	0	00000000	0a69b9f7fd098cdbf16f02d1eb5bc010d4f76d5fb445cabe58e14b29442cf24e	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InvalidNoMetaBlocks.br	frame	ERR_CORRUPT_DATA	0	00000000	e7cf46a078fed4fafd0b5e3aff144802b853f8ae459a4f0c14add3314b7cc3a6	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InvalidTooFarDist.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	7e4bcda01c60fb94b13accb6f2fc515413471f8b627cb49efd4e73d1260bd69c	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InvalidTooLargeContextMap.br	codes	ERR_CORRUPT_DATA	0	00000000	5684d5986b9d5ba4040e8e2799fade6ff9327664a233c93c6bda14a5223ed0e1	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InvalidTransformType.br	dict	ERR_MATCH_OUT_OF_RANGE	0	00000000	e8bd755472b2ba44208df559cf33a0b70be63cef4eccc434f9df80200f54b7d6	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/InvalidWindowBits9.br	frame	ERR_UNSUPPORTED_FORMAT	0	00000000	d13dc2af6bebd32c5d6c412f4645351f64bfd8c7378f167134ad9e3bab16795a	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/ManyTinyMetablocks.br	cmds	ok	600	24f5f0f3	180a4214d05759455893c50f93d3bced011dd9001c7ff61abc4d0aaf3910692e	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/NegativeDistance.br	dict	ERR_MATCH_OUT_OF_RANGE	0	00000000	1cb850e555f824d12b7e2db05ac95574fa52efd2715dbefa334815178bd364e1	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/NegativeRemainingLenBetweenMetablocks.br	cmds	ERR_CORRUPT_DATA	0	00000000	984607735a9268f818a4e2072e63bc65db2cb47d3e86250b25a79ff15fe22e50	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/OneCommand.br	cmds	ok	3	f007732d	d461896f7a46cdbfd87d53acf00321afe74125b61cba1d7edb6259d789d48391	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/OneInsert.br	cmds	ok	2	9e83486d	1a14c139f14b82d8f1a473cb29453233c9ab5e6426eddd62c62b9ffadaa8c037	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/PeculiarWrap.br	dict	ok	2051	3e3b9c3e	50c3a3c1a2dfd05716ab26aa4192d259e01ffedfde5330c996092d23c852f3d8	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/SimplePrefix.br	cmds	ok	4	ed82cd11	6394b5a84c06f907822233fb7aa93c3a7458789a9e703dee22f62f7dae0ec147	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/SimplePrefixDuplicateSymbols.br	codes	ERR_INVALID_HUFFMAN	0	00000000	ac5ef81a693e788fcd82e4b5a0bae5d72bbac64ac8002c66ffd9d3b7a63ebbe7	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/SimplePrefixOutOfRangeSymbols.br	codes	ERR_INVALID_HUFFMAN	0	00000000	d85fce214f7b8e841cc5bcd467f7fed4f02a04a6859db5435d2dc85bdf430e62	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/SimplePrefixPlusExtraData.br	cmds	ERR_CORRUPT_DATA	0	00000000	153243c4d995c3def31f5d4ff3198689a65b84562f00c53406ac6d0fb2d4a3e3	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/StressReadDistanceExtraBits.br	cmds	ok	8388656	0b14ded0	c4e12250ac9e24cb3ac01086e7e20cac7ef8cb5ce2458b5883bdbc57b7bbca45	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/TooManySymbolsRepeated.br	codes	ERR_INVALID_HUFFMAN	0	00000000	271e71f40883d0008dd597a63bb229b96979ca7249f8133a9ec0803c54e9c68c	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/TransformedDictWord.br	dict	ok	9	7606b356	aba19a2a554ec394e086ec1f1413ba181fde4c1778457f3f613aa2968aa60d35	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/TransformedDictWordTooLong.br	dict	ERR_CORRUPT_DATA	0	00000000	e4aa8b3a6691995fa5100d1ff47e3a1e2b87f026579b1a1d522f5338f78b3b45	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/ZeroCostCommand.br	dict	ok	1024	b60a19a6	bd07ec852ca83a576e198a108ba19a39b7375f644ceb1970a7e2b965779d5c07	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+synth/ZeroCostLiterals.br	cmds	ok	16777216	6893d891	bbe8b2867b0699a4590299e6fb20c5da02cc8c1cbefec409fec84e2b7955148f	google/brotli v1.2.0 js/decode_synth_test.ts (MIT)
+probe/complex_clcl_incomplete.br	codes	ERR_INVALID_HUFFMAN	0	00000000	12ddcf368c2f9cfbb2c4f806471eb0f22e7420ca38e0f5be7e35f679693f1cda	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/complex_clcl_oversubscribed.br	codes	ERR_INVALID_HUFFMAN	0	00000000	c8a5aecd572a1a72ebbd296feba41ecc71b96b5400f5d8f9d997b59951d2258b	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/complex_repeat17_overflows_alphabet.br	codes	ERR_INVALID_HUFFMAN	0	00000000	c58fbcb5103810bc0f56d4c6e461fd4a0edc3a5178b927520047ded08e4250c5	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/complex_single_clcl_16_all_len8_literal0.br	cmds	ok	1	d202ef8d	a049ac2fce870dbeb02d5074023242705465ba44c63e0ab92a7be799ed484aaa	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/complex_symbols_incomplete_single_len1.br	codes	ERR_INVALID_HUFFMAN	0	00000000	7f256212407cc74f3a178a77ad0dea6e255ca5507b907c21cec0b6c58e64a01b	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/complex_symbols_oversubscribed.br	codes	ERR_INVALID_HUFFMAN	0	00000000	8f13a1078a10fcdbe8240ee7c54952d5efbc6bb1d8c2e6c2a716ac2f39c23bd0	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/context_map_rle_overflow.br	codes	ERR_CORRUPT_DATA	0	00000000	3db263c544995fc852bacb5b7195bf1de9bf40e0553d439ac6bd850e825d91e2	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/copy_past_mlen.br	cmds	ERR_CORRUPT_DATA	0	00000000	1d18d0c254225dcd56f0783085f939d81e134e3b7befd154a8931de333ccf530	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/dict_ref_copy_len3_invalid.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	c4835185449505491984bce90507982e8fc077bf94ac79cadccccc16c137bcd3	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/dict_ref_shortcode0_len4_word2.br	dict	ok	5	5af94802	5e279e1d5b49549b1aed68548e3f0b6915ee8858c936271dee5a52e4ac13ec6c	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/dict_ref_transform_127_invalid.br	dict	ERR_MATCH_OUT_OF_RANGE	0	00000000	596cecedb862063cbb1c8048dd6c9867a0b086e553241af522c0fd38d442655a	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/dict_ref_transform_42_zero_length_output_ok.br	dict	ok	2	078a19d7	8a3f7b564f40207b895cd2348b30152341ee28540d5ae1473a35da37d4686913	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/exuberant_meta_byte.br	frame	ERR_CORRUPT_DATA	0	00000000	efffca526cf244503010b14bc6672a21b08881568628ffcfe02441cfe1e4ea74	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/exuberant_nibble_mnibbles5_top0.br	frame	ERR_CORRUPT_DATA	0	00000000	075de2b906dbd7066da008cab735bee896370154603579a50122f9b88545bd45	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/header_only_no_metablock.br	frame	ERR_CORRUPT_DATA	0	00000000	6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/insert_past_mlen.br	cmds	ERR_CORRUPT_DATA	0	00000000	6a8f468ad53e261c65a5e9841f319a3b5c2767d814ecd79801e725a205321e7e	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/last_empty_nonzero_padding.br	frame	ERR_CORRUPT_DATA	0	00000000	4d7b3ef7300acf70c892d8327db8272f54434adbc61a4e130a563cb59a0d0f47	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/metadata_3_bytes_then_last_empty.br	frame	ok	0	00000000	7ad12192a3d8b1291ea6155522d97767b005bb8877d1a24b978f7c9fd76a9a2e	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/metadata_in_last_metablock_1_byte.br	frame	ok	0	00000000	fec6ca76c7a69724841ef367bb6c200c549ad03767fa3aaf9f9c5f384661d7ca	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/metadata_in_last_metablock_mskipbytes0.br	frame	ok	0	00000000	58f7b0780592032e4d8602a3e8690fb2c701b2e1dd546e703445aabd6469734d	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/metadata_nonzero_padding.br	frame	ERR_CORRUPT_DATA	0	00000000	faa361615937c8a06950a7860d98a1f2476695fab30e6c5b3960fd9d45c56f59	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/metadata_reserved_bit_set.br	frame	ERR_CORRUPT_DATA	0	00000000	bd4fc42a21f1f860a1030e6eba23d53ecab71bd19297ab6c074381d4ecee0018	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/mlen_reached_after_insert_copy_ignored.br	cmds	ok	1	e8b7be43	da77f15e38c65faee75d7bee9052e0bcc3f3f6ccad8d33bee6a80143c73cdc87	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/mnibbles5_top_nonzero_truncated.br	codes	ERR_CORRUPT_DATA	0	00000000	a2596e18e5bd73e21ee63a78356d0ce8a3009fa78b9ecee46e7aa48da30a38eb	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/short_code_resolves_nonpositive.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	77a58376f2883343759f359052c1951a66d994c31ab45634bf57a60c3cd6a187	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/simple_code_duplicate_symbols.br	codes	ERR_INVALID_HUFFMAN	0	00000000	b15667a0e97d0a7e9e24b4b8641f72644d08a0e6e46766845f508b5719436d8e	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/simple_code_symbol_ge_alphabet_dist65.br	codes	ERR_INVALID_HUFFMAN	0	00000000	ebb935cf5d2c170d836fb886c20872b50f8c4dbd95f2011bcd330c4cb1c85172	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/uncompressed_3_then_last_empty.br	frame	ok	3	eb8eba67	9e811b6c544421f3a626809433145d1cb440d9a50a9738a799d5acd5f4c3e664	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/uncompressed_no_last_metablock.br	frame	ERR_CORRUPT_DATA	0	00000000	266270638e9e3cd658a4cf6bfdd7da1d5f5397a5670d27a1cc91a1f876c1b1c4	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/uncompressed_nonzero_padding.br	frame	ERR_CORRUPT_DATA	0	00000000	6795c7411ae8f4fb4394c52e7877a2b70873832d471632dfd12c11db1d653c75	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/wbits10_distance_1008_is_lz.br	cmds	ok	1013	1e468a7a	1a6feeb6d6dab5c26803620bc700639d8b085a69dd431609b2184cc33045dbe6	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/wbits10_distance_1009_is_dictionary.br	dict	ok	1013	dc4af77a	9c49f7ac9ab586a6ea6fec2a17d2d42dc4ebf5c30344bd3e65ea071166d821e9	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/wbits_10_last_empty.br	frame	ok	0	00000000	ef1534d0c6cfe8a961a19e64689dc8ba07d92b0498121852cc77c7fab995e9e2	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+probe/wbits_large_window_escape.br	frame	ERR_UNSUPPORTED_FORMAT	0	00000000	6e98803a4646e3deb770a500f7e61088993af792ab79903c9b599d4aab885dd3	sankoch scripts/brotli-craft.py probe set (GPL-3.0)
+crafted/adv_imtf_256.br	cmds	ok	16	bb04570b	50389e91217194594eb7c30a4338b9556281d8bfe4162ada14ef5a29f5863974	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/adv_imtf_256_trunc.br	codes	ERR_CORRUPT_DATA	0	00000000	7507afeed5e376cac56e36932e45b3eea263f91c60249fde9a11bf7a99bfa6ec	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/adv_imtf_dist_256.br	cmds	ok	16	bb04570b	f04d8ee23655b4bd8287ff3036b6e6c057e97f0f73261611192ad768650db3ca	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_clc_incomplete.br	codes	ERR_INVALID_HUFFMAN	0	00000000	90dcd6a97b8e4c288a1dd28afe3472c33c17a96c90785b301cc805703452950e	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_clc_oversubscribed.br	codes	ERR_INVALID_HUFFMAN	0	00000000	403effa2d996bda55f1890875f287c0f5f7f1a8865ce59fb56597bb4b4653cd4	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_clc_repeat_past_alphabet.br	codes	ERR_INVALID_HUFFMAN	0	00000000	204b31e208f293652039d51afe1ad95ba4ff93b3ba25478f1947b431445b8342	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_cmap_rle_past_end.br	codes	ERR_CORRUPT_DATA	0	00000000	4dd07b4e20913b98fbd90c76a43398c8d57e842d18a1f9df7a2870d77b8362ce	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_cmap_tree_index_out_of_range.br	codes	ERR_INVALID_HUFFMAN	0	00000000	12601874e649cc62b0cb0fb1be1af188ba4494d7c20abad9fb43d2c1cb64ed2f	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_complex_incomplete.br	codes	ERR_INVALID_HUFFMAN	0	00000000	6acd4de591969c9ee1f98e16d31dbf9fc17213f178936b9c6342c69cf4bc0a15	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_complex_oversubscribed.br	codes	ERR_INVALID_HUFFMAN	0	00000000	10f4fc13778b13e87b07260bebd83f0a63d5d8a9e1190028bee070c9985e20c7	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_complex_single_symbol.br	codes	ERR_INVALID_HUFFMAN	0	00000000	36c9b8fe0c951590d3c7ea0769c600f7b934985df24ce890a2ac6af422b289b6	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_copy_exceeds_mlen.br	cmds	ERR_CORRUPT_DATA	0	00000000	aa83f3508207e427f928830a0eac7c942b2f83ef4fca4b492df92718f7c192a9	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_dict_transform_121.br	dict	ERR_MATCH_OUT_OF_RANGE	0	00000000	68de9c14cf817a41605f1563cb916d2f9aa724b063977b3b28ddfd417a2be0d9	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_dict_transform_121_len24.br	dict	ERR_MATCH_OUT_OF_RANGE	0	00000000	d6b34981cd87739642db25c6abadfcd9426b9d7114ad325794e0a166fc5d34cd	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_dict_word_exceeds_mlen.br	dict	ERR_CORRUPT_DATA	0	00000000	d2a2d8a5209229ab2510e8d1bc02a464159eb431f424b61c1dca89ac6964cdf3	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_distance_beyond_window_len25.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	4b0ae0fd00704ddc9a12bc92cc37e6fb9ed4e749f736e846233eef3d45f3f7a7	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_distance_beyond_window_len3.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	7f323bb9b4550cec48dd152737f8c7f9fab319ca59f4022d7137fc43de9be155	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_distance_wbits10_1009_len3.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	3df4d4090b1c036a1a123632a3edcca3752eef1502c75c13f045b17ba94ebc2d	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_distance_zero_short_code.br	cmds	ERR_MATCH_OUT_OF_RANGE	0	00000000	830ac219399368e60fa1aea9674c46de7701f802df7b7e7b58b0e28022b39bf7	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_exuberant_nibble_mlen.br	frame	ERR_CORRUPT_DATA	0	00000000	40ec6499f32b49a8dbf7d3fcf1fff3b512959050a76680709fccb4bba6013a93	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_insert_exceeds_mlen.br	cmds	ERR_CORRUPT_DATA	0	00000000	f50557747dadfeca20b063fb19f5b73a5727f9aab1a1c80a685afb7eb1f530e0	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_metadata_exuberant_byte.br	frame	ERR_CORRUPT_DATA	0	00000000	8ba0b983cd5e6d266d40d51f31565eb5333dbd8599e8593d6b4988a1f4929ddd	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_metadata_padding.br	frame	ERR_CORRUPT_DATA	0	00000000	174cd66358e1749d7ea1a219eb7326d3adb405a356a9d74360fa994bc51b1e0e	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_metadata_reserved_bit.br	frame	ERR_CORRUPT_DATA	0	00000000	2756e11375164b06d02a399ff87e608f6d98ad080d0d36e66a5594ab86f59256	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_metadata_truncated.br	frame	ERR_CORRUPT_DATA	0	00000000	e73d553dd5e143c210cdd9a1a95802146671e847974076f40ca3f59cc30f2630	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_no_last_block.br	frame	ERR_CORRUPT_DATA	0	00000000	a2212724f5271f2d7b970010681b079442a9cda1a93ad06a9eb8faeeab0096cd	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_simple_duplicate_symbol.br	codes	ERR_INVALID_HUFFMAN	0	00000000	bfe093b59f2db7de520724fb6272359f6b2dd19aa6951568acb02eb20eed2d1c	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_simple_symbol_ge_alphabet.br	codes	ERR_INVALID_HUFFMAN	0	00000000	b31c8f2a6d4a31f3246d043a7cc3f49fe0cee971a016f3826c4a1bd2c2c00b23	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_trailing_padding_bits.br	frame	ERR_CORRUPT_DATA	0	00000000	aa687b58b0e73e2e383f8c500d75b591e188efe0168b3ffbcd3771caaa6dd4c7	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_uncompressed_padding.br	frame	ERR_CORRUPT_DATA	0	00000000	5bd6a8f094a81f094a4954a99f5f6f3deb05b3d7337b9f1b2d8370d2bac5e333	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_uncompressed_truncated.br	frame	ERR_CORRUPT_DATA	0	00000000	e6f6377f2235b8f3b1a58adeb34a371dde771cb571ec04b8a8df4a82b2599feb	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bad_wbits_largewin_marker.br	frame	ERR_UNSUPPORTED_FORMAT	0	00000000	fec08e6088b489e8832db6adfdacdd3f49818e19272f421542f9ce1e68e8ce7b	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bomb_16mib_max_mlen.br	cmds	ok	16777216	c99c9cf8	172a6d2a64e4421d0a4d89dffe9aa486678a82c324f6773b2744be6bcbe904a0	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_cmode_mixed_lsb6_utf8.br	cmds	ok	339	20435c38	151bc8e710deca8602ba8132ea933c52ba603619332198929862c5f9493c00b2	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_cmode_mixed_msb6_signed.br	cmds	ok	322	bf47f32f	35d2570256837b5cb88dba8f18b965317664fb0043452e4f615ca1ac386701d8	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_d3_dctx_implicit.br	cmds	ok	486	10219016	74cacb5361048e1175fbc34a11f15eda22e9a70663b84ce221f1a9c6aab8c4e4	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_i3_code0_first.br	cmds	ok	210	c7a81eee	e520eb7faa01e088c4a89a4d68f1411bfaaa7adfae0aef46fa1e611c852a6890	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_l3_code0_first.br	cmds	ok	93	91310c1b	73706d0581a2232a50eb798399b434bdddca858d4ad8a86cd0b8da8df5678713	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_reset_per_metablock.br	cmds	ok	219	d98d7f2a	e0b7a6116656477c464d7bd635e53fcd91d3d70ee08352d4bb8d407e02bc4f7f	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/bswitch_trivial_to_utf8_midinsert.br	cmds	ok	164	ca4ca6fc	4141c9c87b845ad3dca441c89682b08bb2784f9c436962e6c8972963c6c4f129	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/cmap_rle_imtf_valid.br	cmds	ok	700	3045004e	fb34b599932921076f148dd8bdf80f43da3796dcc555ccd8c94f40d004a93c70	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/complex_balanced_literals.br	cmds	ok	300	9c2adbc1	3bd4f3eb6cbda9e4b210530754df04e9897a2b40e107e4f70f6d8756c9e1feec	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/complex_hskip3_and_single_clc.br	cmds	ok	356	f20f4ae9	a7fa3715af76b4c9572fe6eb3e47b6aa67732216ff6b86e7470f5ea4cb552947	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/complex_rle_16_17.br	cmds	ok	295	6c590146	6f9615175fe17d6383c711098533999b8b37a7b5531f251a6bb0b6dc8e340637	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/ctxmode_lsb6_3trees.br	cmds	ok	600	471f82cf	f0d169f3c7fbd450a43226ceaa36e03668bf4d03bc28ed853794423b9cb55edc	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/ctxmode_msb6_3trees.br	cmds	ok	600	471f82cf	3bc3852fbd242e0b3fe666e6c3c7e47433ea0a8b6d34acafda7e199b8809dac0	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/ctxmode_signed_3trees.br	cmds	ok	600	471f82cf	9344478b95d4fc55836dde65a8ff410109d69fac0b36adf2635fa6713d989da6	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/ctxmode_utf8_3trees.br	cmds	ok	600	471f82cf	bcae223a034414f0c6a757d1c47581b717dd8cedc589115818a2eec37126f7eb	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_all_121_transforms_all_lengths.br	dict	ok	1892	7987adf2	1d1a872b88587ba6a647a1d4fde37b6a9e8f1410bde88a56963d804e19bdb57d	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_ring_short_code_6.br	dict	ok	24	362ded9b	285df57d40fda0095796a99a0134c56083165bd99f619f0ef035b7ccb2721f1d	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_ring_short_codes.br	dict	ok	1098	8cbfdd18	be89a646a1a80f97d090a671ad9811d45f7b75df59b172b4d76d56a4e383fd09	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_ring_short_codes_4_14.br	dict	ok	29	41a81ec4	0f4510c1c08cdd5a74ba45eecf264efe788c9a8e1ff6e5f8dda89ad5057a00d6	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_transform_120_valid.br	dict	ok	7	195e62ff	8ac0fd76697e62b4cd3fbbf19aa58437103b4836f11607278e454a1361aeb33c	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_uppercase_utf8_edges.br	dict	ok	106	909ba264	d36517e009e827ad2e7aaab23d2bfa2973c1be3a60595c31feb2bf72dddb29e5	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/dict_word_bounds_all_lengths.br	dict	ok	673	35ddd15b	681d9b96c0bb831cfe72d254fd610d92962b41450f0d064ae940ebdb3a7df60d	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/distance_short_codes_all16.br	cmds	ok	1361	671c2773	3a24529bd865eb5f65803c3f93e23f20cbe6949e13ecaf739f93f8cdffab3b1f	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits10.br	frame	ok	0	00000000	ef1534d0c6cfe8a961a19e64689dc8ba07d92b0498121852cc77c7fab995e9e2	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits11.br	frame	ok	0	00000000	433a0fdd4ca1453e5a512cfbbea0a51b8fd138de3198e064f8ed8f23f6b83572	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits12.br	frame	ok	0	00000000	e25be31e89368225296188140d8db9b7c6aef9060329a255bae3ac60b12cc2b1	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits13.br	frame	ok	0	00000000	89e451d0952dc7cef33e71a58cbf816825c210cfb5e9a61e0aa5f98d14b46302	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits14.br	frame	ok	0	00000000	83d9749292117a7555982bfdbec3c4bd6eebc4ccd972e62d55f08e74217a1adb	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits15.br	frame	ok	0	00000000	f8acfa9c2f5dc317a07919235f2c987d7632516e035bd75a41f0e5da8752cf6e	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits16.br	frame	ok	0	00000000	67586e98fad27da0b9968bc039a1ef34c939b9b8e523a8bef89d478608c5ecf6	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits17.br	frame	ok	0	00000000	ac38783f6a3b2fe3b579718d6ba8493a456d800665b4433a0e7c823cff90a603	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits18.br	frame	ok	0	00000000	4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/empty_wbits24.br	frame	ok	0	00000000	8a8de823d5ed3e12746a62ef169bcf372be0ca44f0a1236abc35df05d96928e1	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/metadata_1byte_then_empty.br	frame	ok	0	00000000	47ee3b97ec009681df921f245e9985f40393117761fb28911194c3d0a6ee514d	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/metadata_2byte_len_300.br	frame	ok	4	ed82cd11	300fd4bd4b86b5fdb1b133f4814dbee9a8b361be003f661f452b192158020849	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/metadata_empty_then_data.br	frame	ok	3	eb8eba67	af136fcdf4a2f71d0f47bacbf0a15e32c80ef3a05a5831bfebff1111c11a668b	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/metadata_is_last.br	frame	ok	1	ce6e8eef	e613c37696fc785a8aa021af61eae07b8e34a0ee6e0c50a2832af2cdfcdea27f	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/mlen_4nibbles_max_copy_65536.br	cmds	ok	65536	6a133edc	36f6d0aa376932ba3edf7c723c54d7b859a3da0435df1fce193b6788751b5678	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/mlen_5nibbles_copy_70000.br	cmds	ok	70002	60bbfc2f	9a3e03df03b29c5d57b0277bf13c2adc4d1200005b4b441b09ee6a0862978d4a	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/mlen_6nibbles_copy_1mib.br	cmds	ok	1048577	5331fb39	52294ddf6e3913720c381d5aca21903e1a6b9c72594f19db853a9fb40d7c3ef1	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/multiblock_cross_references.br	cmds	ok	592	1073b1ac	84fe20ec3aed331d2594ff37822c3ef2638c7292d3189692f12a9d3feb55c6a7	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/npostfix1_ndirect30.br	cmds	ok	6114	6213328d	68269efd67aa53a9020fa1a34fc0da1bf2e08065f5900c7685eb14f2a3d04a5d	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/npostfix2_ndirect60.br	cmds	ok	6114	8bac07b0	bcb05facff7187948c5ce8cc0c9fe8a17d59b535e5dfedaa691fef838559b143	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/npostfix3_ndirect120.br	cmds	ok	6114	2de5a1f9	52e65cfb3214b50f647c0a3e13e795bfdb790d527a199dac2b5a86cdd2ffe0b2	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/nsym1_cmd64_body.br	dict	ok	21	da54c425	126c7d90b7cbdd568636c6e322445f0308486280567e508a717ec5b96deb26de	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/simple_nsym1_literal.br	cmds	ok	40	2ae98c30	70f6f10141c2cf6cf109ae586ce4084e5811708bb69634ea5f2f9ee1b713d2e1	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/simple_nsym2_literal.br	cmds	ok	40	238aece9	fac3500597c1a86b54d46c39d8afd340fa93275903ce9058da06475e173af289	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/simple_nsym3_literal.br	cmds	ok	40	d6f5e9d2	d3796794ddc42b7eef03abcc831ca810ba0807083b853312a2a011748432b998	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/simple_nsym4_tsel0.br	cmds	ok	40	7af648a1	6088def11e146ea93accb135382a137c7927c1e802b23a9eca54fc4b0de60617	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/simple_nsym4_tsel1.br	cmds	ok	40	7af648a1	404fd6471ffa38aa3acc0141be4d1934b4cac3ba676b6ffbdd51f9adfe568d5e	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/trunc_nsym1_cmd64_body.br	cmds	ERR_CORRUPT_DATA	0	00000000	e5db1daadbc2bdc6a9bb7d14fe74cb48ca51d12e858baf74c0c3d51416138a8c	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/trunc_nsym1_insert_extra_body.br	cmds	ERR_CORRUPT_DATA	0	00000000	6f6625ab4d1cad38f005d5988ad952de0eedb77dba5415ba0dfda385cd118ee5	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/uncompressed_5nibble_70000.br	frame	ok	70000	9a1aba2f	618286d303c3fcf258a9b2bddb285ffc21229d471e376c84401f0b172bd18ee1	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/uncompressed_then_empty.br	frame	ok	16	b31c4d83	3dedc7fdf3b67f442ae64ccc11ffbbc83624aab5b676834cf804a42812746ea4	sankoch scripts/brotli-craft.py (GPL-3.0)
+crafted/window_edge_wbits10.br	dict	ok	1121	c22a9775	8faf21e59269aefce2b571cb9cc1d326adb189dd2559ca6b3bab737ab3c64806	sankoch scripts/brotli-craft.py (GPL-3.0)
+small/alice29_32k.q5w16.br	dict	ok	32768	f7144e31	a6a58c4d9cf17450bca2dd6cca2ae4dc3d01bf73d9bd31b886f120d97d958e70	brotli 1.2.0 CLI output
+small/bswitch_records_68k.q11w16.br	cmds	ok	68000	88a93616	b0bc9dec1a7f58df8ec8a77d13fb3172e9bd59a225c64478080e2fddaff8361c	brotli 1.2.0 CLI output
+small/hello.q0.br	frame	ok	13	936b7328	8b129fd378b29795b4670430b5d0fe5853f141679fa61c7e613ec48ba0ccc195	brotli 1.2.0 CLI output
+small/hello.q11.br	frame	ok	13	936b7328	593cb03681c6bf851942f447e5d3f46c721a27e6257f1b4239d96df020aa67a8	brotli 1.2.0 CLI output
+small/json_records.q11w16.br	dict	ok	136654	1d250841	81022c476456d1da8e2a35ee22781f990b6660601bf6a5d0ebe7a718ee328300	brotli 1.2.0 CLI output
+small/mixed_7k.q0w10.br	cmds	ok	7244	9ed78384	223c5de9e7ecf8779a4b126ee0a2cc2bc0b5f190b38032e6fdfd088c8ff19b90	brotli 1.2.0 CLI output
+small/mixed_7k.q1w10.br	cmds	ok	7244	9ed78384	10196aee92ac4a63cc20df6581664062d8a2dd5fa8b36e7be77082917762c33f	brotli 1.2.0 CLI output
+small/prose_2k.q11w16.br	dict	ok	2048	500bf286	42ae0f7e120ae61a53bdccb027a4bb5d69a1594104ec26a616625157272cd0a4	brotli 1.2.0 CLI output
+small/prose_2k.q2w10.br	cmds	ok	2048	500bf286	5740c11e1194734747a6cf1293a39b728ca4ebb80dc5ef3ec410bcfd891adfbf	brotli 1.2.0 CLI output
+small/records_4k.q5w12.br	dict	ok	4096	7c736ce2	4d0f1accea72c9d5c2f2fbeb1dd1c6090175ada77134f2a6da372ea08804d739	brotli 1.2.0 CLI output
+small/utf8_706.q11w10.br	dict	ok	706	b2b979c9	38f328ac5b0228a304ce18a7a81bd69dfbfd8d28baa7106e0d107e9eef4e6cee	brotli 1.2.0 CLI output
+#flip	small/hello.q0.br	65536	96b2396c
+#flip	small/records_4k.q5w12.br	65536	06e82709
+#header	google/10x10y.compressed	91	1,1,1	0,0,0	0,0	1,1	0b0e190f
+#header	google/64x.compressed	73	1,1,1	0,0,0	0,0	1,1	0b0e190f
+#header	google/alice29.txt.compressed	3768	2,2,5	88,1717,928	0,0	6,6	2d3560aa
+#header	google/backward65536.compressed	101	1,1,1	0,0,0	0,0	1,1	0b0e190f
+#header	google/cp1251-utf16le.compressed	862	1,1,1	0,0,0	0,1	7,1	0dbe9415
+#header	google/cp852-utf8.compressed	785	1,1,1	0,0,0	0,3	4,1	ba0ffa3e
+#header	google/monkey.compressed	517	1,1,1	0,0,0	0,0	2,1	1c750d4c
+#header	google/quickfox_repeated.compressed	357	1,1,1	0,0,0	0,0	5,1	524c8ea7
+#header	google/ukkonooa.compressed	281	1,1,1	0,0,0	0,0	1,2	7c092999
+#header	google/x.compressed.03	76	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	google/zeros.compressed	77	1,1,1	0,0,0	0,0	1,1	de0b6573
+#header	google/zerosukkanooa.compressed	84	1,1,1	0,0,0	3,120	1,1	de0b6573
+#header	synth/AllTransforms10.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/AllTransforms4.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/BaseDictWord.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/BaseDictWordFinishBlockOnRingbufferWrap.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/BaseDictWordTooLong.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/BlockCountMessage.br	250	2,1,1	2,0,0	0,0	2,1	80171999
+#header	synth/BlockSwitchMessage.br	257	2,1,1	2,0,0	0,0	2,1	80171999
+#header	synth/ComplexHuffmanCodeTwoSymbols.br	168	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/CompressedUncompressedShortCompressed.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/CompressedUncompressedShortCompressedSmallWindow.br	178	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/CopyLengthTooLong.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/CopyTooLong.br	178	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/CustomHuffmanCode.br	197	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/DistanceLut.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/HelloWorld.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/InsertTooLong.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/IntactDistanceRingBuffer0.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/IntactDistanceRingBuffer1.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/IntactDistanceRingBuffer2.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/IntactDistanceRingBufferNoDistanceValue0.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/IntactDistanceRingBufferNoDistanceValue1.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/InvalidNoLastMetablock.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/InvalidTooFarDist.br	178	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/InvalidTransformType.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/ManyTinyMetablocks.br	203	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/NegativeDistance.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/NegativeRemainingLenBetweenMetablocks.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/OneCommand.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/OneInsert.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/PeculiarWrap.br	76	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/SimplePrefix.br	171	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/SimplePrefixPlusExtraData.br	171	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/StressReadDistanceExtraBits.br	183	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/TransformedDictWord.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/TransformedDictWordTooLong.br	175	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/ZeroCostCommand.br	76	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	synth/ZeroCostLiterals.br	154	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/complex_single_clcl_16_all_len8_literal0.br	106	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/copy_past_mlen.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/dict_ref_copy_len3_invalid.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/dict_ref_shortcode0_len4_word2.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/dict_ref_transform_127_invalid.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/dict_ref_transform_42_zero_length_output_ok.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/insert_past_mlen.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/mlen_reached_after_insert_copy_ignored.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/short_code_resolves_nonpositive.br	86	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/wbits10_distance_1008_is_lz.br	76	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	probe/wbits10_distance_1009_is_dictionary.br	76	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/adv_imtf_256.br	3698	256,1,1	16,0,0	0,0	256,1	39a60e3e
+#header	crafted/adv_imtf_dist_256.br	2678	1,1,256	0,0,16	0,0	1,256	b8457b1b
+#header	crafted/bad_copy_exceeds_mlen.br	181	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_dict_transform_121.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_dict_transform_121_len24.br	95	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_dict_word_exceeds_mlen.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_distance_beyond_window_len25.br	181	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_distance_beyond_window_len3.br	181	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_distance_wbits10_1009_len3.br	297	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_distance_zero_short_code.br	111	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bad_insert_exceeds_mlen.br	179	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bomb_16mib_max_mlen.br	78	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/bswitch_cmode_mixed_lsb6_utf8.br	1788	2,1,1	37,0,0	0,0	4,1	4f4c7088
+#header	crafted/bswitch_cmode_mixed_msb6_signed.br	1767	2,1,1	37,0,0	0,0	4,1	a894f280
+#header	crafted/bswitch_d3_dctx_implicit.br	908	1,1,3	0,0,2	0,0	1,3	557ee18d
+#header	crafted/bswitch_i3_code0_first.br	367	1,3,1	0,2,0	0,0	1,1	7a75e7b6
+#header	crafted/bswitch_l3_code0_first.br	780	3,1,1	6,0,0	0,0	3,1	886f1ab6
+#header	crafted/bswitch_reset_per_metablock.br	910	3,3,3	12,4,3	0,0	3,3	53277e8a
+#header	crafted/bswitch_trivial_to_utf8_midinsert.br	1070	2,1,1	7,0,0	0,0	3,1	a308769b
+#header	crafted/cmap_rle_imtf_valid.br	805	1,1,1	0,0,0	0,0	4,1	cefe9590
+#header	crafted/complex_balanced_literals.br	226	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/complex_hskip3_and_single_clc.br	90	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/complex_rle_16_17.br	125	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/ctxmode_lsb6_3trees.br	1047	1,1,1	0,0,0	0,0	3,1	4c7335e4
+#header	crafted/ctxmode_msb6_3trees.br	1007	1,1,1	0,0,0	0,0	3,1	99764998
+#header	crafted/ctxmode_signed_3trees.br	1043	1,1,1	0,0,0	0,0	3,1	e80db721
+#header	crafted/ctxmode_utf8_3trees.br	1013	1,1,1	0,0,0	0,0	3,1	3d08cb5d
+#header	crafted/dict_all_121_transforms_all_lengths.br	375	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/dict_ring_short_code_6.br	228	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/dict_ring_short_codes.br	538	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/dict_ring_short_codes_4_14.br	235	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/dict_transform_120_valid.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/dict_uppercase_utf8_edges.br	349	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/dict_word_bounds_all_lengths.br	383	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/distance_short_codes_all16.br	781	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/mlen_4nibbles_max_copy_65536.br	78	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/mlen_5nibbles_copy_70000.br	82	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/mlen_6nibbles_copy_1mib.br	78	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/multiblock_cross_references.br	4119	1,1,1	0,0,0	0,0	1,1	0b0e190f
+#header	crafted/npostfix1_ndirect30.br	992	1,1,1	0,0,0	1,30	1,1	7a75e7b6
+#header	crafted/npostfix2_ndirect60.br	1051	1,1,1	0,0,0	2,60	1,1	7a75e7b6
+#header	crafted/npostfix3_ndirect120.br	1163	1,1,1	0,0,0	3,120	1,1	7a75e7b6
+#header	crafted/nsym1_cmd64_body.br	88	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/simple_nsym1_literal.br	70	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/simple_nsym2_literal.br	78	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/simple_nsym3_literal.br	86	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/simple_nsym4_tsel0.br	95	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/simple_nsym4_tsel1.br	95	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/trunc_nsym1_cmd64_body.br	88	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/trunc_nsym1_insert_extra_body.br	88	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	crafted/window_edge_wbits10.br	317	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	small/alice29_32k.q5w16.br	1423	1,1,4	0,0,512	0,0	1,4	a291161d
+#header	small/bswitch_records_68k.q11w16.br	1276	3,3,3	11001,164,491	0,0	4,3	53e20af8
+#header	small/json_records.q11w16.br	1691	2,2,3	192,472,215	0,0	5,3	98432c86
+#header	small/mixed_7k.q0w10.br	679	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	small/mixed_7k.q1w10.br	445	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	small/prose_2k.q11w16.br	844	1,1,1	0,0,0	0,2	4,1	c0843cd7
+#header	small/prose_2k.q2w10.br	507	1,1,1	0,0,0	0,0	1,1	7a75e7b6
+#header	small/records_4k.q5w12.br	314	1,1,1	0,0,0	0,0	1,1	0b0e190f
+#header	small/utf8_706.q11w10.br	785	1,1,1	0,0,0	0,3	4,1	ba0ffa3e
+#kills	google/alice29.txt.compressed	E6977,D1
+#kills	google/cp852-utf8.compressed	D1
+#kills	synth/IntactDistanceRingBuffer1.br	D1
+#kills	synth/IntactDistanceRingBuffer2.br	D1
+#kills	synth/IntactDistanceRingBufferNoDistanceValue0.br	D1
+#kills	synth/IntactDistanceRingBufferNoDistanceValue1.br	D1
+#kills	crafted/bswitch_cmode_mixed_lsb6_utf8.br	M2
+#kills	crafted/bswitch_cmode_mixed_msb6_signed.br	M2
+#kills	crafted/bswitch_d3_dctx_implicit.br	E6977
+#kills	crafted/bswitch_i3_code0_first.br	M1
+#kills	crafted/bswitch_l3_code0_first.br	M1
+#kills	crafted/bswitch_reset_per_metablock.br	M1,M3
+#kills	crafted/bswitch_trivial_to_utf8_midinsert.br	M2
+#kills	crafted/dict_ring_short_code_6.br	D1,D2
+#kills	crafted/dict_ring_short_codes.br	D1,D2
+#kills	crafted/dict_ring_short_codes_4_14.br	D1,D2
+#kills	small/alice29_32k.q5w16.br	E6977,D1
+#kills	small/bswitch_records_68k.q11w16.br	M3,E6977
+#kills	small/json_records.q11w16.br	M3,E6977,D1
+#kills	small/prose_2k.q11w16.br	D1
+#kills	small/utf8_706.q11w10.br	D1

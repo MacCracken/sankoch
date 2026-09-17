@@ -1,0 +1,1460 @@
+# brotli.cyr — sovereign Brotli decoder (RFC 7932). DECODE ONLY.
+#
+# One complete stream in, bytes out: brotli_decompress / brotli_decompress_capped (API mirrors
+# zlib), and the unlocked _brotli_decompress_inner that lib.cyr's decompress(FORMAT_BROTLI) calls.
+# Implemented from RFC 7932 (with errata 6977: an implicit distance does not touch the distance
+# block count) and cross-checked against google/brotli v1.2.0 (MIT) and a strict Python oracle.
+#
+# Status (2.8.0): the whole of RFC 7932 decoding - constant tables, bit reader, stream
+# header (WBITS), meta-block framing, empty / metadata / uncompressed meta-blocks, output bounds,
+# end-of-stream + trailing-data checks; prefix codes (simple / complex) and the table builder,
+# context maps + IMTF, block switching, the compressed meta-block header, the command loop
+# (literals in all four context modes, insert-and-copy / distance codes, the distance ring,
+# overlapping LZ copies), and static dictionary references with the 121 transforms. Hot path (measured
+# in tests/bcyr/sankoch.bcyr): literal runs charged once per block, a one-tree context-map
+# fast path, inline command / distance extra bits, word-wise LZ copy tails and IMTF shifts.
+#
+# Key subtleties:
+#  - WBITS 7-bit pattern 0010001 is the Large Window Brotli escape (RFC 9841 §6; also the
+#    Shared Brotli signature byte 0x91). Not RFC 7932: rejected with ERR_UNSUPPORTED_FORMAT.
+#  - MLEN / MSKIPLEN "exuberant" encodings (a zero top nibble / byte beyond the first) are
+#    invalid. MSKIPBYTES = 0 is a zero-length metadata block, and alignment still applies.
+#  - Padding before a metadata / uncompressed payload and after the last meta-block must be 0.
+#  - An ISLAST metadata meta-block ends the stream (google empty.compressed.15/.16).
+#  - The bit reader never loads a byte past src+src_len; a prefix of any valid stream therefore
+#    fails exactly with ERR_CORRUPT_DATA (never a truncated success, never an invented byte).
+#  - Every helper returns a value >= 0 or 0 - ERR_*, and every call site tests `< 0` BEFORE the
+#    value is used in any way (the error-propagation rule).
+#  - Only an LZ copy with an explicit distance code >= 1 pushes the last-4-distances ring. Code 0,
+#    implicit distances and static dictionary references leave it unchanged (decode.c 1694 / 2190).
+#  - A transformed dictionary word may be empty (e.g. OmitFirst4 on a 4-byte word). Such a command
+#    writes nothing, but its address is >= 34,816, which only a distance code with extra bits can
+#    reach, so every command still consumes input or writes output (plus a liveness guard).
+#  - The static dictionary literal is checked once per process (FNV-1a, _brd_dict_ok) at the first
+#    dictionary reference: a toolchain that mis-addresses the literal fails closed.
+#
+# Deliberate divergences from reference implementations:
+#  1. Bytes after the final padding are rejected (ERR_CORRUPT_DATA), as `brotli -d` and Python
+#     do; the one-shot C / JS / Java APIs accept them. Brotli has no checksum and no magic, so
+#     consuming the input exactly is a batch decoder's only end-of-stream integrity signal.
+#  2. Large-window streams are rejected (`brotli -d` accepts them: the CLI enables large window).
+#  3. Output bounds are enforced at every meta-block header (pos + MLEN against the tighter of
+#     dst_cap and the ceiling first, as zlib's per-symbol checks trip them), so a bomb fails in
+#     O(1); a stream that would also be corrupt later in that meta-block reports the bound error
+#     instead. The verdict is still "error". Likewise a length
+#     that overruns MLEN (insert, copy, transformed word) is rejected before its bytes are written.
+#  4. NBLTYPES = 1: the block count is a sentinel that never reaches 0 (RFC 7932 §9.3: switch codes
+#     appear only if NBLTYPES >= 2), where libbrotli's non-safe path could re-enter a switch.
+#  5. Upper-casing is RFC 7932 §8 Ferment, bounded by the transformed word; C ToUpperCase may XOR up
+#     to 2 bytes past it (later overwritten). The visible output is identical for all 1,633,984
+#     (length, word, transform) expansions.
+#  6. C's "zero-length word at distance <= 120" TRANSFORM error (a custom-dictionary guard) is not
+#     implemented: with the RFC dictionary an empty word needs a distance > 34,816.
+#
+# Every string literal in this file is NUL-free (the cyrius 6.6.4 string-interning hazard: a
+# periodic literal containing NUL can be aliased onto storage the next literal overwrites).
+# Irregular tables are hex text; their CRC-32s are pinned against docs/sources/brotli/tables.txt
+# by tests/tcyr/brotli_decompress.tcyr.
+#
+# Closure: types.cyr, brotli_dict.cyr, runtime.cyr. No stdlib calls, no checksum module.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+enum BrotliDec {
+    BRD_WINDOW_GAP = 16;
+    BRD_NUM_TRANSFORMS = 121;
+    # Workspace slab layout (lazily allocated at the first compressed meta-block).
+    BRD_WS_TAB_L   =       0;   #  323584 B  literal trees: 256 x 632 u16
+    BRD_WS_TAB_I   =  323584;   #  552960 B  insert&copy trees: 256 x 1080 u16
+    BRD_WS_TAB_D   =  876544;   #  458752 B  distance trees: 256 x 896 u16 (alphabet <= 520)
+    BRD_WS_TAB_BT  = 1335296;   #    3792 B  block-type trees: 3 x 632 u16 (alphabet <= 258)
+    BRD_WS_TAB_BC  = 1339088;   #    2376 B  block-count trees: 3 x 396 u16 (alphabet 26)
+    BRD_WS_TAB_CM  = 1341464;   #    1292 B  context-map code: 646 u16 (alphabet <= 272)
+    BRD_WS_TAB_CL  = 1342760;   #     512 B  code-length code: 256 u16 (root-8)
+    BRD_WS_HT_L    = 1343272;   #    2048 B  literal tree addresses (i64)
+    BRD_WS_HT_I    = 1345320;   #    2048 B  insert&copy tree addresses (i64)
+    BRD_WS_HT_D    = 1347368;   #    2048 B  distance tree addresses (i64)
+    BRD_WS_CMAP_L  = 1349416;   #   16384 B  literal context map (u8), 64 x 256
+    BRD_WS_CMAP_D  = 1365800;   #    1024 B  distance context map (u8), 4 x 256
+    BRD_WS_CMODE   = 1366824;   #     256 B  context mode per literal block type (u8)
+    BRD_WS_LENS    = 1367080;   #     704 B  code-length scratch (u8)
+    BRD_WS_SORTED  = 1367784;   #    1408 B  symbols sorted by (len, sym) (u16)
+    BRD_WS_MTF     = 1369192;   #     264 B  IMTF list (u8, +8 slack for word moves)
+    BRD_WS_DLUT    = 1369456;   #    4160 B  distance LUT (i64)
+    BRD_WS_SIZE    = 1373616;   #    1.310 MiB total
+    BRD_BLEN_NEVER = 1099511627776;   # 1 << 40: block count for NBLTYPES = 1, never reaches 0
+    # Code-length-code prefix (peek 4 bits LSB-first, ix): bits = (BITS >> (ix<<2)) & 15,
+    # value = (VALUE >> (ix<<2)) & 15. Short distance delta(b) = ((DELTA >> (4*b)) & 15) - 3.
+    BRD_CLCL_BITS  = 0x4222322242223222;
+    BRD_CLCL_VALUE = 0x5340234013402340;
+    BRD_SHORT_DELTA = 0x605142;
+}
+
+# ---- per-call state (valid only while _sankoch_mtx is held; rewritten at every call) ----
+var _brd_src = 0;     # stream start
+var _brd_end = 0;     # src + src_len (first byte NOT in the stream)
+var _brd_ip = 0;      # first input byte whose bits are outside _brd_nb
+var _brd_acc = 0;     # unread bits [0, _brd_nb), LSB-first; bits above are zero or true look-ahead
+var _brd_nb = 0;      # number of valid bits in _brd_acc
+var _brd_out = 0;     # caller dst
+var _brd_pos = 0;     # bytes written so far
+var _brd_cap = 0;     # dst_cap
+var _brd_omax = 0;    # output ceiling (out_max, or DECOMPRESS_MAX_OUTPUT)
+var _brd_wmax = 0;    # (1 << WBITS) - 16: largest backward distance into the output
+var _brd_r0 = 4;      # distance ring: last, 2nd, 3rd, 4th (never reset between meta-blocks)
+var _brd_r1 = 11;
+var _brd_r2 = 15;
+var _brd_r3 = 16;
+
+# ---- process state ----
+var _brd_ws = 0;        # workspace slab (arena pointer; the ONLY memoized one — see reset below)
+var _brd_inited = 0;    # BSS constant tables built
+var _brd_dict_addr = 0; # address of the static dictionary literal (not arena memory)
+var _brd_dict_ok = 0;   # dictionary self-check: 0 unchecked, 1 ok, -1 bad
+
+# ---- per compressed meta-block (index: 0 literal, 1 insert&copy, 2 distance) ----
+var _brd_nbt: i64[3];      # NBLTYPES
+var _brd_btype: i64[3];    # current block type (0 at every compressed meta-block)
+var _brd_bprev: i64[3];    # previous block type (1 at every compressed meta-block)
+var _brd_blen: i64[3];     # block count left (BRD_BLEN_NEVER when NBLTYPES = 1)
+var _brd_npostfix = 0;
+var _brd_ndirect = 0;
+var _brd_ntrees_l = 0;     # literal NTREES
+var _brd_ntrees_d = 0;     # distance NTREES
+
+# ---- BSS constant tables (built once by _brd_init_tables; survive alloc_reset) ----
+# _brd_cmd[sym]: bits 0-15 insert offset, 16-27 copy offset, 32-36 insert extra bits,
+# 40-44 copy extra bits, 48-49 distance context, bit 50 implicit distance 0.
+var _brd_cmd: i64[704];
+var _brd_blut: i64[26];        # block count code: offset | nbits << 16
+var _brd_ctx: u8[2048];        # context LUT: mode m at m<<9; [p1] part then [256+p2] part
+var _brd_rev8: u8[256];        # bit-reversal of each byte
+var _brd_ndbits: i64[25];      # dictionary NDBITS[len], len 4..24
+var _brd_doff: i64[25];        # dictionary DOFFSET[len], len 4..24
+var _brd_tr: u8[363];          # transforms: (prefix id, C type, suffix id) x 121
+var _brd_affix: u8[217];       # prefix/suffix pool, length-prefixed
+var _brd_affix_hex: u8[50];    # prefix/suffix id -> pool offset (u8 staging)
+var _brd_affix_off: i64[50];   # prefix/suffix id -> pool offset
+
+# ============================ constant tables ============================
+
+fn _brd_hexv(c): i64 {
+    if (c <= 57) { return c - 48; }
+    return (c | 32) - 87;
+}
+
+# Decode nbytes bytes from 2*nbytes hex digits at `hex` into dst.
+fn _brd_hex_into(dst, hex, nbytes): i64 {
+    var i = 0;
+    while (i < nbytes) {
+        store8(dst + i, (_brd_hexv(load8(hex + 2 * i)) << 4) | _brd_hexv(load8(hex + 2 * i + 1)));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Decode n one-digit hex values, each times mul, into bytes at dst.
+fn _brd_nib_into(dst, hex, n, mul): i64 {
+    var i = 0;
+    while (i < n) {
+        store8(dst + i, _brd_hexv(load8(hex + i)) * mul);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Offset of length code `code` in a prefix-code range table whose extra-bit counts are the
+# letters of nb ('a' = 0 bits): base + sum over j < code of 1 << nbits[j].
+fn _brd_range_off(nb, code, base): i64 {
+    var off = base;
+    var j = 0;
+    while (j < code) {
+        off = off + (1 << (load8(nb + j) - 97));
+        j = j + 1;
+    }
+    return off;
+}
+
+# RFC 7932 §7.1 SIGNED context bucket of a byte.
+fn _brd_lut2(b): i64 {
+    if (b == 0) { return 0; }
+    if (b < 16) { return 1; }
+    if (b < 64) { return 2; }
+    if (b < 128) { return 3; }
+    if (b < 192) { return 4; }
+    if (b < 240) { return 5; }
+    if (b < 255) { return 6; }
+    return 7;
+}
+
+# Code-length code transmission order (RFC 7932 §3.5): letter - 'A'.
+fn _brd_cl_order(i): i64 {
+    return load8("BCDEAFRGQHIJKLMNOP" + i) - 65;
+}
+
+fn _brd_init_tables(): i64 {
+    if (_brd_inited == 1) { return 0; }
+    # Insert-and-copy command LUT (RFC 7932 §5): cell = sym >> 6 picks the insert / copy code
+    # bases (letters - 'a'), the low 6 bits add (sym >> 3) & 7 and sym & 7.
+    var ins_nb = "aaaaaabbccddeeffghijkmoy";
+    var cpy_nb = "aaaaaaaabbccddeeffghijky";
+    var ib = "aaaaiiaqiqq";
+    var cb = "aiaiaiqaqiq";
+    var sym = 0;
+    while (sym < 704) {
+        var cell = sym >> 6;
+        var ic = load8(ib + cell) - 97 + ((sym >> 3) & 7);
+        var cc = load8(cb + cell) - 97 + (sym & 7);
+        var e = _brd_range_off(ins_nb, ic, 0) | (_brd_range_off(cpy_nb, cc, 2) << 16);
+        e = e | ((load8(ins_nb + ic) - 97) << 32) | ((load8(cpy_nb + cc) - 97) << 40);
+        var dctx = cc;
+        if (dctx > 3) { dctx = 3; }
+        e = e | (dctx << 48);
+        if (sym < 128) { e = e | (1 << 50); }
+        store64(&_brd_cmd + sym * 8, e);
+        sym = sym + 1;
+    }
+    # Block count codes (RFC 7932 §6): offsets are prefix sums from 1.
+    var bl_nb = "ccccddddeeeeffffgghijklmny";
+    var k = 0;
+    while (k < 26) {
+        store64(&_brd_blut + k * 8, _brd_range_off(bl_nb, k, 1) | ((load8(bl_nb + k) - 97) << 16));
+        k = k + 1;
+    }
+    # Context LUTs (RFC 7932 §7.1). LUT0 / LUT1 low halves from hex; LUT0 digits are value / 4.
+    var c = &_brd_ctx;
+    var p = 0;
+    while (p < 256) {
+        store8(c + p, p & 63);                     # mode 0 LSB6 (p2 part stays 0)
+        store8(c + 512 + p, p >> 2);               # mode 1 MSB6 (p2 part stays 0)
+        store8(c + 1536 + p, _brd_lut2(p) << 3);   # mode 3 SIGNED
+        store8(c + 1792 + p, _brd_lut2(p));
+        p = p + 1;
+    }
+    _brd_nib_into(c + 1024, "000000000110010000000000000000002343353467338393bbbbbbbbbb886a73", 64, 4);
+    _brd_nib_into(c + 1088, "3cdddcdddcdddddcdddddcddddd637333efffefffefffffefffffefffff63730", 64, 4);
+    _brd_nib_into(c + 1280, "0000000000000000000000000000000001111111111111112222222222111111", 64, 1);
+    _brd_nib_into(c + 1344, "1222222222222222222222222221111113333333333333333333333333311110", 64, 1);
+    p = 128;
+    while (p < 256) {
+        if (p < 192) { store8(c + 1024 + p, p & 1); } else { store8(c + 1024 + p, 2 + (p & 1)); }
+        if (p < 224) { store8(c + 1280 + p, 0); } else { store8(c + 1280 + p, 2); }
+        p = p + 1;
+    }
+    # Bit reversal.
+    p = 0;
+    while (p < 256) {
+        var r = 0;
+        var b = 0;
+        while (b < 8) {
+            r = r | (((p >> b) & 1) << (7 - b));
+            b = b + 1;
+        }
+        store8(&_brd_rev8 + p, r);
+        p = p + 1;
+    }
+    # Dictionary geometry, copied from the generated data module.
+    k = 0;
+    while (k < 25) {
+        store64(&_brd_ndbits + k * 8, _brotli_dict_ndbits(k));
+        store64(&_brd_doff + k * 8, _brotli_dict_offset(k));
+        k = k + 1;
+    }
+    _brd_dict_addr = _brotli_dict_data();
+    # Transforms (RFC 7932 Appendix B, C type numbering: 0 Identity, 1-9 OmitLast1-9,
+    # 10 UppercaseFirst, 11 UppercaseAll, 12-20 OmitFirst1-9).
+    var t = &_brd_tr;
+    _brd_hex_into(t + 0, "310031310000000000310c31310a0031002f000031040000310003310a31310006310d3131013101", 40);
+    _brd_hex_into(t + 40, "0000310001000a0031000731000930000031000831000531000a31000b31033131000d31000e310e", 40);
+    _brd_hex_into(t + 80, "3131023131000f310010000a3131000c050031000001310f31310012310011310013310014311031", 40);
+    _brd_hex_into(t + 120, "3111312f0031310431310016310b3131001731001831001931073131011a31001b31001c00000c31", 40);
+    _brd_hex_into(t + 160, "001d311431311231310631310015310a0131083131001f3100202f0003310531310931000a01310a", 40);
+    _brd_hex_into(t + 200, "08050015310b00310a0a31001e0000052300312f0002310a11310024310021050000310a15310a05", 40);
+    _brd_hex_into(t + 240, "31002500001e310026000b00310027000b31310022310b08310a0c000015310028000a0c31002931", 40);
+    _brd_hex_into(t + 280, "002a310b1131002b000a05310b0a000022310a2131002c310b052d0031000021310a1e310b1e3100", 40);
+    _brd_hex_into(t + 320, "2e310b01310a22000a21000b1e000b01310b21310b15310b0c000b05310b22000b0c000a1e000b22", 40);
+    _brd_hex_into(t + 360, "000a22", 3);
+    var a = &_brd_affix;
+    _brd_hex_into(a + 0, "0120022c2008206f66207468652004206f6620027320012e0520616e64200420696e200122042074", 40);
+    _brd_hex_into(a + 40, "6f2002223e010a022e20015d0520666f722003206120062074686174200127062077697468200620", 40);
+    _brd_hex_into(a + 80, "66726f6d2004206279200128062e205468652004206f6e200420617320042069732004696e672002", 40);
+    _brd_hex_into(a + 120, "0a09013a03656420023d220420617420036c7920012c023d27052e636f6d2f072e20546869732005", 40);
+    _brd_hex_into(a + 160, "206e6f74200365722003616c200466756c200469766520056c65737320046573742004697a652002", 40);
+    _brd_hex_into(a + 200, "c2a0046f75732005207468652002652000", 17);
+    var m = &_brd_affix_hex;
+    _brd_hex_into(m + 0, "0002050e1316181e23252a2d2f32343a3e45474e555a5c63686d72777a7c8083888c8e91979fa5a9", 40);
+    _brd_hex_into(m + 40, "adb2b7bdc2c7cacfd5d8", 10);
+    k = 0;
+    while (k < 50) {
+        store64(&_brd_affix_off + k * 8, load8(m + k));
+        k = k + 1;
+    }
+    _brd_inited = 1;
+    return 0;
+}
+
+# ============================ bit reader ============================
+
+fn _brd_reader_init(src, src_len): i64 {
+    _brd_src = src;
+    _brd_end = src + src_len;
+    _brd_ip = src;
+    _brd_acc = 0;
+    _brd_nb = 0;
+    return 0;
+}
+
+# Ensure _brd_nb >= 56, or the input is exhausted. Never loads a byte at or past _brd_end.
+fn _brd_fill(): i64 {
+    var nb = _brd_nb;
+    if (nb > 56) { return 0; }
+    var ip = _brd_ip;
+    if (ip + 8 <= _brd_end) {
+        _brd_acc = _brd_acc | (load64(ip) << nb);
+        var take = (63 - nb) >> 3;           # whole bytes that fit; nb becomes 56..63
+        _brd_ip = ip + take;
+        _brd_nb = nb + (take << 3);
+        return 0;
+    }
+    var acc = _brd_acc;
+    while (nb <= 56 && ip < _brd_end) {
+        acc = acc | (load8(ip) << nb);
+        ip = ip + 1;
+        nb = nb + 8;
+    }
+    _brd_acc = acc;
+    _brd_ip = ip;
+    _brd_nb = nb;
+    return 0;
+}
+
+# Read n (0..24) bits LSB-first. Returns the value, or 0 - ERR_CORRUPT_DATA when the input ends.
+fn _brd_bits(n): i64 {
+    if (n < 0 || n > 24) { return 0 - ERR_CORRUPT_DATA; }
+    if (n == 0) { return 0; }
+    if (_brd_nb < n) {
+        _brd_fill();
+        if (_brd_nb < n) { return 0 - ERR_CORRUPT_DATA; }
+    }
+    var v = _brd_acc & ((1 << n) - 1);
+    _brd_acc = _brd_acc >> n;
+    _brd_nb = _brd_nb - n;
+    return v;
+}
+
+# Decode one symbol from a table of u16 entries (bits << 12) | value: an 8-bit root, where a
+# root entry with bits = 8 + t points at a 2^t-entry second-level table (value = its index).
+# Peeks past the input end read zero bits, but the code length is compared with _brd_nb before
+# anything is consumed. 0-bit symbols need no input.
+fn _brd_sym(tab): i64 {
+    if (_brd_nb < 15) { _brd_fill(); }
+    var acc = _brd_acc;
+    var e = load16(tab + ((acc & 255) << 1));
+    var b = e >> 12;
+    if (b > 8) {
+        e = load16(tab + (((e & 4095) + ((acc >> 8) & ((1 << (b - 8)) - 1))) << 1));
+        b = 8 + (e >> 12);
+    }
+    if (b > _brd_nb) { return 0 - ERR_CORRUPT_DATA; }
+    _brd_acc = acc >> b;
+    _brd_nb = _brd_nb - b;
+    return e & 4095;
+}
+
+# Skip to the next byte boundary; the skipped bits must be zero.
+fn _brd_align(): i64 {
+    var pad = _brd_nb & 7;
+    if (pad == 0) { return 0; }
+    if ((_brd_acc & ((1 << pad) - 1)) != 0) { return 0 - ERR_CORRUPT_DATA; }
+    _brd_acc = _brd_acc >> pad;
+    _brd_nb = _brd_nb - pad;
+    return 0;
+}
+
+# Byte position of the next unread bit. Valid only when aligned (_brd_nb % 8 == 0).
+fn _brd_byte_pos(): i64 {
+    return _brd_ip - (_brd_nb >> 3);
+}
+
+# Aligned byte payload of n bytes: bounds-check it and reseat the reader after it. Returns the
+# payload address, or 0 - ERR_CORRUPT_DATA when it runs past the input end. O(1).
+fn _brd_skip_bytes(n): i64 {
+    var bp = _brd_byte_pos();
+    if (n > _brd_end - bp) { return 0 - ERR_CORRUPT_DATA; }
+    _brd_ip = bp + n;
+    _brd_acc = 0;
+    _brd_nb = 0;
+    return bp;
+}
+
+# ============================ stream framing ============================
+
+# Stream header (RFC 7932 §9.1). Returns WBITS (10..24) and sets _brd_wmax;
+# 0 - ERR_UNSUPPORTED_FORMAT for the large-window escape 0010001; 0 - ERR_CORRUPT_DATA if truncated.
+fn _brd_read_wbits(): i64 {
+    var w = 16;
+    var v = _brd_bits(1);
+    if (v < 0) { return v; }
+    if (v == 1) {
+        var n = _brd_bits(3);
+        if (n < 0) { return n; }
+        if (n != 0) {
+            w = 17 + n;
+        } else {
+            var m = _brd_bits(3);
+            if (m < 0) { return m; }
+            if (m == 1) { return 0 - ERR_UNSUPPORTED_FORMAT; }
+            if (m != 0) { w = 8 + m; } else { w = 17; }
+        }
+    }
+    _brd_wmax = (1 << w) - BRD_WINDOW_GAP;
+    return w;
+}
+
+# Metadata meta-block body after MNIBBLES == 0 (RFC 7932 §9.2): reserved bit, MSKIPBYTES,
+# MSKIPLEN, zero padding, skipped payload. The bytes never touch the output.
+fn _brd_metadata(): i64 {
+    var rsv = _brd_bits(1);
+    if (rsv < 0) { return rsv; }
+    if (rsv != 0) { return 0 - ERR_CORRUPT_DATA; }
+    var nbytes = _brd_bits(2);
+    if (nbytes < 0) { return nbytes; }
+    var skip = 0;
+    var i = 0;
+    while (i < nbytes) {
+        var b = _brd_bits(8);
+        if (b < 0) { return b; }
+        if (i == nbytes - 1 && nbytes > 1 && b == 0) { return 0 - ERR_CORRUPT_DATA; }   # exuberant
+        skip = skip | (b << (8 * i));
+        i = i + 1;
+    }
+    if (nbytes > 0) { skip = skip + 1; }
+    var r = _brd_align();
+    if (r < 0) { return r; }
+    r = _brd_skip_bytes(skip);
+    if (r < 0) { return r; }
+    return 0;
+}
+
+# Uncompressed meta-block payload (RFC 7932 §9.2): zero padding, then mlen raw bytes into the
+# output. The caller has already checked _brd_pos + mlen against dst_cap and the ceiling.
+fn _brd_uncompressed(mlen): i64 {
+    var r = _brd_align();
+    if (r < 0) { return r; }
+    var s = _brd_skip_bytes(mlen);
+    if (s < 0) { return s; }
+    var d = _brd_out + _brd_pos;
+    var i = 0;
+    while (i + 8 <= mlen) {
+        store64(d + i, load64(s + i));
+        i = i + 8;
+    }
+    while (i < mlen) {
+        store8(d + i, load8(s + i));
+        i = i + 1;
+    }
+    _brd_pos = _brd_pos + mlen;
+    return 0;
+}
+
+# ============================ workspace ============================
+
+# Lazily allocate the workspace slab at the first compressed meta-block of the process epoch.
+# On OOM _brd_ws stays 0 (nothing partial to latch), so the next call simply retries.
+fn _brd_ws_ensure(): i64 {
+    if (_brd_ws != 0) { return 0; }
+    var p = _sankoch_alloc(BRD_WS_SIZE);
+    if (p == 0) { return 0 - ERR_OOM; }
+    _brd_ws = p;
+    return 0;
+}
+
+# ============================ prefix codes ============================
+
+# Bit-reverse the low len (1..15) bits of c.
+fn _brd_rev(c, len): i64 {
+    var r = (load8(&_brd_rev8 + (c & 255)) << 8) | load8(&_brd_rev8 + ((c >> 8) & 255));
+    return r >> (16 - len);
+}
+
+# Build the decode table of a COMPLETE prefix code (callers guarantee completeness) at tab, in the
+# u16 layout that _brd_sym reads: an 8-bit root, root entries (len << 12) | sym for len <= 8, and
+# ((8 + t) << 12) | index pointing at a 2^t-entry second-level table of ((len - 8) << 12) | sym
+# entries (google/brotli huffman.c BrotliBuildHuffmanTable, with absolute subtable indexes).
+# count = 16 i64 slots (count[len], len 1..15; slot 0 ignored); sorted = u16 symbols ordered by
+# (len, sym). cap = entries available at tab. Returns the entries used (256 + subtables), or
+# 0 - ERR_CORRUPT_DATA if a table would cross cap (fail closed; unreachable for the table caps
+# 632 / 396 / 646 / 896 / 1080, which are zlib `enough` root-8 maxima: tables.txt ENOUGH_ROOT8_MAX15).
+fn _brd_build(tab, cap, count, sorted): i64 {
+    if (cap < 256) { return 0 - ERR_CORRUPT_DATA; }
+    if (cap > 4096) { cap = 4096; }                  # a subtable index must fit the 12-bit value
+    var next[128];
+    var rem[128];
+    var code = 0;
+    var len = 1;
+    while (len < 16) {
+        if (len > 1) { code = code + load64(count + (len - 1) * 8); }
+        code = code << 1;
+        store64(&next + len * 8, code);
+        store64(&rem + len * 8, load64(count + len * 8));
+        len = len + 1;
+    }
+    var k = 0;
+    len = 1;
+    while (len <= 8) {                               # root codes, replicated over the 8-bit index
+        var n = load64(count + len * 8);
+        var step = 1 << len;
+        while (n > 0) {
+            var c = load64(&next + len * 8);
+            store64(&next + len * 8, c + 1);
+            var e = (len << 12) | load16(sorted + (k << 1));
+            k = k + 1;
+            var j = _brd_rev(c, len);
+            while (j < 256) {
+                store16(tab + (j << 1), e);
+                j = j + step;
+            }
+            n = n - 1;
+        }
+        len = len + 1;
+    }
+    var top = 256;
+    var curlow = 0 - 1;
+    var base = 0;
+    var tsz = 0;
+    len = 9;
+    while (len <= 15) {                              # codes longer than the root
+        var n2 = load64(count + len * 8);
+        var step2 = 1 << (len - 8);
+        while (n2 > 0) {
+            var c2 = load64(&next + len * 8);
+            store64(&next + len * 8, c2 + 1);
+            var r = _brd_rev(c2, len);
+            var low = r & 255;
+            if (low != curlow) {                     # a new 8-bit prefix: open its subtable
+                var t = len - 8;
+                var left = 1 << t;
+                var l2 = len;
+                while (l2 < 15) {                    # NextTableBitSize (huffman.c)
+                    left = left - load64(&rem + l2 * 8);
+                    if (left <= 0) { break; }
+                    l2 = l2 + 1;
+                    left = left << 1;
+                    t = t + 1;
+                }
+                if (top + (1 << t) > cap) { return 0 - ERR_CORRUPT_DATA; }
+                store16(tab + (low << 1), ((8 + t) << 12) | top);
+                base = top;
+                tsz = 1 << t;
+                top = top + tsz;
+                curlow = low;
+            }
+            var e2 = ((len - 8) << 12) | load16(sorted + (k << 1));
+            k = k + 1;
+            var j2 = r >> 8;
+            while (j2 < tsz) {
+                store16(tab + ((base + j2) << 1), e2);
+                j2 = j2 + step2;
+            }
+            store64(&rem + len * 8, load64(&rem + len * 8) - 1);
+            n2 = n2 - 1;
+        }
+        len = len + 1;
+    }
+    return top;
+}
+
+# Simple prefix code (RFC 7932 §3.4, HSKIP == 1): NSYM 1..4 symbols of bitlength(alpha - 1) bits
+# each, lengths fixed by NSYM (and the tree-select bit for NSYM 4) in listed order, canonical
+# code over (len, sym). Symbol >= alpha and duplicates are ERR_INVALID_HUFFMAN (decode.c 533-568:
+# the range check per symbol as read, duplicates after all are read).
+fn _brd_read_simple(alpha, tab, cap): i64 {
+    var nsym = _brd_bits(2);
+    if (nsym < 0) { return nsym; }
+    nsym = nsym + 1;
+    var abits = 0;
+    var x = alpha - 1;
+    while (x > 0) {
+        abits = abits + 1;
+        x = x >> 1;
+    }
+    var sym[32];
+    var ln[32];
+    var i = 0;
+    while (i < nsym) {
+        var v = _brd_bits(abits);
+        if (v < 0) { return v; }
+        if (v >= alpha) { return 0 - ERR_INVALID_HUFFMAN; }
+        store64(&sym + i * 8, v);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < nsym) {
+        var j = i + 1;
+        while (j < nsym) {
+            if (load64(&sym + i * 8) == load64(&sym + j * 8)) { return 0 - ERR_INVALID_HUFFMAN; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    if (nsym == 1) {                                 # one symbol, 0-bit code
+        if (cap < 256) { return 0 - ERR_CORRUPT_DATA; }
+        var e = load64(&sym);
+        i = 0;
+        while (i < 256) {
+            store16(tab + (i << 1), e);
+            i = i + 1;
+        }
+        return 256;
+    }
+    # Lengths in listed order: 2 -> 1,1; 3 -> 1,2,2; 4 -> 2,2,2,2 (tree-select 0) or 1,2,3,3.
+    var lens = 0x2211;
+    if (nsym == 3) { lens = 0x221; }
+    if (nsym == 4) {
+        var tsel = _brd_bits(1);
+        if (tsel < 0) { return tsel; }
+        lens = 0x2222;
+        if (tsel == 1) { lens = 0x3321; }
+    }
+    i = 0;
+    while (i < nsym) {
+        store64(&ln + i * 8, (lens >> (4 * i)) & 15);
+        i = i + 1;
+    }
+    # Insertion sort of the (len, sym) pairs.
+    i = 1;
+    while (i < nsym) {
+        var j2 = i;
+        while (j2 > 0) {
+            var la = load64(&ln + (j2 - 1) * 8);
+            var lb = load64(&ln + j2 * 8);
+            var sa = load64(&sym + (j2 - 1) * 8);
+            var sb = load64(&sym + j2 * 8);
+            if (la < lb || (la == lb && sa < sb)) { break; }
+            store64(&ln + (j2 - 1) * 8, lb);
+            store64(&ln + j2 * 8, la);
+            store64(&sym + (j2 - 1) * 8, sb);
+            store64(&sym + j2 * 8, sa);
+            j2 = j2 - 1;
+        }
+        i = i + 1;
+    }
+    var cnt[128];
+    i = 0;
+    while (i < 16) {
+        store64(&cnt + i * 8, 0);
+        i = i + 1;
+    }
+    var srt = _brd_ws + BRD_WS_SORTED;
+    i = 0;
+    while (i < nsym) {
+        var l = load64(&ln + i * 8);
+        store64(&cnt + l * 8, load64(&cnt + l * 8) + 1);
+        store16(srt + (i << 1), load64(&sym + i * 8));
+        i = i + 1;
+    }
+    return _brd_build(tab, cap, &cnt, srt);
+}
+
+# Complex prefix code (RFC 7932 §3.5, HSKIP 0/2/3): code-length code lengths (static 2..4-bit
+# prefix), their completeness check, then the symbol code lengths with repeat codes 16 / 17
+# (decode.c 578-929). space is signed: an over-subscription stops the loop at once, where C's
+# unsigned space runs on to the alphabet end; the verdict (ERR_INVALID_HUFFMAN) is the same.
+fn _brd_read_complex(hskip, alpha, tab, cap): i64 {
+    var ws = _brd_ws;
+    var clen[24];
+    var i = 0;
+    while (i < 24) {
+        store8(&clen + i, 0);
+        i = i + 1;
+    }
+    var space = 32;
+    var num = 0;
+    i = hskip;
+    while (i < 18) {
+        if (_brd_nb < 4) { _brd_fill(); }
+        var ix = (_brd_acc & 15) << 2;               # peek; bits past the input end read 0
+        var nb = (BRD_CLCL_BITS >> ix) & 15;
+        if (nb > _brd_nb) { return 0 - ERR_CORRUPT_DATA; }
+        var v = (BRD_CLCL_VALUE >> ix) & 15;
+        _brd_acc = _brd_acc >> nb;
+        _brd_nb = _brd_nb - nb;
+        store8(&clen + _brd_cl_order(i), v);
+        if (v != 0) {
+            space = space - (32 >> v);
+            num = num + 1;
+            if (space <= 0) { break; }
+        }
+        i = i + 1;
+    }
+    if (num != 1 && space != 0) { return 0 - ERR_INVALID_HUFFMAN; }
+    var cnt[128];
+    i = 0;
+    while (i < 16) {
+        store64(&cnt + i * 8, 0);
+        i = i + 1;
+    }
+    var srt = ws + BRD_WS_SORTED;
+    var cl = ws + BRD_WS_TAB_CL;
+    if (num == 1) {                                  # one code-length symbol: a 0-bit code
+        var one = 0;
+        i = 0;
+        while (i < 18) {
+            if (load8(&clen + i) != 0) { one = i; }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 256) {
+            store16(cl + (i << 1), one);
+            i = i + 1;
+        }
+    } else {
+        var k = 0;
+        var l = 1;
+        while (l <= 5) {
+            i = 0;
+            while (i < 18) {
+                if (load8(&clen + i) == l) {
+                    store16(srt + (k << 1), i);
+                    k = k + 1;
+                    store64(&cnt + l * 8, load64(&cnt + l * 8) + 1);
+                }
+                i = i + 1;
+            }
+            l = l + 1;
+        }
+        var br = _brd_build(cl, 256, &cnt, srt);
+        if (br < 0) { return br; }
+        i = 0;
+        while (i < 16) {
+            store64(&cnt + i * 8, 0);
+            i = i + 1;
+        }
+    }
+    var lens = ws + BRD_WS_LENS;
+    var symbol = 0;
+    var prev = 8;
+    var rep = 0;
+    var replen = 0;
+    space = 32768;
+    while (symbol < alpha && space > 0) {
+        var c = _brd_sym(cl);
+        if (c < 0) { return c; }
+        if (c < 16) {
+            store8(lens + symbol, c);
+            rep = 0;
+            if (c != 0) {
+                prev = c;
+                space = space - (32768 >> c);
+                store64(&cnt + c * 8, load64(&cnt + c * 8) + 1);
+            }
+            symbol = symbol + 1;
+        } else {
+            var eb = 3;
+            var newlen = 0;
+            if (c == 16) {
+                eb = 2;
+                newlen = prev;
+            }
+            if (replen != newlen) {
+                rep = 0;
+                replen = newlen;
+            }
+            var old = rep;
+            if (rep > 0) { rep = (rep - 2) << eb; }
+            var xb = _brd_bits(eb);
+            if (xb < 0) { return xb; }
+            rep = rep + xb + 3;
+            var delta = rep - old;
+            if (symbol + delta > alpha) { return 0 - ERR_INVALID_HUFFMAN; }
+            var end = symbol + delta;
+            while (symbol < end) {
+                store8(lens + symbol, replen);
+                symbol = symbol + 1;
+            }
+            if (replen != 0) {
+                space = space - (delta << (15 - replen));
+                store64(&cnt + replen * 8, load64(&cnt + replen * 8) + delta);
+            }
+        }
+    }
+    if (space != 0) { return 0 - ERR_INVALID_HUFFMAN; }
+    # Counting sort of the used symbols by (len, sym); lengths beyond `symbol` are implicitly 0.
+    var off[128];
+    var acc = 0;
+    var ln = 1;
+    while (ln < 16) {
+        store64(&off + ln * 8, acc);
+        acc = acc + load64(&cnt + ln * 8);
+        ln = ln + 1;
+    }
+    var s = 0;
+    while (s < symbol) {
+        var sl = load8(lens + s);
+        if (sl != 0) {
+            var o = load64(&off + sl * 8);
+            store16(srt + (o << 1), s);
+            store64(&off + sl * 8, o + 1);
+        }
+        s = s + 1;
+    }
+    return _brd_build(tab, cap, &cnt, srt);
+}
+
+# Read one prefix code over an alphabet of alpha symbols into tab (cap entries available).
+# Returns the entries used, or 0 - ERR_*. Needs the workspace (scratch LENS / SORTED / TAB_CL).
+fn _brd_read_code(alpha, tab, cap): i64 {
+    var hskip = _brd_bits(2);
+    if (hskip < 0) { return hskip; }
+    if (hskip == 1) { return _brd_read_simple(alpha, tab, cap); }
+    return _brd_read_complex(hskip, alpha, tab, cap);
+}
+
+# ============================ context maps, block switching ============================
+
+# RFC 7932 §9.2 VarLenUint8: 0..255.
+fn _brd_varlen8(): i64 {
+    var b = _brd_bits(1);
+    if (b <= 0) { return b; }
+    var n = _brd_bits(3);
+    if (n < 0) { return n; }
+    if (n == 0) { return 1; }
+    var x = _brd_bits(n);
+    if (x < 0) { return x; }
+    return (1 << n) + x;
+}
+
+# Inverse move-to-front over map[0..size) (RFC 7932 §7.3). The list shift mtf[0..idx) ->
+# mtf[1..idx] moves 8-byte words from the top down: each word's destination [j-7, j+1) ends above
+# the next word's source [j-16, j-8), so no byte is read after it is overwritten, and no store
+# reaches past mtf[idx]. Word moves cut the adversarial cost (16,384 x 255 byte moves from a 76-byte
+# stream) about 5x; see tests/tcyr/brotli_decompress.tcyr test_t12_imtf.
+fn _brd_imtf(map, size): i64 {
+    var mtf = _brd_ws + BRD_WS_MTF;
+    var i = 0;
+    var w = 0x0706050403020100;
+    while (i < 256) {
+        store64(mtf + i, w);
+        w = w + 0x0808080808080808;
+        i = i + 8;
+    }
+    i = 0;
+    while (i < size) {
+        var idx = load8(map + i);
+        var v = load8(mtf + idx);
+        store8(map + i, v);
+        while (idx >= 8) {
+            store64(mtf + idx - 7, load64(mtf + idx - 8));
+            idx = idx - 8;
+        }
+        while (idx > 0) {
+            store8(mtf + idx, load8(mtf + idx - 1));
+            idx = idx - 1;
+        }
+        store8(mtf, v);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Context map of `size` entries into map (RFC 7932 §7.3, decode.c 1050-1175). Returns NTREES
+# (1..256) or 0 - ERR_*. Entries are < NTREES by construction: symbols above RLEMAX give
+# 1..NTREES-1, and IMTF keeps the first NTREES list slots a permutation of 0..NTREES-1.
+fn _brd_read_cmap(size, map): i64 {
+    var nt = _brd_varlen8();
+    if (nt < 0) { return nt; }
+    nt = nt + 1;
+    var i = 0;
+    if (nt == 1) {
+        while (i < size) {
+            store8(map + i, 0);
+            i = i + 1;
+        }
+        return 1;
+    }
+    var rlemax = 0;
+    var f = _brd_bits(1);
+    if (f < 0) { return f; }
+    if (f == 1) {
+        var rm = _brd_bits(4);
+        if (rm < 0) { return rm; }
+        rlemax = rm + 1;
+    }
+    var cm = _brd_ws + BRD_WS_TAB_CM;
+    var u = _brd_read_code(nt + rlemax, cm, 646);
+    if (u < 0) { return u; }
+    while (i < size) {
+        var c = _brd_sym(cm);
+        if (c < 0) { return c; }
+        if (c == 0 || c > rlemax) {
+            if (c > 0) { c = c - rlemax; }
+            store8(map + i, c);
+            i = i + 1;
+        } else {
+            var x = _brd_bits(c);
+            if (x < 0) { return x; }
+            var reps = (1 << c) + x;
+            if (i + reps > size) { return 0 - ERR_CORRUPT_DATA; }
+            var end = i + reps;
+            while (i < end) {
+                store8(map + i, 0);
+                i = i + 1;
+            }
+        }
+    }
+    var t = _brd_bits(1);
+    if (t < 0) { return t; }
+    if (t == 1) { _brd_imtf(map, size); }
+    return nt;
+}
+
+# Block switch for category c (0 literal, 1 insert&copy, 2 distance), called when its block
+# count reaches 0 (RFC 7932 §6, decode.c 1179-1221). Returns the new block type or 0 - ERR_*.
+fn _brd_block_switch(c): i64 {
+    var ws = _brd_ws;
+    var t = _brd_sym(ws + BRD_WS_TAB_BT + c * 1264);
+    if (t < 0) { return t; }
+    var k = _brd_sym(ws + BRD_WS_TAB_BC + c * 792);
+    if (k < 0) { return k; }
+    var bl = load64(&_brd_blut + k * 8);
+    var x = _brd_bits((bl >> 16) & 31);
+    if (x < 0) { return x; }
+    store64(&_brd_blen + c * 8, (bl & 65535) + x);
+    var cur = load64(&_brd_btype + c * 8);
+    var ty = t - 2;
+    if (t == 0) { ty = load64(&_brd_bprev + c * 8); }
+    if (t == 1) { ty = cur + 1; }
+    var n = load64(&_brd_nbt + c * 8);
+    if (ty >= n) { ty = ty - n; }
+    store64(&_brd_bprev + c * 8, cur);
+    store64(&_brd_btype + c * 8, ty);
+    return ty;
+}
+
+# ============================ compressed meta-block header ============================
+
+# Distance LUT (decode.c 1804-1836): DLUT[dcode] = base | (extra bits << 32) for dcode 16..,
+# distance = base + (extra << NPOSTFIX). Direct codes 16..15+NDIRECT have 0 extra bits.
+fn _brd_dlut(npostfix, ndirect): i64 {
+    var d = _brd_ws + BRD_WS_DLUT;
+    var i = 16;
+    while (i < 16 + ndirect) {
+        store64(d + i * 8, i - 15);
+        i = i + 1;
+    }
+    var end = 16 + ndirect + (48 << npostfix);
+    var nbits = 1;
+    var half = 0;
+    var np = 1 << npostfix;
+    while (i < end) {
+        var base = ndirect + ((((2 + half) << nbits) - 4) << npostfix) + 1;
+        var j = 0;
+        while (j < np) {
+            store64(d + i * 8, (base + j) | (nbits << 32));
+            i = i + 1;
+            j = j + 1;
+        }
+        nbits = nbits + half;
+        half = half ^ 1;
+    }
+    return 0;
+}
+
+# A tree group: ntrees prefix codes over alpha, packed from base (total entries); ht[i] = the
+# address of tree i. Returns the entries used or 0 - ERR_*.
+fn _brd_read_group(alpha, ntrees, base, total, ht): i64 {
+    var used = 0;
+    var i = 0;
+    while (i < ntrees) {
+        var t = base + (used << 1);
+        store64(ht + i * 8, t);
+        var r = _brd_read_code(alpha, t, total - used);
+        if (r < 0) { return r; }
+        used = used + r;
+        i = i + 1;
+    }
+    return used;
+}
+
+# Compressed meta-block header after MLEN / ISUNCOMPRESSED, in decode.c's field order
+# (2586-2779): NBLTYPES + block-type code + block-count code + first count for L, I, D;
+# NPOSTFIX / NDIRECT; context modes; literal and distance context maps; the three tree groups;
+# then the distance LUT. Block types reset to 0 (previous 1) at every compressed meta-block.
+fn _brd_mb_header(): i64 {
+    var ws = _brd_ws;
+    var c = 0;
+    while (c < 3) {
+        var n = _brd_varlen8();
+        if (n < 0) { return n; }
+        n = n + 1;
+        store64(&_brd_nbt + c * 8, n);
+        store64(&_brd_btype + c * 8, 0);
+        store64(&_brd_bprev + c * 8, 1);
+        store64(&_brd_blen + c * 8, BRD_BLEN_NEVER);
+        if (n >= 2) {
+            var r = _brd_read_code(n + 2, ws + BRD_WS_TAB_BT + c * 1264, 632);
+            if (r < 0) { return r; }
+            var bc = ws + BRD_WS_TAB_BC + c * 792;
+            r = _brd_read_code(26, bc, 396);
+            if (r < 0) { return r; }
+            var k = _brd_sym(bc);
+            if (k < 0) { return k; }
+            var bl = load64(&_brd_blut + k * 8);
+            var x = _brd_bits((bl >> 16) & 31);
+            if (x < 0) { return x; }
+            store64(&_brd_blen + c * 8, (bl & 65535) + x);
+        }
+        c = c + 1;
+    }
+    var v = _brd_bits(6);
+    if (v < 0) { return v; }
+    _brd_npostfix = v & 3;
+    _brd_ndirect = (v >> 2) << _brd_npostfix;
+    var nl = load64(&_brd_nbt);
+    var i = 0;
+    while (i < nl) {
+        var m = _brd_bits(2);
+        if (m < 0) { return m; }
+        store8(ws + BRD_WS_CMODE + i, m);
+        i = i + 1;
+    }
+    var nt = _brd_read_cmap(nl << 6, ws + BRD_WS_CMAP_L);
+    if (nt < 0) { return nt; }
+    _brd_ntrees_l = nt;
+    nt = _brd_read_cmap(load64(&_brd_nbt + 16) << 2, ws + BRD_WS_CMAP_D);
+    if (nt < 0) { return nt; }
+    _brd_ntrees_d = nt;
+    var g = _brd_read_group(256, _brd_ntrees_l, ws + BRD_WS_TAB_L, 161792, ws + BRD_WS_HT_L);
+    if (g < 0) { return g; }
+    g = _brd_read_group(704, load64(&_brd_nbt + 8), ws + BRD_WS_TAB_I, 276480, ws + BRD_WS_HT_I);
+    if (g < 0) { return g; }
+    g = _brd_read_group(16 + _brd_ndirect + (48 << _brd_npostfix), _brd_ntrees_d, ws + BRD_WS_TAB_D,
+      229376, ws + BRD_WS_HT_D);
+    if (g < 0) { return g; }
+    _brd_dlut(_brd_npostfix, _brd_ndirect);
+    return 0;
+}
+
+# ============================ command loop ============================
+
+# LZ77 copy of len bytes from dist back, with 1 <= dist <= pos and len <= the unwritten part of MLEN
+# (RFC 7932 §4 / §9.3: forward-copy semantics, so an overlapping copy repeats the last dist bytes).
+# dist >= 8 moves 8 bytes at a time: a word's source ends at or before its destination, and later
+# words may read earlier ones, which is exactly forward-copy order; for len >= 8 the last partial
+# word is one store ending at pos + len (its source ends at or before the first unwritten byte, and
+# the bytes it rewrites get their own values). dist == 1 is a byte fill. Every store stays inside
+# [pos, pos + len): no slack write into the caller's buffer.
+fn _brd_copy(pos, dist, len): i64 {
+    var d = _brd_out + pos;
+    var end = d + len;
+    if (dist >= 8) {
+        if (len >= 8) {
+            while (d + 8 <= end) {
+                store64(d, load64(d - dist));
+                d = d + 8;
+            }
+            if (d < end) {                           # tail: the last word of the copy, ending at end;
+                store64(end - 8, load64(end - 8 - dist));   # its bytes before d get their own values again
+            }
+            return 0;
+        }
+    } else {
+        if (dist == 1) {
+            var w = load8(d - 1) * 0x0101010101010101;
+            while (d + 8 <= end) {
+                store64(d, w);
+                d = d + 8;
+            }
+        }
+    }
+    while (d < end) {
+        store8(d, load8(d - dist));
+        d = d + 1;
+    }
+    return 0;
+}
+
+# RFC 7932 §8 Ferment: upper-case the UTF-8 character at p, where n >= 1 bytes of the transformed
+# word remain from p. Returns the character's byte count (1..3). Bounded by n: never touches a byte
+# past the word (C ToUpperCase may XOR up to 2 bytes beyond it; the visible output is identical).
+fn _brd_ferment(p, n): i64 {
+    var c = load8(p);
+    if (c < 192) {
+        if (c >= 97 && c <= 122) { store8(p, c ^ 32); }
+        return 1;
+    }
+    if (c < 224) {
+        if (n > 1) { store8(p + 1, load8(p + 1) ^ 32); }
+        return 2;
+    }
+    if (n > 2) { store8(p + 2, load8(p + 2) ^ 5); }
+    return 3;
+}
+
+# Static dictionary reference (RFC 7932 §8, Appendix B): copy length len (4..24) and address =
+# distance - max_distance - 1 select word addr & (2^NDBITS[len] - 1) of that length and transform
+# addr >> NDBITS[len] (< 121). Writes prefix + transformed word + suffix (0..37 bytes) at _brd_pos
+# and returns the count, or 0 - ERR_* before writing anything: a length outside 4..24 or a transform
+# id >= 121 is ERR_MATCH_OUT_OF_RANGE, more than rem (the unwritten part of MLEN) is ERR_CORRUPT_DATA,
+# and a dictionary literal that fails its one-time FNV-1a self-check is ERR_CHECKSUM_MISMATCH. Does
+# not advance _brd_pos and never touches the distance ring (the caller owns both).
+fn _brd_dict(len, addr, rem): i64 {
+    if (len < 4 || len > 24) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+    if (_brd_dict_ok == 0) {                         # once per process: 122,784 bytes, ~0.2 ms
+        _brd_dict_ok = 0 - 1;
+        if (_brotli_dict_verify(_brd_dict_addr) == 1) { _brd_dict_ok = 1; }
+    }
+    if (_brd_dict_ok < 0) { return 0 - ERR_CHECKSUM_MISMATCH; }
+    var nd = load64(&_brd_ndbits + (len << 3));
+    var tid = addr >> nd;
+    if (tid >= BRD_NUM_TRANSFORMS) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+    var word = _brd_dict_addr + load64(&_brd_doff + (len << 3)) + (addr & ((1 << nd) - 1)) * len;
+    var tr = &_brd_tr + tid * 3;
+    var pfx = &_brd_affix + load64(&_brd_affix_off + (load8(tr) << 3));
+    var typ = load8(tr + 1);
+    var sfx = &_brd_affix + load64(&_brd_affix_off + (load8(tr + 2) << 3));
+    var plen = load8(pfx);
+    var slen = load8(sfx);
+    var skip = 0;
+    var wl = len;
+    if (typ >= 1 && typ <= 9) { wl = len - typ; }    # OmitLast1..9
+    if (typ >= 12) {                                 # OmitFirst1..9
+        skip = typ - 11;
+        wl = len - skip;
+    }
+    if (wl < 0) { wl = 0; }
+    var total = plen + wl + slen;
+    if (total > rem) { return 0 - ERR_CORRUPT_DATA; }
+    var d = _brd_out + _brd_pos;
+    var i = 0;
+    while (i < plen) {
+        store8(d + i, load8(pfx + 1 + i));
+        i = i + 1;
+    }
+    var w = d + plen;
+    i = 0;
+    while (i < wl) {
+        store8(w + i, load8(word + skip + i));
+        i = i + 1;
+    }
+    if (typ == 10 && wl > 0) { _brd_ferment(w, wl); }     # UppercaseFirst
+    if (typ == 11) {                                      # UppercaseAll
+        i = 0;
+        while (i < wl) { i = i + _brd_ferment(w + i, wl - i); }
+    }
+    var s = w + wl;
+    i = 0;
+    while (i < slen) {
+        store8(s + i, load8(sfx + 1 + i));
+        i = i + 1;
+    }
+    return total;
+}
+
+# The literal tree of a block type whose 64 context-map entries (at slice) all name one tree, or 0
+# when they differ (tree addresses are workspace addresses, never 0). One 8-word compare.
+fn _brd_triv_tree(htl, slice): i64 {
+    var w = load8(slice) * 0x0101010101010101;
+    var k = 0;
+    while (k < 64) {
+        if (load64(slice + k) != w) { return 0; }
+        k = k + 8;
+    }
+    return load64(htl + (load8(slice) << 3));
+}
+
+# Compressed meta-block body: the command loop (RFC 7932 §5, §7, §9.3; decode.c
+# ProcessCommandsInternal), after _brd_mb_header. Each command: an insert-and-copy symbol from the
+# current I tree (insert extra bits before copy extra bits), ILEN literals through the literal
+# context map of the current L block type, then - unless MLEN is reached - a distance: implicit
+# (last distance; no D block switch and no D count decrement, errata 6977), a short code 0..15 into
+# the ring of the last 4 distances, or a direct / postfix code via the distance LUT. A distance
+# beyond min(output so far, window) is a static dictionary reference. Only an LZ copy with a
+# non-zero explicit distance code pushes the ring. rem is the unwritten part of MLEN; every write
+# is checked against it first (the header already bounded _brd_pos + MLEN by dst_cap and the
+# ceiling). Returns 0 or 0 - ERR_*.
+fn _brd_mb_body(mlen): i64 {
+    var ws = _brd_ws;
+    var out = _brd_out;
+    var htl = ws + BRD_WS_HT_L;
+    var htd = ws + BRD_WS_HT_D;
+    var dlut = ws + BRD_WS_DLUT;
+    var cmd_tab = load64(ws + BRD_WS_HT_I);         # block types start at 0 in every meta-block
+    var lit_slice = ws + BRD_WS_CMAP_L;
+    var lut = &_brd_ctx + (load8(ws + BRD_WS_CMODE) << 9);
+    var dist_slice = ws + BRD_WS_CMAP_D;
+    var ltab = _brd_triv_tree(htl, lit_slice);
+    var rem = mlen;
+    while (rem > 0) {
+        var pos0 = _brd_pos;                         # liveness guard inputs
+        var bit0 = (_brd_ip - _brd_src) * 8 - _brd_nb;
+        # ---- insert-and-copy length code ----
+        if (load64(&_brd_blen + 8) == 0) {
+            var ti = _brd_block_switch(1);
+            if (ti < 0) { return ti; }
+            cmd_tab = load64(ws + BRD_WS_HT_I + (ti << 3));
+        }
+        store64(&_brd_blen + 8, load64(&_brd_blen + 8) - 1);
+        var sym = _brd_sym(cmd_tab);
+        if (sym < 0) { return sym; }
+        var e = load64(&_brd_cmd + (sym << 3));
+        var nxi = (e >> 32) & 31;                    # insert then copy extra bits: one fill for
+        var nxc = (e >> 40) & 31;                    # both (<= 24 + 24 bits; a fill gives >= 56)
+        if (_brd_nb < nxi + nxc) {
+            _brd_fill();
+            if (_brd_nb < nxi + nxc) { return 0 - ERR_CORRUPT_DATA; }
+        }
+        var acx = _brd_acc;
+        var ilen = (e & 65535) + (acx & ((1 << nxi) - 1));
+        var clen = ((e >> 16) & 4095) + ((acx >> nxi) & ((1 << nxc) - 1));
+        _brd_acc = acx >> (nxi + nxc);
+        _brd_nb = _brd_nb - (nxi + nxc);
+        if (ilen > rem) { return 0 - ERR_CORRUPT_DATA; }
+        # ---- literals (hot loop: inline symbol decode, no calls but the rare block switch) ----
+        # Runs of literals inside one literal block: the block count is loaded and charged once
+        # per run. When the block type's 64 context-map entries all name one tree (ltab != 0) the
+        # run skips the context computation and reloads p1 / p2 from the output after it.
+        if (ilen > 0) {
+            var pos = _brd_pos;
+            var lend = pos + ilen;
+            var p1 = 0;                              # the last two output bytes, 0 before the start
+            var p2 = 0;
+            if (pos >= 1) { p1 = load8(out + pos - 1); }
+            if (pos >= 2) { p2 = load8(out + pos - 2); }
+            while (pos < lend) {
+                var bl = load64(&_brd_blen);
+                if (bl == 0) {
+                    var tl = _brd_block_switch(0);
+                    if (tl < 0) { return tl; }
+                    lit_slice = ws + BRD_WS_CMAP_L + (tl << 6);
+                    lut = &_brd_ctx + (load8(ws + BRD_WS_CMODE + tl) << 9);
+                    ltab = _brd_triv_tree(htl, lit_slice);
+                    bl = load64(&_brd_blen);         # >= 1 after a switch
+                }
+                var rend = lend;
+                if (lend - pos > bl) { rend = pos + bl; }
+                store64(&_brd_blen, bl - (rend - pos));
+                if (ltab != 0) {
+                    while (pos < rend) {
+                        if (_brd_nb < 15) { _brd_fill(); }
+                        var acc1 = _brd_acc;
+                        var en1 = load16(ltab + ((acc1 & 255) << 1));
+                        var nbit1 = en1 >> 12;
+                        if (nbit1 > 8) {
+                            en1 = load16(ltab + (((en1 & 4095) + ((acc1 >> 8) & ((1 << (nbit1 - 8)) - 1))) << 1));
+                            nbit1 = 8 + (en1 >> 12);
+                        }
+                        if (nbit1 > _brd_nb) { return 0 - ERR_CORRUPT_DATA; }
+                        _brd_acc = acc1 >> nbit1;
+                        _brd_nb = _brd_nb - nbit1;
+                        store8(out + pos, en1 & 4095);
+                        pos = pos + 1;
+                    }
+                    p1 = load8(out + pos - 1);
+                    p2 = 0;
+                    if (pos >= 2) { p2 = load8(out + pos - 2); }
+                } else {
+                    while (pos < rend) {
+                        var tab = load64(htl + (load8(lit_slice + (load8(lut + p1) | load8(lut + 256 + p2))) << 3));
+                        if (_brd_nb < 15) { _brd_fill(); }
+                        var acc = _brd_acc;
+                        var en = load16(tab + ((acc & 255) << 1));
+                        var nbit = en >> 12;
+                        if (nbit > 8) {
+                            en = load16(tab + (((en & 4095) + ((acc >> 8) & ((1 << (nbit - 8)) - 1))) << 1));
+                            nbit = 8 + (en >> 12);
+                        }
+                        if (nbit > _brd_nb) { return 0 - ERR_CORRUPT_DATA; }
+                        _brd_acc = acc >> nbit;
+                        _brd_nb = _brd_nb - nbit;
+                        p2 = p1;
+                        p1 = en & 4095;
+                        store8(out + pos, p1);
+                        pos = pos + 1;
+                    }
+                }
+            }
+            _brd_pos = pos;
+            rem = rem - ilen;
+            if (rem == 0) { break; }                 # MLEN reached: copy length ignored, no distance
+        }
+        # ---- distance ----
+        var dist = _brd_r0;
+        var dcode = 0 - 1;                           # -1: implicit distance
+        if (((e >> 50) & 1) == 0) {
+            if (load64(&_brd_blen + 16) == 0) {
+                var td = _brd_block_switch(2);
+                if (td < 0) { return td; }
+                dist_slice = ws + BRD_WS_CMAP_D + (td << 2);
+            }
+            store64(&_brd_blen + 16, load64(&_brd_blen + 16) - 1);
+            dcode = _brd_sym(load64(htd + (load8(dist_slice + ((e >> 48) & 3)) << 3)));
+            if (dcode < 0) { return dcode; }
+            if (dcode < 16) {
+                if (dcode < 4) {
+                    if (dcode == 1) { dist = _brd_r1; }
+                    if (dcode == 2) { dist = _brd_r2; }
+                    if (dcode == 3) { dist = _brd_r3; }
+                } else {
+                    var sb = dcode - 4;
+                    if (dcode >= 10) {
+                        dist = _brd_r1;
+                        sb = dcode - 10;
+                    }
+                    dist = dist + ((BRD_SHORT_DELTA >> (sb << 2)) & 15) - 3;
+                }
+                if (dist <= 0) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+            } else {
+                var de = load64(dlut + (dcode << 3));
+                var nxd = de >> 32;                  # inline _brd_bits: 0..24 extra bits
+                if (_brd_nb < nxd) {
+                    _brd_fill();
+                    if (_brd_nb < nxd) { return 0 - ERR_CORRUPT_DATA; }
+                }
+                var xd = _brd_acc & ((1 << nxd) - 1);
+                _brd_acc = _brd_acc >> nxd;
+                _brd_nb = _brd_nb - nxd;
+                dist = (de & 0xFFFFFFFF) + (xd << _brd_npostfix);
+            }
+        }
+        var maxd = _brd_wmax;
+        if (_brd_pos < maxd) { maxd = _brd_pos; }
+        if (dist > maxd) {                           # static dictionary reference (RFC 7932 §8)
+            var dn = _brd_dict(clen, dist - maxd - 1, rem);
+            if (dn < 0) { return dn; }
+            _brd_pos = _brd_pos + dn;                # the ring is NOT updated (decode.c 2190)
+            rem = rem - dn;
+        } else {
+            if (clen > rem) { return 0 - ERR_CORRUPT_DATA; }
+            _brd_copy(_brd_pos, dist, clen);
+            if (dcode > 0) {                         # code 0 and implicit distances do not push
+                _brd_r3 = _brd_r2;
+                _brd_r2 = _brd_r1;
+                _brd_r1 = _brd_r0;
+                _brd_r0 = dist;
+            }
+            _brd_pos = _brd_pos + clen;
+            rem = rem - clen;
+        }
+        if (_brd_pos == pos0 && (_brd_ip - _brd_src) * 8 - _brd_nb == bit0) {
+            return 0 - ERR_CORRUPT_DATA;             # liveness guard: no output, no input (unreachable)
+        }
+    }
+    return 0;
+}
+
+# ============================ public API ============================
+
+# Unlocked body; callers hold _sankoch_mtx (lib.cyr decompress()). out_max: 0 = DECOMPRESS_MAX_OUTPUT.
+# Returns bytes written, or 0 - ERR_*.
+fn _brotli_decompress_inner(src, src_len, dst, dst_cap, out_max): i64 {
+    return _brd_decode(src, src_len, dst, dst_cap, out_max, 0);
+}
+
+# The frame loop. header_only = 1 is for tests/tcyr/brotli_decompress.tcyr only (T10): return 0
+# once the first compressed meta-block header has parsed. No public entry passes anything but 0,
+# so no global write can turn a decode into an empty success.
+fn _brd_decode(src, src_len, dst, dst_cap, out_max, header_only): i64 {
+    if (src_len < 1 || src == 0) { return 0 - ERR_INVALID_INPUT; }
+    if (dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
+    if (dst == 0 && dst_cap > 0) { return 0 - ERR_INVALID_INPUT; }
+    _brd_init_tables();
+    _brd_reader_init(src, src_len);
+    _brd_out = dst;
+    _brd_pos = 0;
+    _brd_cap = dst_cap;
+    _brd_omax = out_max;
+    if (out_max == 0) { _brd_omax = DECOMPRESS_MAX_OUTPUT; }
+    _brd_r0 = 4;
+    _brd_r1 = 11;
+    _brd_r2 = 15;
+    _brd_r3 = 16;
+    var w = _brd_read_wbits();
+    if (w < 0) { return w; }
+    var last = 0;
+    while (last == 0) {
+        last = _brd_bits(1);
+        if (last < 0) { return last; }
+        if (last == 1) {
+            var empty = _brd_bits(1);
+            if (empty < 0) { return empty; }
+            if (empty == 1) { break; }                   # ISLASTEMPTY
+        }
+        var mn = _brd_bits(2);
+        if (mn < 0) { return mn; }
+        if (mn == 3) {                                   # MNIBBLES = 0: metadata
+            var md = _brd_metadata();
+            if (md < 0) { return md; }
+            continue;                                    # an ISLAST metadata block ends the loop
+        }
+        var nnib = mn + 4;
+        var mlen = 0;
+        var i = 0;
+        while (i < nnib) {
+            var v = _brd_bits(4);
+            if (v < 0) { return v; }
+            if (i == nnib - 1 && nnib > 4 && v == 0) { return 0 - ERR_CORRUPT_DATA; }   # exuberant
+            mlen = mlen | (v << (4 * i));
+            i = i + 1;
+        }
+        mlen = mlen + 1;                                 # 1 .. 16,777,216
+        var unc = 0;
+        if (last == 0) {
+            unc = _brd_bits(1);
+            if (unc < 0) { return unc; }
+        }
+        # Output bound, once per meta-block: every write inside it is bounded by MLEN. The tighter
+        # bound reports first, as zlib's per-symbol checks do: a ceiling below dst_cap is
+        # ERR_OUTPUT_LIMIT, so a caller that grows dst on ERR_BUFFER_TOO_SMALL never retries in vain.
+        if (_brd_omax < _brd_cap && _brd_pos + mlen > _brd_omax) { return 0 - ERR_OUTPUT_LIMIT; }
+        if (_brd_pos + mlen > _brd_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
+        if (_brd_pos + mlen > _brd_omax) { return 0 - ERR_OUTPUT_LIMIT; }
+        if (unc == 1) {
+            var ur = _brd_uncompressed(mlen);
+            if (ur < 0) { return ur; }
+            continue;
+        }
+        var wr = _brd_ws_ensure();
+        if (wr < 0) { return wr; }
+        var hr = _brd_mb_header();
+        if (hr < 0) { return hr; }
+        if (header_only == 1) { return 0; }             # test-only: stop after the first header
+        var br = _brd_mb_body(mlen);
+        if (br < 0) { return br; }
+    }
+    var pr = _brd_align();                               # final padding must be zero
+    if (pr < 0) { return pr; }
+    if (_brd_byte_pos() != _brd_end) { return 0 - ERR_CORRUPT_DATA; }   # trailing bytes
+    return _brd_pos;
+}
+
+# Decompress one complete RFC 7932 stream into dst[0..dst_cap). Returns bytes written, or
+# 0 - ERR_*. Output is bounded by dst_cap AND the 16 MiB DECOMPRESS_MAX_OUTPUT ceiling; exceeding
+# either fails closed (never a truncated success). The whole of src must be exactly one stream
+# (trailing bytes are ERR_CORRUPT_DATA). On any error dst[0..dst_cap) may hold partial output.
+fn brotli_decompress(src, src_len, dst, dst_cap): i64 {
+    _sankoch_lock();
+    var r = _brotli_decompress_inner(src, src_len, dst, dst_cap, 0);
+    _sankoch_unlock();
+    return r;
+}
+
+# Output-capped form (WOFF2: the caller knows the exact decoded size). max_output is an absolute
+# byte count, clamped to dst_cap; it may exceed 16 MiB. Same argument rules as
+# zlib_decompress_capped: max_output < 1, dst_cap < 1 or src_len < 0 is ERR_INVALID_INPUT.
+fn brotli_decompress_capped(src, src_len, dst, dst_cap, max_output): i64 {
+    if (max_output < 1 || dst_cap < 1 || src_len < 0) { return 0 - ERR_INVALID_INPUT; }
+    if (max_output > dst_cap) { max_output = dst_cap; }
+    _sankoch_lock();
+    var r = _brotli_decompress_inner(src, src_len, dst, dst_cap, max_output);
+    _sankoch_unlock();
+    return r;
+}
+
+# Arena-reset hook (2.8.0). The workspace slab is the module's only memoized arena pointer;
+# every table address and scratch pointer is re-derived from it per meta-block. The BSS tables,
+# _brd_inited, _brd_dict_addr and _brd_dict_ok are not arena memory and stay valid.
+fn _brotli_reset_tables(): i64 {
+    _brd_ws = 0;
+    return 0;
+}

@@ -2941,3 +2941,36 @@ fn deflate_enc_finish(ctx): i64 {
     _sankoch_unlock();
     return total;
 }
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# ---------------------------------------------------------------------------
+fn _deflate_reset_tables(): i64 {
+    # Stateful dynamic-header decode workspace.
+    _ddec_cl_lens = 0; _ddec_all_lens = 0; _ddec_cl_order = 0;
+    # Fixed-tree encode tables + the length/distance code lookups (flag + pointer).
+    _deflate_enc_fixed_built = 0;
+    _deflate_enc_lit_codes = 0; _deflate_enc_lit_lens = 0;
+    _deflate_enc_dist_codes = 0; _deflate_enc_dist_lens = 0;
+    _deflate_len_lookup_built = 0; _deflate_len_lookup = 0;
+    _deflate_dist_lookup_built = 0; _deflate_dist_lookup = 0;
+    # Dynamic-block encode workspace (guarded by _dyn_sym_buf / _dyn_lit_freq / _dh_ws).
+    _dh_ws = 0;
+    _dyn_sym_buf = 0;
+    _dyn_lit_freq = 0; _dyn_dist_freq = 0;
+    _dyn_opt_lit_lens = 0; _dyn_opt_dist_lens = 0;
+    _dyn_opt_lit_codes = 0; _dyn_opt_dist_codes = 0;
+    _dyn_lit_fast_tmp = 0; _dyn_dist_fast_tmp = 0;
+    # 2.7.9 fixed-vs-dynamic chooser. `_dyn_cost_bw` must be cleared with its
+    # buffer: the lazy-init guard keys on `_dyn_cost_buf`, so a reset that
+    # zeroed only one of the pair would leave `_dyn_header_bits` writing
+    # through a stale bitwriter — which is exactly how it was found (the
+    # detect_error OOM sweep segfaulted).
+    _dyn_cost_buf = 0; _dyn_cost_bw = 0;
+    return 0;
+}

@@ -2109,3 +2109,28 @@ fn xz_compress(src, src_len, dst, dst_cap): i64 {
     _sankoch_unlock();
     return r;
 }
+
+# ---------------------------------------------------------------------------
+# Arena-reset hook (2.8.0). Zeroes exactly the lazy globals THIS module memoizes —
+# every arena pointer, and every "built/ready" flag that gates one, cleared as a
+# set — so the next call rebuilds from scratch. Called from the profile's
+# `_sankoch_reset_tables` (see the registration rule in src/runtime.cyr) when
+# `_sankoch_arena_guard` detects an `alloc_reset()`, and by the OOM sweep.
+# Caller-owned per-call state (contexts, cursors, dst pointers) is NOT touched.
+# ---------------------------------------------------------------------------
+fn _xz_reset_tables(): i64 {
+    # Decoder + encoder probability table, encoder chunk scratch.
+    _xz_probs = 0; _xze_tmp = 0;
+    # Price table + block-DP / match / op-stack scratch, gated by `_xze_dp_ready`.
+    _xze_dp_ready = 0; _xze_prices = 0;
+    _xze_oc = 0; _xze_os = 0; _xze_o0 = 0; _xze_o1 = 0; _xze_o2 = 0; _xze_o3 = 0;
+    _xze_olen = 0; _xze_okind = 0; _xze_odist = 0;
+    _xze_stk_len = 0; _xze_stk_kind = 0; _xze_stk_dist = 0;
+    _xze_ml = 0; _xze_md = 0; _xze_lpc = 0;
+    # BT4 match-finder tables, gated by `_xzbt_ready`. MISSED by the 2.7.10 list:
+    # after an alloc_reset() the next xz_compress wrote its 8.8 MB tree through
+    # whoever owned the old addresses — 229,370 words (1.8 MB) of a caller's
+    # buffer measured in tests/tcyr/arena_reset.tcyr against 2.7.15.
+    _xzbt_ready = 0; _xzbt_son = 0; _xzbt_head4 = 0; _xzbt_head3 = 0;
+    return 0;
+}

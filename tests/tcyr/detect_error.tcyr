@@ -229,6 +229,80 @@ fn test_oom_decompress_sweep() {
     return 0;
 }
 
+# 2.8.0: Brotli decode. brotli 1.2.0 `-q 11 -w 22` of the profile-link-gate payload
+# (75 B -> 332 B; compressed meta-block with a literal context map + dictionary refs),
+# as hex text so the literal stays NUL-free.
+var OOM_BR_HEX1 = "1b4b01408d946ee62210b661aa0b49ce6f5939a068b09c0a7b830d38602f817df15168f09095";
+var OOM_BR_HEX2 = "2a33ed9139d6d8b92390852f38ee8f94935a5f8ae510fbcda6ff281b5269639d0f3109cc00";
+var OOM_BR_TEXT = "sankoch profile link gate: the quick brown fox jumps over the lazy dog 0123456789. ";
+
+fn _oom_br_nib(c): i64 {
+    if (c >= 97) { return c - 87; }
+    return c - 48;
+}
+
+# 1 when `out` holds exactly the 332-byte payload.
+fn _oom_br_exact(r, out): i64 {
+    var tl = strlen(OOM_BR_TEXT);
+    if (r != tl * 4) { return 0; }
+    var i = 0;
+    while (i < tl * 4) {
+        if (load8(out + i) != load8(OOM_BR_TEXT + (i % tl))) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# The decoder's only allocation is its workspace slab, so the sweep must not pass
+# vacuously: fault #0 must surface as exactly -ERR_OOM from every entry point, the
+# unfaulted retry (no reset) must be exact, and later fault indices never fire.
+fn _oom_brotli_path(entry, name): i64 {
+    var n1 = strlen(OOM_BR_HEX1) / 2;
+    var n = n1 + strlen(OOM_BR_HEX2) / 2;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        var hx = OOM_BR_HEX1 + i * 2;
+        if (i >= n1) { hx = OOM_BR_HEX2 + (i - n1) * 2; }
+        store8(src + i, (_oom_br_nib(load8(hx)) << 4) | _oom_br_nib(load8(hx + 1)));
+        i = i + 1;
+    }
+    var out = alloc(400);
+    var k = 0;
+    while (k < 5) {
+        _sankoch_reset_tables();
+        assert_eq(_brd_ws, 0, name);
+        _sankoch_alloc_set_fail_at(k);
+        var r = 0;
+        if (entry == 0) { r = brotli_decompress(src, n, out, 400); }
+        if (entry == 1) { r = brotli_decompress_capped(src, n, out, 400, 400); }
+        if (entry == 2) { r = decompress(FORMAT_BROTLI, src, n, out, 400); }
+        _sankoch_alloc_set_fail_at(0 - 1);
+        if (k == 0) {
+            assert_eq(r, 0 - ERR_OOM, name);
+            assert_eq(_brd_ws, 0, name);
+            var r2 = 0;
+            if (entry == 0) { r2 = brotli_decompress(src, n, out, 400); }
+            if (entry == 1) { r2 = brotli_decompress_capped(src, n, out, 400, 400); }
+            if (entry == 2) { r2 = decompress(FORMAT_BROTLI, src, n, out, 400); }
+            assert_eq(_oom_br_exact(r2, out), 1, name);
+        } else {
+            assert_eq(_oom_br_exact(r, out), 1, name);
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn test_oom_brotli_decompress_sweep() {
+    _oom_brotli_path(0, "oom brotli_decompress sweep");
+    _oom_brotli_path(1, "oom brotli_decompress_capped sweep");
+    _oom_brotli_path(2, "oom decompress(FORMAT_BROTLI) sweep");
+    assert_eq(compress(FORMAT_BROTLI, OOM_BR_TEXT, 83, _tb_large, 8192), 0 - ERR_UNSUPPORTED_FORMAT,
+      "compress(FORMAT_BROTLI) is unsupported (decode-only codec)");
+    return 0;
+}
+
 fn test_alloc_fail_deflate_ctx() {
     _alloc_fail_warmup();
     var dst = alloc(256);
@@ -469,6 +543,7 @@ fn main() {
     test_enc_dict_zero_len_equals_no_dict();
     test_oom_compress_sweep();
     test_oom_decompress_sweep();
+    test_oom_brotli_decompress_sweep();
     test_alloc_fail_deflate_ctx();
     test_alloc_fail_deflate_window();
     test_alloc_fail_deflate_bw();
