@@ -421,3 +421,24 @@ and the new different-type-co-linked-global error do not apply.
 After bumping: the usual `cyrius test` / `cyrius fuzz` / `cyrius distlib`, and if
 anyone is going to run the smokes on Windows, run `zstd_encode_smoke` twice with
 a smaller input the second time and confirm the output file shrinks.
+
+## Recorded by cyrius 6.6.19 (2026-10-06) — for the next cyrius pin move
+
+⛔ **Needs cyrius >= 6.6.19 — do not bump the pin until 6.6.19 is tagged and out.** Docs-only note from the cyrius
+6.6.19 lanes; each item is this repo's to adopt when it pins ≥ 6.6.19. Nothing here gates a cyrius release.
+
+- **`scripts/brotli_dict2cyr.py` and `scripts/nul-literal-gate.py` can retire for `[embed]`** (cyrius P2, shipped
+  in 6.6.19). sankoch is a FOLDED stdlib: the change lands here, then cyrius re-vendors `lib/sankoch.cyr`
+  byte-identical from the tag.
+  `[embed] NAME = "path"` in cyrius.cyml gives every compile `NAME()` (the file's bytes, NUL-terminated) and
+  `NAME_len()`, read from the file at build time — no generated `.cyr`, nothing to drift. Explicit entries only
+  (the `{dir, glob}` set form is refused by name). All embeds share cycc's 2 MiB string pool with the program's
+  own literals, and every binary of the project (test binaries too) carries every declared embed. Reference: the
+  cyrius guide's *Embedding data files: [embed]*, CHANGELOG [6.6.19] *Embed — P2*.
+  - The 122,784-byte RFC 7932 dictionary becomes `[embed] _brotli_dict_data = "data/brotli-dict.bin"` (the
+    accessor keeps its current name; `_brotli_dict_data_len()` comes with it), carried by `[lib] embed` and
+    `[lib.woff] embed` (and any profile that bundles `src/brotli_dict.cyr` today). The bytes are escaped `\xHH` by
+    cyrius, NULs included (safe since the 6.6.15 interning-window fix), on a `#skip-lint` line — the shape the
+    script writes.
+  - Stays yours: the NDBITS / offset tables and the pinned-FNV verify of the dictionary.
+  - `cyrius distlib --check` becomes the freshness gate for the dictionary bundle.
