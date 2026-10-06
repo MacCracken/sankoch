@@ -368,3 +368,56 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.6.4 at 2.8.0).
 ---
 
 *Last Updated: 2026-09-16 (**2.8.0 cut**: Brotli decoder + per-profile reset fix shipped; ladder re-cut to 2.8.1 Brotli encoder → 2.8.2 SIMD CRC-32 → 2.8.3 GPU texture → P(-1) closeout, with the Brotli decoder and the runtime reset seam added to the closeout scope; File Summary, test, fuzz and distlib figures re-counted.)*
+
+---
+
+## Moving the cyrius pin to 6.6.6
+
+**Current pin:** `cyrius = "6.6.4"` (`cyrius.cyml`).
+
+No source change needed. Two things are worth knowing before the bump, both small.
+
+**The library itself does no file I/O.** Every `src/*.cyr` module — the codecs,
+the bit readers/writers, `tar`, `zip`, `stream`, `runtime` — has zero `sys_open`
+/ `file_open` / `file_write_all` call sites. Compression runs on buffers the
+caller supplies, so the Windows `O_APPEND` / `O_TRUNC` data corruption 6.6.6 fixes
+cannot reach the shipped surface at all. That is the answer for every downstream
+consumer that vendors `dist/sankoch.cyr`.
+
+**The dev smoke programs are a different story, and they contradict the docs.**
+Six of them create-and-truncate an output file with the raw flag word `577`
+(`O_WRONLY|O_CREAT|O_TRUNC`):
+
+- `programs/brotli_smoke.cyr:41`, `programs/tar_smoke.cyr:101`,
+  `programs/zip_smoke.cyr:27`, `programs/zstd_smoke.cyr:42`,
+  `programs/zstd_encode_smoke.cyr:40`, `programs/deflate_flush_smoke.cyr:54`.
+
+Before 6.6.6 a PE build's `O_TRUNC` did not truncate, so a smoke run producing
+*shorter* output than a previous run left the old tail attached — which for a
+compressed stream means a file that decodes to garbage past the real end, and a
+smoke test that fails for a reason that has nothing to do with the codec.
+`docs/guides/getting-started.md:8` says "macOS / Windows are not supported", but
+`src/runtime.cyr:101` carries a live `#ifdef CYRIUS_TARGET_WIN` arm in the arena
+guard (alongside the macOS one), so sankoch does compile for PE. Those two
+statements disagree; worth reconciling one way or the other at some point, but it
+is not a blocker for this pin — 6.6.6 makes the smokes correct on PE either way.
+
+No `O_APPEND` anywhere in the repo outside vendored `lib/`.
+
+**Everything else 6.6.6 tightens was checked and is absent:** 0 structs (so
+neither the different-struct-copy error nor the by-value deep-copy change has a
+site), 0 `async fn`, 0 `operator` fns, 0 `ret2` / `rethi`, no SIMD intrinsics, one
+`: cstring` and it is a return type, not a param. No `var` inside a top-level
+block. No own `vec_*` definitions, so `assert.cyr`'s new transitive `vec.cyr`
+include cannot collide with the 30 assert call sites. No raw `SYS_STATFS`. `lib/`
+holds no symlinks and `cyrius.lock` is present and writable, so 6.6.6's fail-hard
+`cyrius deps` / `publish` is a no-op.
+
+One apparent global redeclaration is not one: `g_len` and `exit_code` each appear
+in several `programs/*_smoke.cyr` files, but those are separate entry points that
+are never co-linked, so 6.6.6's "a later redeclaration now wins everywhere" flip
+and the new different-type-co-linked-global error do not apply.
+
+After bumping: the usual `cyrius test` / `cyrius fuzz` / `cyrius distlib`, and if
+anyone is going to run the smokes on Windows, run `zstd_encode_smoke` twice with
+a smaller input the second time and confirm the output file shrinks.
