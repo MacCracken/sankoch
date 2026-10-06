@@ -1,0 +1,64 @@
+# sankoch — raw-include test: a profile bundle ([lib.zlib])
+#
+# Includes ONLY `dist/sankoch-zlib.cyr` plus the assert framework. Since cyrius
+# 6.6.18 the bundle opens with a compile-verified "# Requires" include block (the
+# leaves of dist/sankoch-zlib.deps: alloc, sync), so it compiles on its own. The
+# 2.8.0 bundle had no such block and this file did not compile against it:
+# `mutex_lock` / `mutex_unlock` undefined (leaf `sync` — lib/assert.cyr pulls
+# alloc but not sync). The bundle is included FIRST so the assert framework's
+# includes cannot supply what the bundle forgot. `cyrius test` auto-prepends
+# [deps] stdlib, which would hide a missing leaf, so CI also builds this file with
+# `cyrius build --no-deps`. One sankoch bundle per program: this file carries the
+# zlib profile only. Run with:
+#   cyrius test tests/tcyr/sankoch_zlib_raw_include.tcyr
+
+include "dist/sankoch-zlib.cyr"` alone compiles.
+# The 2.8.0 bundle had no such block: this file failed to compile against it
+# (the bundle's mutex/fnptr references had no definition in scope). The bundle
+# is included FIRST so the assert framework's own includes cannot supply what
+# the bundle forgot. Run with:
+#   cyrius test tests/tcyr/sankoch_zlib_raw_include.tcyr
+
+include "dist/sankoch-zlib.cyr"
+include "lib/assert.cyr"
+
+fn test_raw_include_crc32_check_value() {
+    # CRC-32 (IEEE) check value: crc32("123456789") = 0xCBF43926.
+    crc32_init_table();
+    var buf = alloc(9);
+    var i = 0;
+    while (i < 9) {
+        store8(buf + i, 49 + i);
+        i = i + 1;
+    }
+    assert(crc32(buf, 9) == 0xCBF43926, "raw include: crc32 check value");
+    return 0;
+}
+
+fn test_raw_include_zlib_roundtrip() {
+    var n = 64;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        store8(src + i, 97 + (i % 4));
+        i = i + 1;
+    }
+    var c = alloc(256);
+    var clen = zlib_compress(src, n, c, 256);
+    assert(clen > 0, "raw include: zlib_compress ok");
+    var d = alloc(n);
+    var dlen = zlib_decompress(c, clen, d, n);
+    assert(dlen == n, "raw include: zlib_decompress length");
+    assert(memeq(src, d, n) == 1, "raw include: zlib round-trip bytes");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    test_raw_include_crc32_check_value();
+    test_raw_include_zlib_roundtrip();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

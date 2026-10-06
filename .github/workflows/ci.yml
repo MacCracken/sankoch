@@ -206,6 +206,23 @@ jobs:
             cyrius test "$f"
           done
 
+      - name: Raw-include (bundles compile with no manifest prepend)
+        # `cyrius test` auto-prepends cyrius.cyml [deps] stdlib, which hides a
+        # bundle that is missing a stdlib leaf. Build every *_raw_include.tcyr
+        # with --no-deps so `include "dist/<bundle>.cyr"` must stand on the
+        # bundle's own requires block (cyrius 6.6.18+), then run it.
+        run: |
+          n=0
+          for f in tests/tcyr/*_raw_include.tcyr; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .tcyr)
+            echo "=== $f (--no-deps) ==="
+            cyrius build --no-deps "$f" "build/$name"
+            "build/$name"
+            n=$((n + 1))
+          done
+          [ "$n" -ge 2 ] || { echo "raw-include: expected >= 2 tests, ran $n"; exit 1; }
+
       - name: Fuzz
         # Round-trip + malformed-input harnesses. Each one calls the
         # compress/decompress path a few hundred times with varying

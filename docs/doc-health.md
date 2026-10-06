@@ -52,14 +52,14 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: Brotli decode row + API section, the 12-profile list, one bundle per program, architecture rows for `brotli*.cyr` / `reset_<profile>.cyr`. |
-| `CHANGELOG.md` | 2026-09-16 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.8.0] — 2026-09-16`. |
+| `CHANGELOG.md` | 2026-10-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.8.1] — 2026-10-06`. |
 | `CLAUDE.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: Goal + Brotli decode; architecture tree + `brotli.cyr` / generated `brotli_dict.cyr` / `reset_<profile>.cyr` / new scripts; Quick Start + brotli/woff distlib, link gate, brotli smoke; Key Constraints + reset registration, one bundle per program, NUL-literal rule; CI + link / dictionary / NUL gates. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: 2.8.x supported; 2026-09-16 review added to audit history. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-09-16 | ✅ Fresh | `2.8.0`. Single source of truth per the standards. |
-| `cyrius.cyml` | 2026-09-16 | ✅ Fresh | Toolchain pin `6.6.4`; `[lib.brotli]` + `[lib.woff]`; every alloc-bearing profile ends `runtime.cyr, reset_<name>.cyr`. |
+| `VERSION` | 2026-10-06 | ✅ Fresh | `2.8.1`. Single source of truth per the standards. |
+| `cyrius.cyml` | 2026-10-06 | ✅ Fresh | Toolchain pin `6.6.18` (2.8.1); `[lib.brotli]` + `[lib.woff]`; every alloc-bearing profile ends `runtime.cyr, reset_<name>.cyr`. |
 | `.gitignore` | 2026-09-16 | ✅ Fresh | `/dist/` contents ignored with all 12 committed bundles re-included (+ brotli, woff). |
 
 ---
@@ -69,7 +69,7 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `roadmap.md` | 2026-09-16 | ✅ Fresh | **2.8.0 cut**: status v2.8.0; 📌 notes and the Brotli backlog item removed; ladder 2.8.1 Brotli encoder → 2.8.2 SIMD CRC-32 → 2.8.3 GPU texture → P(-1) closeout (scope + Brotli decoder + reset seam); File Summary / distlib re-counted. |
-| `state.md` | 2026-09-16 | ✅ Fresh | **Current at v2.8.0** (source 18,503 / 33 files, 12 bundles, 27 suites / 4,500,520, fuzz 12,722 across 7 files; consumers + rekha). |
+| `state.md` | 2026-10-06 | ✅ Fresh | **Current at v2.8.1** (source 18,503 / 33 files, 12 bundles, 29 suites / 4,500,528, fuzz 12,722 across 7 files; consumers + rekha). |
 | `issues/archived/2026-08-23-bote-rfc7692-needs-public-sync-flush.md` | 2026-08-23 | 📦 Archive | Resolved by 2.7.9 (`deflate_enc_flush` + `deflate_enc_reset_context` + `deflate_dec_produced`). The resolution log records the ratio finding the fix surfaced — always-dynamic blocks made the newly-exposed flush +64 % over reference zlib until the chooser landed — and repeats the filer's own caveat that cyrius's `ws_server` handshake gap still blocks bote. |
 | `issues/archived/2026-09-15-profile-bundles-call-sankoch-reset-tables-outside-their-closure.md` | 2026-09-16 | 📦 Archive | Resolved by 2.8.0 (per-profile reset dispatch + link gate); Resolution section records what the filing missed. |
 | `proposals/archived/2026-09-15-brotli-decoder-for-woff2.md` | 2026-09-16 | 📦 Archive | Shipped in 2.8.0; What-shipped section maps needs 1–5 + deviations (`[lib.woff]`, full-bundle placement, trailing policy; encode → 2.8.1). |

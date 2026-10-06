@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-09-16 (**v2.8.0 cut — Brotli decoder + per-profile arena-reset fix.** Every alloc-bearing profile bundle had been unlinkable since 2.7.10 (rekha filing). Fixing it surfaced memoized globals the full bundle's reset also missed: xz BT4 229,370 caller words overwritten after `alloc_reset()`, zstd L9 712, zstd L6 14. It also surfaced unguarded unlocked builders, a stranded canary, and a reset that was dead code on AGNOS. All are fixed, and `scripts/profile-link-gate.sh` now proves every bundle links and runs. Brotli decode (RFC 7932) ships in the full bundle + `[lib.brotli]` + `[lib.woff]` for rekha's WOFF2. Toolchain 6.6.2 → 6.6.4. Source **16,471 → 18,503**; tests **4,500,520 across 27 suites**; fuzz +`fuzz_brotli` (5,013 inputs); **12 bundles**. The pre-release review (0 H · 4 M · 15 L · 4 I) was all fixed. Earlier refresh narratives live in CHANGELOG.)
+> **Last refresh**: 2026-10-06 (**v2.8.1 — cyrius 6.6.18 pin + dist/ regenerated.** No source change. The 6.6.18 distlib writes compile-verified sidecars (the base drops `assert`; every profile drops `assert` / `vec` / `syscalls` where it never used them) and opens every bundle with a `# Requires` include block, so `include "dist/<bundle>.cyr"` alone compiles. Two raw-include suites added, built in CI with `--no-deps`: tests **4,500,528 across 29 suites**. Earlier refresh narratives live in CHANGELOG.)
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,10 +14,10 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.8.0` — single source of truth. 2.8.0 = **Brotli decoder (RFC 7932, decode only) + the per-profile arena-reset fix + profile link gate**; see CHANGELOG.
-- **`cyrius.cyml [package].cyrius`**: `6.6.4` — toolchain pin. It was 6.6.2 at 2.7.15; 6.6.4 adds `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
-- **Tag**: `2.8.0` (bare semver, no `v` prefix)
-- **Released**: 2026-09-16
+- **`VERSION`**: `2.8.1` — single source of truth. 2.8.1 = **cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites**; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
+- **`cyrius.cyml [package].cyrius`**: `6.6.18` — toolchain pin. 6.6.18's distlib derives each `.deps` sidecar by compile-verify (no longer copied from `[deps] stdlib`) and writes the bundle's requires block. It was 6.6.4 at 2.8.0; 6.6.4 added `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0 → 6.6.18 at 2.8.1. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
+- **Tag**: `2.8.1` (bare semver, no `v` prefix)
+- **Released**: 2026-10-06
 
 ## Distribution
 
@@ -33,9 +33,10 @@ type: state
 
 ## Test totals
 
-`tests/tcyr/` holds **28 files**: **27 runnable suites** — per-codec ×
+`tests/tcyr/` holds **30 files**: **29 runnable suites** — per-codec ×
 direction, the `zip` container, and the cross-cutting `checksum`, `ratio_cap`,
-`detect_error`, `stream`, `git_object`, `arena_reset`, `output_cap` and `deep_huffman` suites — plus the shared
+`detect_error`, `stream`, `git_object`, `arena_reset`, `output_cap` and `deep_huffman` suites, and the two
+`*_raw_include` suites (2.8.1: a bundle included with nothing else; CI also builds them `--no-deps`) — plus the shared
 `_harness.tcyr`, which is not itself a suite. 2.8.0 added `brotli_decompress.tcyr`
 (4,554 assertions: tables, dictionary, prefix codes, the manifest corpus with guard-page
 exact-cap decodes, prefixes, bit flips, caps, transforms, adversarial IMTF), and grew
@@ -44,12 +45,12 @@ It reads `tests/data/brotli/` at runtime, so run it from the repo root.
 
 | Suite group                                   | Functions | Assertions |
 |-----------------------------------------------|----------:|-----------:|
-| `tests/tcyr/*.tcyr` (26 suites)               |       366 |  4,153,937 |
+| `tests/tcyr/*.tcyr` (28 suites)               |       370 |  4,153,945 |
 | `tests/tcyr/git_object.tcyr`                  |        10 |    346,583 |
-| **Total** (27 runnable suites)                |   **376** | **4,500,520** |
+| **Total** (29 runnable suites)                |   **380** | **4,500,528** |
 
 ⚠ **Counting basis (corrected at 2.7.12).** Sum only the summary lines carrying a
-`(N total)` suffix — one per runnable suite (27 at 2.8.0). The runner
+`(N total)` suffix — one per runnable suite (29 at 2.8.1). The runner
 then prints its own `N passed, 0 failed` line, which counts **files** (the
 suites plus `_harness.tcyr`), not assertions; folding it into the sum is what
 made every figure through 2.7.11 read **25 high** (`4,495,243` for a true
