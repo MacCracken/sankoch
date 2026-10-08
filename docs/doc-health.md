@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-09-16 (**2.8.0 cut — Brotli decoder + per-profile arena-reset fix.** Touched: CHANGELOG, VERSION, README, CLAUDE.md, SECURITY, state, roadmap (ladder re-cut: 2.8.1 Brotli encoder → 2.8.2 SIMD CRC-32 → 2.8.3 GPU texture → P(-1)), guides/cyrius-usage (stale 6.4.68 pin + old fmt semantics removed), sources/compression (+RFC 7932) + new `sources/brotli/`. New: ADR **0001** (the first ADR), architecture **003** (per-profile reset dispatch) + **004** (NUL-literal rule), 002 updated. Also new: audit `2026-09-16-2.8.0-brotli-and-reset.md` and benchmark `2026-09-16-2.8.0-brotli.md`. Archived: the profile-link issue (RESOLVED 2.8.0) and the Brotli proposal, in the new `proposals/archived/` (SHIPPED 2.8.0). Previous refresh narratives are in git history.)
+> **Last refresh**: 2026-10-08 (**2.8.3 — the cyrius W2 pin release (6.7.5): `[embed]` dictionary, `loop`, `const` knobs.** Touched: CHANGELOG, VERSION, cyrius.cyml, CLAUDE.md (architecture tree, rules, key constraints, CI gates), README (brotli_dict row, encoder release), state, roadmap (status line, ladder renumbered 2.8.4 / 2.8.5 / 2.8.6, 2.8.3 findings into the closeout scope, new 2.9.0 section, the stale 6.6.6 / 6.6.19 pin sections replaced by *Toolchain notes for the next pin move*, File Summary re-counted), guides/getting-started (platform line), guides/cyrius-usage (Python gates removed), sources/brotli/README, ADR 0001 (amended), architecture 001 (const knobs) and 004 (**retired**) + its index line. Removed: `scripts/brotli_dict2cyr.py`, `scripts/nul-literal-gate.py`. Previous: 2026-09-16, the 2.8.0 cut; earlier narratives are in git history.)
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -51,15 +51,15 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: Brotli decode row + API section, the 12-profile list, one bundle per program, architecture rows for `brotli*.cyr` / `reset_<profile>.cyr`. |
-| `CHANGELOG.md` | 2026-10-06 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.8.1] — 2026-10-06`. |
-| `CLAUDE.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: Goal + Brotli decode; architecture tree + `brotli.cyr` / generated `brotli_dict.cyr` / `reset_<profile>.cyr` / new scripts; Quick Start + brotli/woff distlib, link gate, brotli smoke; Key Constraints + reset registration, one bundle per program, NUL-literal rule; CI + link / dictionary / NUL gates. |
+| `README.md` | 2026-10-08 | ✅ Fresh | **2.8.3**: the `brotli_dict.cyr` row says the bytes are an `[embed]`; the Brotli encoder is 2.8.4. **2.8.0**: Brotli decode row + API section, the 12-profile list, one bundle per program. |
+| `CHANGELOG.md` | 2026-10-08 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.8.3] — 2026-10-08`. |
+| `CLAUDE.md` | 2026-10-08 | ✅ Fresh | **2.8.3**: `brotli_dict.cyr` is geometry + check (the bytes are `[embed]`); the generator / NUL-gate scripts, their rules and CI bullets replaced by the `[embed]` constraint and "No Python in CI". **2.8.0**: Goal + Brotli decode; reset registration; one bundle per program. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: 2.8.x supported; 2026-09-16 review added to audit history. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-10-08 | ✅ Fresh | `2.8.2`. Single source of truth per the standards. |
-| `cyrius.cyml` | 2026-10-06 | ✅ Fresh | Toolchain pin `6.6.18` (2.8.1); `[lib.brotli]` + `[lib.woff]`; every alloc-bearing profile ends `runtime.cyr, reset_<name>.cyr`. |
+| `VERSION` | 2026-10-08 | ✅ Fresh | `2.8.3`. Single source of truth per the standards. |
+| `cyrius.cyml` | 2026-10-08 | ✅ Fresh | Toolchain pin `6.7.5` (2.8.3); `[embed] _brotli_dict_bin` + `embed` on `[lib]` / `[lib.brotli]` / `[lib.woff]`; every alloc-bearing profile ends `runtime.cyr, reset_<name>.cyr`. |
 | `.gitignore` | 2026-09-16 | ✅ Fresh | `/dist/` contents ignored with all 12 committed bundles re-included (+ brotli, woff). |
 
 ---
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-09-16 | ✅ Fresh | **2.8.0 cut**: status v2.8.0; 📌 notes and the Brotli backlog item removed; ladder 2.8.1 Brotli encoder → 2.8.2 SIMD CRC-32 → 2.8.3 GPU texture → P(-1) closeout (scope + Brotli decoder + reset seam); File Summary / distlib re-counted. |
-| `state.md` | 2026-10-08 | ✅ Fresh | **Current at v2.8.2** (the `loop` rename); at v2.8.1 (source 18,503 / 33 files, 12 bundles, 29 suites / 4,500,528, fuzz 12,722 across 7 files; consumers + rekha). |
+| `roadmap.md` | 2026-10-08 | ✅ Fresh | **2.8.3 cut**: status v2.8.3; ladder renumbered (2.8.4 Brotli encoder → 2.8.5 SIMD CRC-32 → 2.8.6 GPU texture → P(-1) closeout); 2.8.3 findings (fuzz exit codes, backtrack coverage, `while (1)` sweep, stray test headers) in the closeout scope; new *Next minor (2.9.0)*; *Toolchain notes for the next pin move* (the `[embed]` owner-check blocker) replace the 6.6.6 / 6.6.19 sections; File Summary / distlib re-counted. |
+| `state.md` | 2026-10-08 | ✅ Fresh | **Current at v2.8.3** (pin 6.7.5; source 18,503 / 33 files, 12 bundles, 29 suites / 4,500,567, fuzz 12,722 across 7 files; recent-releases rows for 2.8.1–2.8.3). |
 | `issues/archived/2026-08-23-bote-rfc7692-needs-public-sync-flush.md` | 2026-08-23 | 📦 Archive | Resolved by 2.7.9 (`deflate_enc_flush` + `deflate_enc_reset_context` + `deflate_dec_produced`). The resolution log records the ratio finding the fix surfaced — always-dynamic blocks made the newly-exposed flush +64 % over reference zlib until the chooser landed — and repeats the filer's own caveat that cyrius's `ws_server` handshake gap still blocks bote. |
 | `issues/archived/2026-09-15-profile-bundles-call-sankoch-reset-tables-outside-their-closure.md` | 2026-09-16 | 📦 Archive | Resolved by 2.8.0 (per-profile reset dispatch + link gate); Resolution section records what the filing missed. |
 | `proposals/archived/2026-09-15-brotli-decoder-for-woff2.md` | 2026-09-16 | 📦 Archive | Shipped in 2.8.0; What-shipped section maps needs 1–5 + deviations (`[lib.woff]`, full-bundle placement, trailing policy; encode → 2.8.1). |
@@ -82,8 +82,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `getting-started.md` | 2026-05-23 | ✅ Fresh | **NEW 2026-05-23.** Five-minute clone-to-built path; companion to `cyrius-usage.md`. |
-| `cyrius-usage.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: brotli/woff profiles, `--list-profiles`, one bundle per program, link / NUL / dictionary gates; stale 6.4.68 pin and pre-6.5.35 fmt semantics replaced (per-file `--check`, exit code only). |
+| `getting-started.md` | 2026-10-08 | ✅ Fresh | **2.8.3**: the platform line says what CI covers (Linux x86_64 + aarch64 cross-build) and that the library compiles for PE / Mach-O; it had said macOS / Windows were not supported. NEW 2026-05-23. |
+| `cyrius-usage.md` | 2026-10-08 | ✅ Fresh | **2.8.3**: the two Python gate commands removed from *Quality gates*. **2.8.0**: brotli/woff profiles, `--list-profiles`, one bundle per program, link / NUL / dictionary gates; stale 6.4.68 pin and pre-6.5.35 fmt semantics replaced (per-file `--check`, exit code only). |
 
 ---
 
@@ -93,7 +93,7 @@ Also created: this file (`docs/doc-health.md`).
 |---|---|---|---|
 | `README.md` | 2026-05-23 | ✅ Fresh | **NEW 2026-05-23.** Conventions + index + candidate-ADR list (inline-checksum decision, streaming-decoder bridge decision) for future writes. |
 | `template.md` | 2026-05-23 | ✅ Fresh | **NEW 2026-05-23.** Standard 5-section ADR template. |
-| `0001-brotli-decoder-placement.md` | 2026-09-16 | ✅ Fresh | **NEW 2.8.0 — the first ADR.** Brotli decode in `[lib]` + `[lib.brotli]` + `[lib.woff]`, dictionary as a generated literal, trailing bytes rejected, measured DCE cost. |
+| `0001-brotli-decoder-placement.md` | 2026-10-08 | ✅ Fresh | **Amended 2.8.3**: the dictionary is an `[embed]` (accessor `_brotli_dict_bin`). **NEW 2.8.0 — the first ADR.** Brotli decode in `[lib]` + `[lib.brotli]` + `[lib.woff]`, dictionary as a generated literal, trailing bytes rejected, measured DCE cost. |
 
 One filed ADR (`0001`, 2.8.0). Older load-bearing decisions stay codified in `CLAUDE.md` and the audit history.
 
@@ -104,10 +104,10 @@ One filed ADR (`0001`, 2.8.0). Older load-bearing decisions stay codified in `CL
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-07-21 | ✅ Fresh | **NEW 2026-05-23.** Conventions + a list of candidate invariants for future notes (include-order, `[lib.core]` profile contract, mutex contract, `var buf[N]` byte sizing, bit-accumulator overpull). **2026-07-21**: now indexes the first filed note (001). |
-| `001-zstd-optimal-chain-cutoff.md` | 2026-07-21 | 🔵 Dated artifact | **NEW 2026-07-21 (2.7.5) — the first filed architecture note.** Why the L9 DP optimal parser's hash-chain walk (`_zo_getmatches`) needs a saturation cutoff: bail after `_zo_chain_cut` (128) consecutive non-improving candidates, but only once `best >= _zo_chain_gate` (32) — the length gate separates saturated duplicates (records) from useful depth (text / object code, which a gate-less cutoff regresses 4.5 %/10–30×). |
+| `001-zstd-optimal-chain-cutoff.md` | 2026-10-08 | 🔵 Dated artifact | **2.8.3**: the two knobs are `const`. **NEW 2026-07-21 (2.7.5) — the first filed architecture note.** Why the L9 DP optimal parser's hash-chain walk (`_zo_getmatches`) needs a saturation cutoff: bail after `_zo_chain_cut` (128) consecutive non-improving candidates, but only once `best >= _zo_chain_gate` (32) — the length gate separates saturated duplicates (records) from useful depth (text / object code, which a gate-less cutoff regresses 4.5 %/10–30×). |
 | `002-lazy-globals-and-alloc-reset.md` | 2026-09-16 | ✅ Fresh | 2.7.10 note; **2.8.0** updated where the guard lives (every target, unlocked builders, stranded canary, failed arm) and points the registration rule at 003. |
 | `003-per-profile-reset-dispatch.md` | 2026-09-16 | ✅ Fresh | **NEW 2.8.0.** Per-bundle `_sankoch_reset_tables`, the four-place registration rule, one bundle per program, why not `#ifdef`. |
-| `004-string-literal-nul-rule.md` | 2026-09-16 | ✅ Fresh | **NEW 2.8.0.** No NUL in string literals (cycc interning hazard); `brotli_dict.cyr` exempt; `scripts/nul-literal-gate.py`. |
+| `004-string-literal-nul-rule.md` | 2026-10-08 | 📦 Retired | **Retired 2.8.3** (pin past cyrius 6.6.15's interning fix; gate script and CI step deleted; the dictionary is an `[embed]`). Kept as the record; never renumber. NEW 2.8.0. |
 
 Four filed notes (`001`–`004`). Convention: promote an invariant from inline comment / CLAUDE.md to a numbered architecture note when it burns more than ~30 minutes of debugging time for a contributor.
 

@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.3] — 2026-10-08
+
+The cyrius W2 stdlib-wave release: the pin moves to **6.7.5**, and three 6.7.x features replace code
+they make unnecessary. **No public API change and no behaviour change**: the 47 `SIZE` lines of
+`cyrius bench` are identical to 2.8.2's, and 120 zstd compressions across levels 1–9 hash identically
+before and after. Folded back into the cyrius stdlib by the cyrius 6.7.6 refold.
+
+### Changed
+
+- **cyrius pin 6.6.18 → 6.7.5** (`cyrius.cyml`). The move alone needed no source change; the stdlib
+  `lib/` re-resolves from the toolchain (28 locked entries; `lib/` and `cyrius.lock` stay untracked).
+- **The Brotli dictionary is a `cyrius.cyml [embed]`** (cyrius ≥ 6.6.19) — the 6.6.19 filing in the
+  roadmap. `[embed] _brotli_dict_bin = "docs/sources/brotli/dictionary.bin"`: cyrius renders the
+  122,784 bytes (NUL-terminated) into every compile in this project and into each bundle whose
+  `[lib...] embed` lists the name — `[lib]`, `[lib.brotli]`, `[lib.woff]`, the three that carried the
+  literal before. `src/brotli_dict.cyr` keeps the NDBITS / DOFFSET geometry and the pinned FNV-1a
+  self-check (the decoder still verifies the bytes once per process and fails closed with
+  `ERR_CHECKSUM_MISMATCH`); it no longer holds the literal, so nothing generated is committed under
+  `src/`. CI's dist gate is now the dictionary's freshness check: a changed `dictionary.bin` is a
+  drifted bundle.
+  - **The accessor is renamed `_brotli_dict_data` → `_brotli_dict_bin`** (private; no caller outside
+    this repo). cyrius refuses an `[embed]` name that any leaf of the pinned stdlib declares, and the
+    6.7.5 stdlib's folded `lib/sankoch.cyr` (2.8.2) declares the old one.
+  - ⚠ **The same check will refuse this repo's own build once cyrius refolds 2.8.3**: the refolded
+    `lib/sankoch.cyr` declares `_brotli_dict_bin`. Measured by installing the 2.8.3 bundle as a
+    throwaway stdlib's `lib/sankoch.cyr`: `cyrius build src/lib.cyr` stops with `_brotli_dict_bin is
+    already declared by the stdlib leaf sankoch`. It is a cyrius-side fix (skip the leaf the project
+    itself folds), reported with this release; the pin must not move past 6.7.5 until it lands
+    (roadmap *Toolchain notes for the next pin move*).
+  - Every compile here now carries the dictionary, tests and programs included (cyrius `[embed]`
+    semantics). A build that also includes a bundle carrying it (three link-gate probes,
+    `sankoch_raw_include.tcyr`) warns `duplicate fn '_brotli_dict_bin'` and links the bundle's — the
+    later — definition; expected, and documented in `scripts/profile-link-gate.sh`.
+- **The optimal parser's backtrack walk is `loop { … break; }`** (cyrius 6.7.5) instead of the
+  `more` flag 2.8.2 renamed (`_zo_lz_parse`, `src/zstd.cyr`).
+- **The 11 private never-written knobs are `const`** (cyrius 6.7.2): `_ze_maxwin`, `_zo_optlevel`,
+  `_zo_suff`, `_zo_chain_cut`, `_zo_chain_gate`, `_zo_predef`, `_zo_globalrep` (`src/zstd.cyr`) and the
+  FNV-1a constants `_STAR_FNV_OFF` / `_STAR_FNV_PRIME` (`src/tar.cyr`) / `_ZIP_FNV_OFF` /
+  `_ZIP_FNV_PRIME` (`src/zip.cyr`). No storage; a write or `&` is now a compile error instead of a
+  silent retune. Same-box interleaved zstd A/B (7 rounds each, medians, output sizes identical): L6
+  text 256 KB 8.44 → 8.38 ms, L9 text 256 KB 10.07 → 10.05 ms, L6 records 256 KB 16.52 → 16.17 ms, L9
+  records 256 KB 1,940.7 → 1,932.7 ms, L9 random 64 KB 13.71 → 13.47 ms — noise-level, no regression.
+  `build/sankoch` shrinks 80 B.
+- **`dist/` regenerated** (cyrius 6.7.5 `distlib`): all 12 bundles read `# Version: 2.8.3`; `sankoch`,
+  `-brotli` and `-woff` carry the `[embed]` module in place of the generated literal, and the zstd /
+  tar / zip carriers take the `loop` and `const` edits. Regeneration is deterministic (a second run is
+  byte-identical).
+- **Docs**: the roadmap's status line and version ladder (the feature releases renumbered: Brotli
+  encoder 2.8.4, SIMD CRC-32 2.8.5, GPU texture 2.8.6 — the toolchain releases took 2.8.1–2.8.3), the
+  stale "pin to 6.6.6" and "cyrius 6.6.19" sections replaced by notes for the next pin move, and
+  `docs/guides/getting-started.md`'s platform line, which said "macOS / Windows are not supported"
+  while `src/runtime.cyr` carries macOS and Windows arms: it now says what CI covers (Linux x86_64 +
+  an aarch64 cross-build) and that the library compiles for PE and Mach-O. ADR 0001 is amended for the
+  dictionary's new form; architecture note 004 is retired (below).
+
+### Removed
+
+- **`scripts/brotli_dict2cyr.py`, `scripts/nul-literal-gate.py` and their two CI steps** — no Python
+  runs in CI any more. The generator is replaced by `[embed]`; the NUL-literal gate guarded the cycc
+  6.6.4 string-interning hazard, which cyrius fixed in **6.6.15** (a literal is only matched against a
+  committed window), so at a 6.7.5 pin the rule (`docs/architecture/004-string-literal-nul-rule.md`,
+  kept as a record) is retired. Both scripts are recoverable from the `2.8.2` tag.
+
+### Tests
+
+- `brotli_decompress.tcyr` T2: `_brotli_dict_bin_len() == _brotli_dict_size()` — the embedded file
+  is the RFC's 122,784 bytes. Against the 2.8.2 tree it does not compile (`_brotli_dict_bin_len`
+  undefined).
+- `zstd_compress.tcyr` `test_zc_optimal_backtrack` (38 assertions): the backtrack walk had almost no
+  coverage — none of the suite's level 7–9 round-trips builds a multi-node DP chain, and of
+  fuzz_zstd's 500 only two do (narrow skew at level 8, seed 98; wide skew at level 9, seed 48). The
+  test rebuilds those two inputs with fuzz_zstd's generator plus a 17-row sweep around them. A walk
+  that breaks at its first node fails both named rows (mutation-verified); the old `while (more == 1)`
+  and the new `loop` both pass.
+- **Totals: 4,500,567 assertions across 29 suites, 0 failed** (was 4,500,528); all 7 fuzz harnesses
+  run clean (0 `FAIL` lines); the 12-profile link gate, core tripwire, aarch64 cross-build, lint /
+  fmt / vet all green.
+
+### Found, not fixed here (roadmap: 2.8.x closeout)
+
+- **Five of the seven fuzz harnesses exit 0 on a failed assertion** (`fuzz_lz4`, `fuzz_deflate`,
+  `fuzz_xz`, `fuzz_bzip2`, `fuzz_zstd` end `return 0;`, not `return assert_summary();`), so CI's fuzz
+  step only catches crashes and timeouts. The backtrack mutant above made `fuzz_zstd` print 10 `FAIL`
+  lines and exit 0. All five run clean at 2.8.3, so the fix is safe to land.
+- A `while (1)` → `loop` sweep (18 `src/` sites) and the raw-include suites' stray header lines.
+
 ## [2.8.2] — 2026-10-08
 
 A naming release beside cyrius 6.7.5's new `loop { … }` statement. No behaviour change: every codec compiles and

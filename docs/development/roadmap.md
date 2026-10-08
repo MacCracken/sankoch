@@ -187,7 +187,7 @@ Scope — the surface accrued since the last audit (2.6.4, ZIP), audited togethe
     `return assert_summary();` as `fuzz_zip` and `fuzz_brotli` do, so CI's fuzz step fails only on a
     crash or its 60 s timeout: a round-trip mismatch prints `FAIL:` and exits 0. Measured: a zstd
     optimal-parse backtrack that stops at its first node makes `fuzz_zstd` print 10 `FAIL` lines and
-    exit 0. Fix: `return assert_summary();` in all five, after confirming each runs clean. This is the
+    exit 0. Fix: `return assert_summary();` in all five (each ran clean, 0 `FAIL` lines, at 2.8.3). This is the
     coverage-matrix review's first entry: a harness that cannot fail is not coverage.
   - **The optimal-parse backtrack had almost no coverage.** Only 2 of fuzz_zstd's 500 level 7-9
     round-trips build a multi-node DP chain (the 2.8.3 mutation run); `tests/tcyr/zstd_compress.tcyr`
@@ -319,7 +319,9 @@ a new codec).
 ## File Summary (at 2.3.0)
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md and state.md cross-links.
-> The figures are refreshed every release. Current as of **2.8.0**, re-counted with `wc -l`.
+> The figures are refreshed every release. Current as of **2.8.3**, re-counted with `wc -l`.
+> 2.8.3 moved the dictionary literal out of `brotli_dict.cyr` into `cyrius.cyml [embed]` and made
+> `zstd.cyr`'s backtrack a `loop` (82 → 83 and 3,114 → 3,113 lines; the total is unchanged).
 > 2.8.0 added `brotli.cyr` + the generated `brotli_dict.cyr` (one 122,784-byte literal, so few lines)
 > and ten `reset_<profile>.cyr` dispatchers. It also moved each module's reset into the module,
 > which is why `lib.cyr` shrank.
@@ -341,9 +343,9 @@ a new codec).
 | gzip.cyr         |  650 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC + ratio cap | full |
 | xz.cyr           | 2136 | `.xz` de/compress: LZMA2 + range coder, optimal parse, BT4 finder, 256 KB window, ratio cap | full |
 | bzip2.cyr        | 1347 | `.bz2` de/compress: BWT + MTF/RLE2 + Huffman + RLE1, ratio cap | full |
-| zstd.cyr         | 3114 | `.zst` de+compress (RFC 8878): hardened decoder + encoder (FSE/Huffman, DP optimal parse L7–9, cross-block window, chain cutoff) | full |
+| zstd.cyr         | 3113 | `.zst` de+compress (RFC 8878): hardened decoder + encoder (FSE/Huffman, DP optimal parse L7–9, cross-block window, chain cutoff) | full |
 | brotli.cyr       | 1460 | **Brotli decode (RFC 7932, 2.8.0)**: bit reader, prefix codes, context maps + IMTF, block switching, command loop, dictionary transforms; `brotli_decompress` / `_capped` | full, brotli, woff |
-| brotli_dict.cyr  |   82 | **Generated** (`scripts/brotli_dict2cyr.py`): the 122,784-byte RFC 7932 dictionary literal + geometry + FNV-1a verify. Never hand-edit | full, brotli, woff |
+| brotli_dict.cyr  |   83 | RFC 7932 dictionary geometry (NDBITS / DOFFSET) + FNV-1a verify; the 122,784 bytes are `cyrius.cyml [embed] _brotli_dict_bin` (2.8.3; a generated literal before) | full, brotli, woff |
 | zip.cyr          | 1386 | PKZIP `.zip` container: reader + writer, methods 0/8, Zip64, streaming write, Unix metadata, sizing + reclaimable readers | full |
 | zip_methods.cyr  |  150 | ZIP methods 12 / 93 / 95 (bzip2 / zstd / xz), kept out of `[lib.zip]` | full |
 | tar.cyr          |  710 | POSIX ustar + v7 tar pull-cursor (`tar_open_auto` sniffs gzip/xz/bzip2/zstd), traversal guards | full |
@@ -358,8 +360,8 @@ form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: 27 runnable suites in `tests/tcyr/` producing **4,500,520 assertions** (0 failed), including
-`brotli_decompress.tcyr` (4,554) and `arena_reset.tcyr` (107). Most of the total comes from per-byte
+Tests: 29 runnable suites in `tests/tcyr/` producing **4,500,567 assertions** (0 failed), including
+`brotli_decompress.tcyr` (4,555), `zstd_compress.tcyr` (173) and `arena_reset.tcyr` (107). Most of the total comes from per-byte
 round-trip loops on the streaming suites. A single 200 KB round-trip contributes 200,000 assertions
 through one `while (i < N) assert(byte_eq)` loop, so the headline number measures coverage *density*,
 not coverage *breadth*. See
@@ -375,18 +377,18 @@ Distlib: **12 bundles**, one per profile in `cyrius.cyml`:
 
 | Bundle | Lines |
 |---|---:|
-| `sankoch.cyr` (full) | 18,375 |
+| `sankoch.cyr` (full) | 18,392 |
 | `sankoch-core.cyr` (kernel-safe) | 333 |
-| `sankoch-zlib.cyr` | 5,707 |
-| `sankoch-gzip.cyr` | 5,815 |
-| `sankoch-xz.cyr` | 3,358 |
-| `sankoch-bzip2.cyr` | 2,366 |
-| `sankoch-zstd.cyr` | 3,465 |
-| `sankoch-tar.cyr` | 13,137 |
-| `sankoch-zip.cyr` (methods 0/8) | 6,551 |
-| `sankoch-zipall.cyr` (every method) | 13,313 |
-| `sankoch-brotli.cyr` (Brotli decode) | 1,896 |
-| `sankoch-woff.cyr` (zlib closure + Brotli) | 7,257 |
+| `sankoch-zlib.cyr` | 5,711 |
+| `sankoch-gzip.cyr` | 5,819 |
+| `sankoch-xz.cyr` | 3,362 |
+| `sankoch-bzip2.cyr` | 2,370 |
+| `sankoch-zstd.cyr` | 3,468 |
+| `sankoch-tar.cyr` | 13,141 |
+| `sankoch-zip.cyr` (methods 0/8) | 6,556 |
+| `sankoch-zipall.cyr` (every method) | 13,317 |
+| `sankoch-brotli.cyr` (Brotli decode) | 1,909 |
+| `sankoch-woff.cyr` (zlib closure + Brotli) | 7,270 |
 
 Per-bundle roles are in [`state.md` § Dist bundles](state.md#dist-bundles).
 
@@ -395,7 +397,7 @@ Per-bundle roles are in [`state.md` § Dist bundles](state.md#dist-bundles).
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.6.4 at 2.8.0).
+ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.5 at 2.8.3).
 
 ## Key References
 
@@ -413,7 +415,7 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.6.4 at 2.8.0).
 
 ---
 
-*Last Updated: 2026-09-16 (**2.8.0 cut**: Brotli decoder + per-profile reset fix shipped; ladder re-cut to 2.8.1 Brotli encoder → 2.8.2 SIMD CRC-32 → 2.8.3 GPU texture → P(-1) closeout, with the Brotli decoder and the runtime reset seam added to the closeout scope; File Summary, test, fuzz and distlib figures re-counted.)*
+*Last Updated: 2026-10-08 (**2.8.3 cut**: the cyrius W2 pin release — 6.7.5, `[embed]` dictionary, `loop`, `const` knobs; ladder renumbered to 2.8.4 Brotli encoder → 2.8.5 SIMD CRC-32 → 2.8.6 GPU texture → P(-1) closeout, with 2.8.3's findings added to the closeout scope and a 2.9.0 section for the public-name changes; File Summary, test and distlib figures re-counted. Previous: 2026-09-16, the 2.8.0 cut.)*
 
 ---
 

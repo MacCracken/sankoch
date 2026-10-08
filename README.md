@@ -62,7 +62,7 @@ RFC 7932: context modeling, block switching, window sizes 10–24 bits, and the 
 dictionary with its 121 transforms. It decodes one complete stream into a caller buffer, with a
 fail-closed output ceiling and trailing bytes rejected, as `brotli -d` does. It is validated
 byte-for-byte against `brotli -d` 1.2.0 (google testdata, quality 0–11 × window 10–24 sweeps, a
-WOFF2-shaped font stream) and fuzzed with guard-paged buffers. The encoder is scheduled for 2.8.1.
+WOFF2-shaped font stream) and fuzzed with guard-paged buffers. The encoder is scheduled for 2.8.4, the next feature release.
 
 ## Containers
 

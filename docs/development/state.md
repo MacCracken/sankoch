@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-10-08 (**v2.8.2 — `var loop` renamed `var more` in `src/zstd.cyr`** beside cyrius 6.7.5's `loop { … }` statement; no behaviour change, pin stays 6.6.18, dist/ regenerated. v2.8.1 was the cyrius 6.6.18 pin + compile-verified sidecars + the requires block + two raw-include suites; tests **4,500,528 across 29 suites**. Earlier refresh narratives live in CHANGELOG.)
+> **Last refresh**: 2026-10-08 (**v2.8.3 — the cyrius W2 stdlib wave: pin 6.7.5**; the Brotli dictionary is a `cyrius.cyml [embed]` (`_brotli_dict_bin`), which retired both Python CI gates; the zstd backtrack walk is a `loop`; 11 private knobs are `const`. No API or behaviour change (47 SIZE lines identical). Tests **4,500,567 across 29 suites**. ⛔ The next pin move waits on a cyrius fix to the `[embed]` owner check (roadmap *Toolchain notes*). Earlier refresh narratives live in CHANGELOG.)
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,10 +14,10 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.8.2` — single source of truth. 2.8.2 = the `loop` → `more` rename beside cyrius 6.7.5's `loop { … }` statement; 2.8.1 = **cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites**; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
-- **`cyrius.cyml [package].cyrius`**: `6.6.18` — toolchain pin. 6.6.18's distlib derives each `.deps` sidecar by compile-verify (no longer copied from `[deps] stdlib`) and writes the bundle's requires block. It was 6.6.4 at 2.8.0; 6.6.4 added `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0 → 6.6.18 at 2.8.1. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
-- **Tag**: `2.8.2` (bare semver, no `v` prefix)
-- **Released**: 2026-10-06
+- **`VERSION`**: `2.8.3` — single source of truth. 2.8.3 = **cyrius 6.7.5 pin + `[embed]` dictionary + `loop` + `const` knobs** (the W2 stdlib wave); 2.8.2 = the `loop` → `more` rename beside cyrius 6.7.5's `loop { … }` statement; 2.8.1 = cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
+- **`cyrius.cyml [package].cyrius`**: `6.7.5` — toolchain pin (2.8.3). 6.7.5 is what `[embed]` (≥ 6.6.19), `const` (≥ 6.7.2) and `loop { … }` (≥ 6.7.5) need, so it is also sankoch's toolchain floor now. ⛔ Do not move it past 6.7.5 until cyrius's `[embed]` owner check skips sankoch's own folded leaf (roadmap *Toolchain notes for the next pin move*). 6.6.18 (2.8.1–2.8.2): its distlib derives each `.deps` sidecar by compile-verify (no longer copied from `[deps] stdlib`) and writes the bundle's requires block. It was 6.6.4 at 2.8.0; 6.6.4 added `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0 → 6.6.18 at 2.8.1 → 6.7.5 at 2.8.3. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
+- **Tag**: `2.8.3` (bare semver, no `v` prefix)
+- **Released**: 2026-10-08
 
 ## Distribution
 
@@ -28,7 +28,7 @@ type: state
 
 ## Source
 
-- **Source**: **18,503 lines** across **33** files in `src/`: **23** domain modules + **10** `reset_<profile>.cyr` dispatchers (179 lines). 2.8.0 added `brotli.cyr` (1,460) and the generated `brotli_dict.cyr` (82 lines, one 122,784-byte literal). It grew `runtime.cyr` 155 → 275 (the stranded-canary predicate, failed-arm handling, and the registration rule) and moved each module's reset into the module (`lib.cyr` 273 → 252).
+- **Source**: **18,503 lines** across **33** files in `src/`: **23** domain modules + **10** `reset_<profile>.cyr` dispatchers (179 lines). 2.8.0 added `brotli.cyr` (1,460) and the generated `brotli_dict.cyr` (82 lines, one 122,784-byte literal); 2.8.3 moved the literal out to `cyrius.cyml [embed]`, leaving `brotli_dict.cyr` the geometry and the FNV-1a check (83 lines), and took one line out of `zstd.cyr` (3,113), so the total is unchanged. It grew `runtime.cyr` 155 → 275 (the stranded-canary predicate, failed-arm handling, and the registration rule) and moved each module's reset into the module (`lib.cyr` 273 → 252).
 - **Per-file breakdown** lives in [`roadmap.md` § File Summary](roadmap.md#file-summary-at-230). Re-bump there alongside this file on every release.
 
 ## Test totals
@@ -41,13 +41,15 @@ direction, the `zip` container, and the cross-cutting `checksum`, `ratio_cap`,
 (4,554 assertions: tables, dictionary, prefix codes, the manifest corpus with guard-page
 exact-cap decodes, prefixes, bit flips, caps, transforms, adversarial IMTF), and grew
 `arena_reset.tcyr` to 107 (builder guards, stranded canary in both directions, failed arm).
+2.8.3 added the `[embed]` length row to `brotli_decompress.tcyr` (4,555) and
+`test_zc_optimal_backtrack` to `zstd_compress.tcyr` (135 → 173).
 It reads `tests/data/brotli/` at runtime, so run it from the repo root.
 
 | Suite group                                   | Functions | Assertions |
 |-----------------------------------------------|----------:|-----------:|
-| `tests/tcyr/*.tcyr` (28 suites)               |       370 |  4,153,945 |
+| `tests/tcyr/*.tcyr` (28 suites)               |       371 |  4,153,984 |
 | `tests/tcyr/git_object.tcyr`                  |        10 |    346,583 |
-| **Total** (29 runnable suites)                |   **380** | **4,500,528** |
+| **Total** (29 runnable suites)                |   **381** | **4,500,567** |
 
 ⚠ **Counting basis (corrected at 2.7.12).** Sum only the summary lines carrying a
 `(N total)` suffix — one per runnable suite (29 at 2.8.1). The runner
@@ -105,18 +107,18 @@ The assertion total is heavily inflated by per-byte content-loop checks on strea
 
 | Bundle                       | Lines | Role |
 |------------------------------|------:|------|
-| `dist/sankoch.cyr`           | 18,375 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd de/compress (encode 2.5.5, competitive 2.5.6–2.5.8) + **Brotli decode (2.8.0)** + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
+| `dist/sankoch.cyr`           | 18,392 | Full library — LZ4 / LZ4F / DEFLATE / zlib / gzip / xz / bzip2 de/compress + zstd de/compress (encode 2.5.5, competitive 2.5.6–2.5.8) + **Brotli decode (2.8.0)** + tar cursor, batch + streaming, + ratio-capped decompress (DEFLATE family batch + streaming; xz + bzip2 batch, 2.5.3) |
 | `dist/sankoch-core.cyr`      |    333 | **[lib.core]** kernel-safe LZ4 batch decompress only (types + xxhash32 + lz4_decode); no alloc / syscalls / mutex (AGNOS initrd) |
-| `dist/sankoch-zlib.cyr`      |  5,707 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
-| `dist/sankoch-gzip.cyr`      |  5,815 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
-| `dist/sankoch-xz.cyr`        |  3,358 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-bzip2.cyr`     |  2,366 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
-| `dist/sankoch-zstd.cyr`      |  3,465 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd **de + compress** (decode 2.5.0, hardened 2.5.6; sovereign `zstd_compress` encoder 2.5.5, competitive 2.5.6–2.5.8 — now beats `zstd -3`, zstd's own default, on every fixture — with a 1..9 `zstd_compress_level`), own bit reader / FSE / Huffman; carries `runtime.cyr` since 2.5.9 for the API lock (M-12) and, since 2.5.10, for the `_sankoch_alloc` fault seam (L-5). Multi-frame `.zst` decode + `zstd_content_size` since 2.5.10 (M-2); zero per-call arena growth (M-9/M-10). agnova `base-system.tar.zst` + takumi zstd tarballs; the ZIP method-93 write path (2.6.x) |
-| `dist/sankoch-zip.cyr`       |  6,551 | **[lib.zip]** (2.6.0) — PKZIP `.zip` container: in-memory reader + writer, methods 0 (store) / 8 (DEFLATE), CRC-verified, zip-slip guards, per-member ratio cap, 2.6.4 i64-overflow-safe Zip64 bounds. The DEFLATE closure + crc32 + `zip.cyr`; excludes `tar.cyr`. agnosai's `.agpkg` profile |
-| `dist/sankoch-zipall.cyr`    | 13,313 | **[lib.zipall]** (2.6.1) — ZIP with EVERY method sankoch owns: 0 / 8 / 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Adds `zip_methods.cyr` + the xz/bzip2/zstd codecs to the `[lib.zip]` closure. Use `[lib.zip]` when only store + DEFLATE are needed — it is less than half the size |
-| `dist/sankoch-tar.cyr`       | 13,137 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
-| `dist/sankoch-brotli.cyr`    |  1,896 | **[lib.brotli]** (2.8.0) — Brotli decode only: types + the generated dictionary + `brotli.cyr` + runtime + `reset_brotli.cyr`. The only codec profile besides `woff` that carries the 122,784-byte dictionary |
-| `dist/sankoch-woff.cyr`      |  7,257 | **[lib.woff]** (2.8.0) — web fonts: the `[lib.zlib]` closure + Brotli, so WOFF 1.0 and WOFF2 come from ONE bundle (one sankoch bundle per program). rekha's profile |
+| `dist/sankoch-zlib.cyr`      |  5,711 | **[lib.zlib]** (2.4.9) — DEFLATE/zlib only (`zlib_compress`/`zlib_decompress` + closure); drops LZ4/gzip/xz/bzip2/zstd/tar/streaming. Keeps the initialised-global footprint low so a consumer stays under its `max 1024 globals` budget while tracking current sankoch (sit's git read path / thoth's git producer). Runtime helpers via the extracted `src/runtime.cyr` |
+| `dist/sankoch-gzip.cyr`      |  5,819 | **[lib.gzip]** (2.5.1) — gzip/DEFLATE decode closure + CRC-32 (the zlib profile with the gzip envelope) |
+| `dist/sankoch-xz.cyr`        |  3,362 | **[lib.xz]** (2.5.1) — `.xz` (LZMA2) decode: lz77 match model + CRC-32 / CRC-64; + `xz_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-bzip2.cyr`     |  2,370 | **[lib.bzip2]** (2.5.1) — bzip2 decode (BWT + Huffman + MTF) + CRC-32/BZIP2 + runtime; + `bzip2_decompress_with_ratio_cap` (2.5.3, self-contained closure) |
+| `dist/sankoch-zstd.cyr`      |  3,468 | **[lib.zstd]** (2.5.1) — RFC-8878 zstd **de + compress** (decode 2.5.0, hardened 2.5.6; sovereign `zstd_compress` encoder 2.5.5, competitive 2.5.6–2.5.8 — now beats `zstd -3`, zstd's own default, on every fixture — with a 1..9 `zstd_compress_level`), own bit reader / FSE / Huffman; carries `runtime.cyr` since 2.5.9 for the API lock (M-12) and, since 2.5.10, for the `_sankoch_alloc` fault seam (L-5). Multi-frame `.zst` decode + `zstd_content_size` since 2.5.10 (M-2); zero per-call arena growth (M-9/M-10). agnova `base-system.tar.zst` + takumi zstd tarballs; the ZIP method-93 write path (2.6.x) |
+| `dist/sankoch-zip.cyr`       |  6,556 | **[lib.zip]** (2.6.0) — PKZIP `.zip` container: in-memory reader + writer, methods 0 (store) / 8 (DEFLATE), CRC-verified, zip-slip guards, per-member ratio cap, 2.6.4 i64-overflow-safe Zip64 bounds. The DEFLATE closure + crc32 + `zip.cyr`; excludes `tar.cyr`. agnosai's `.agpkg` profile |
+| `dist/sankoch-zipall.cyr`    | 13,317 | **[lib.zipall]** (2.6.1) — ZIP with EVERY method sankoch owns: 0 / 8 / 12 (bzip2) / 93 (zstd) / 95 (xz), read + write. Adds `zip_methods.cyr` + the xz/bzip2/zstd codecs to the `[lib.zip]` closure. Use `[lib.zip]` when only store + DEFLATE are needed — it is less than half the size |
+| `dist/sankoch-tar.cyr`       | 13,141 | **[lib.tar]** (2.5.1) — sovereign tar cursor + every envelope `tar_open_auto` dispatches to (gzip / xz / bzip2 / zstd); the "extract any tarball" profile (takumi source tarballs, agnova rootfs) |
+| `dist/sankoch-brotli.cyr`    |  1,909 | **[lib.brotli]** (2.8.0) — Brotli decode only: the `[embed]` dictionary module (2.8.3; a generated literal before) + types + dictionary geometry + `brotli.cyr` + runtime + `reset_brotli.cyr`. The only codec profile besides `woff` that carries the 122,784-byte dictionary |
+| `dist/sankoch-woff.cyr`      |  7,270 | **[lib.woff]** (2.8.0) — web fonts: the `[lib.zlib]` closure + Brotli, so WOFF 1.0 and WOFF2 come from ONE bundle (one sankoch bundle per program). rekha's profile |
 
 All zero deps. **12 bundles**, one per profile in `cyrius.cyml`; CI and release loop over `scripts/profile-link-gate.sh --list-profiles`, gate drift and tracking on every bundle, and run the link gate (link + run + `alloc_reset` survival + AGNOS reachability) against each.
 
@@ -137,16 +139,24 @@ was green on unlinkable bundles for six releases. 2.8.0's own first link gate wa
 mutation, to miss the AGNOS regression in 9 of 11 profiles. Every new gate in 2.8.0 now ships with a
 mutant that fails it.
 
-**▶ 2.8.x scheduled** ([`roadmap.md` § Scheduled](roadmap.md#-scheduled--28x)):
-1. **2.8.1 = Brotli encoder (RFC 7932).** In flight next. It must decode byte-exact via `brotli -d` and
+**2.8.3 (the cyrius W2 wave) found, and recorded for the closeout:** five of the seven fuzz harnesses
+exit 0 on a failed assertion (only crashes and timeouts fail CI's fuzz step); the zstd optimal-parse
+backtrack had almost no coverage (now pinned by two rows). Both are in the closeout scope below.
+
+**▶ 2.8.x scheduled** ([`roadmap.md` § Scheduled](roadmap.md#-scheduled--28x); renumbered at 2.8.3 —
+the toolchain releases took 2.8.1–2.8.3):
+1. **2.8.4 = Brotli encoder (RFC 7932).** In flight next. It must decode byte-exact via `brotli -d` and
    `brotli_decompress`, has quality levels measured against `brotli -q N`, starts with no dictionary,
    and wires `compress(FORMAT_BROTLI)`. Encode stays out of `[lib.brotli]` / `[lib.woff]` unless a
    consumer asks.
-2. **2.8.2 = SIMD CRC-32 via `PCLMULQDQ`.**
-3. **2.8.3 = GPU texture compression**, whose first sub-step is the sankoch vs mabda home decision.
+2. **2.8.5 = SIMD CRC-32 via `PCLMULQDQ`.**
+3. **2.8.6 = GPU texture compression**, whose first sub-step is the sankoch vs mabda home decision.
 4. **The 2.8.x-closeout P(-1) pass.** Scope: the 2.7.x encoder surface, the Brotli decoder + encoder,
    the runtime reset seam, the PCLMULQDQ fold and the texture encoder. It carries the `_huff_build`
-   Kraft-completeness finding and the coverage-as-a-matrix review.
+   Kraft-completeness finding, the coverage-as-a-matrix review, the fuzz exit-code fix, and a
+   `while (1)` → `loop` sweep.
+5. **2.9.0**: public `TAR_*` / `ZIP_*` constants as `const`, a `SANKOCH_ERR_*` namespace, `bool`
+   predicates.
 
 **Backlog (unscheduled)**: a wire-identical DEFLATE match-finder speedup, measured by sit as its worst
 row.
@@ -174,8 +184,7 @@ row.
 - **Wire-format gate** (a convention, *not* an automated check — ci.yml runs `cyrius bench` at the `Benchmarks` step but never diffs its SIZE lines against a stored baseline, so this is enforced by review): **47** SIZE lines in `cyrius bench` output must remain byte-for-byte identical across patch / minor releases unless explicitly broken with a CHANGELOG `Breaking` entry. (2.3.3 added the four `lz4f_bm{4,5,6,7}` block-max-sweep lines; 2.5.8 added `SIZE zstd6_rec_256K`, a record-structured parse-quality canary — the three `zstd6_text_*` lines use a periodic filler that is one long match at any level, so they did not move a byte across either the 2.5.7 or 2.5.8 parse rewrite; pre-existing lines unchanged.) The **xz and bzip2 encoders** (2.4.1 / 2.4.3) and the **zstd encoder** (`SIZE zstd6_*`, 2.5.6) are **deliberately excluded** from this gate — their output is not bit-reproducible across encoder versions, so they ship informational ratio lines in `bench` instead, as does the 2.4.5 ratio-cap section.
 - **Bundle gate**: `cyrius distlib` + every profile (list from `cyrius.cyml` via `profile-link-gate.sh --list-profiles`) regenerate all 12 `dist/` bundles; CI fails on drift or an untracked bundle.
 - **Profile link gate** (2.8.0, CI + release): `scripts/profile-link-gate.sh` — per profile: reset registration, reachable-call link probe, reference-CLI vectors before/after `alloc_reset()` with a victim buffer, and a lock-only `--agnos` DCE probe that must keep `_sankoch_arena_guard` / `_sankoch_reset_tables` alive.
-- **Brotli dictionary regen** (2.8.0): `scripts/brotli_dict2cyr.py` regenerates `src/brotli_dict.cyr` and CI `cmp`s it.
-- **NUL-literal gate** (2.8.0): `scripts/nul-literal-gate.py` — no string literal may decode to NUL (cycc 6.6.4 interning hazard), exempt only `src/brotli_dict.cyr`.
+- **No Python in CI** (2.8.3): the Brotli dictionary regen + `cmp` step and the NUL-literal gate (both 2.8.0) retired with `[embed]` and with cyrius 6.6.15's interning fix; the bundle gate is the dictionary's freshness check.
 - **Kernel-safe tripwire**: `programs/core_smoke.cyr` links ONLY the `[lib.core]` modules and exercises LZ4 batch decompress on known fixtures. Any alloc / syscall / mutex leak into the core subset fails the build.
 - **aarch64 cross-build**: hard gate in both ci.yml and release.yml; `cyrius build --aarch64 src/lib.cyr` must succeed and produce a valid ARM aarch64 ELF. Workflows expect `cycc_aarch64` in the Cyrius bundle (renamed from `cc5_aarch64` at Cyrius 6.0).
 - **Tag filter**: release workflow triggers on bare semver tags only (`2.4.5`, not `v2.4.5`).
@@ -187,6 +196,9 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.8.3  | 2026-10-08 | **cyrius W2 stdlib wave: pin 6.6.18 → 6.7.5** — the Brotli dictionary becomes a `cyrius.cyml [embed]` (`_brotli_dict_bin`; `brotli_dict2cyr.py` + `nul-literal-gate.py` and their CI steps retired, no Python in CI), the zstd optimal-parse backtrack a `loop { … break; }`, 11 private knobs `const`. No API or behaviour change (47 SIZE lines identical; L1–9 zstd output hash identical). New backtrack regression rows; found that five fuzz harnesses exit 0 on a failed assertion (roadmapped) |
+| 2.8.2  | 2026-10-08 | `var loop` → `var more` in `src/zstd.cyr` beside cyrius 6.7.5's `loop` statement; pin stays 6.6.18 |
+| 2.8.1  | 2026-10-06 | Toolchain 6.6.4 → 6.6.18; compile-verified `.deps` sidecars + a requires block in every bundle; two raw-include suites |
 | 2.8.0  | 2026-09-16 | **Brotli decoder + per-profile arena-reset fix** — every alloc-bearing profile bundle linked again (unlinkable since 2.7.10); the fix found reset gaps in the full bundle too (xz BT4 229,370 caller words, zstd, unlocked builders, stranded canary, AGNOS dead reset); new profile link gate. RFC 7932 decode (`brotli_decompress` / `_capped`, `FORMAT_BROTLI`) in `[lib]` + `[lib.brotli]` + `[lib.woff]` for rekha's WOFF2; 1008/1008 reference smoke. Toolchain 6.6.4 |
 | 2.7.15 | 2026-09-12 | Toolchain `6.6.0` → `6.6.2`; no source change |
 | 2.7.14 | 2026-09-07 | **Streaming decoder infinite-loop (DoS) fix** — `zlib_dec_write` / `gzip_dec_write` spun forever on ordinary valid input (~50 % of real source text at level 6), holding `_sankoch_mtx` and so blocking the whole process; present since the 2.3.0 arc, batch decode never affected. Three Huffman pre-fills used **9** (`HUFF_TABLE_BITS`, the fast-table *peek* width) against dynamic codes that reach 15, so `_ddec_fill` no-opped and `deflate_dec_write` consumed nothing while both envelope loops retried forever. Underneath, `_ddec_decode_huff` mislabelled a conclusive `ERR_INVALID_HUFFMAN` as NEED_MORE — so raising the fills alone still left **321/12,000** corrupt streams hanging. Fixed with all three fills → `HUFF_MAX_BITS + 1`, the conclusive-failure verdict, and a no-progress liveness assertion at the DEFLATE level. New `deep_huffman.tcyr` (598 assertions that **hang** against 2.7.13); `fuzz_tree_shape`/`fuzz_skewed_freq` now also decode streaming — either would have caught this in 2.3.0. CI dist gate widened from 8 to all 10 bundles (`-zip`/`-zipall` carry the decoder and were unchecked) |
