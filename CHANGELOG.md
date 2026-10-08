@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.2] — 2026-10-08
+
+A naming release beside cyrius 6.7.5's new `loop { … }` statement. No behaviour change: every codec compiles and
+behaves exactly as at 2.8.1, and the cyrius pin stays **6.6.18**.
+
+### Changed
+
+- **`src/zstd.cyr`: the sequence-reversal flag `var loop` is now `var more`** (the encoder's back-reference walk,
+  one declaration and two uses) — the only identifier named `loop` in any stdlib cyrius vendors. The rename was
+  made while `loop` was planned as a fully reserved word; cyrius 6.7.5 settled on reading `loop` as a keyword only
+  as `loop {` at the start of a statement, so the old name would also have compiled. The flag loop itself becomes
+  `loop { … }` when sankoch moves its pin to 6.7.5.
+- **`dist/` regenerated** (cyrius 6.6.18 `distlib`): the four bundles that carry zstd (`sankoch`, `-zstd`, `-zipall`,
+  `-tar`) take the rename; every bundle's `# Version:` header reads 2.8.2.
+
 ## [2.8.1] — 2026-10-06
 
 A toolchain release for the cyrius 6.6.18 sibling regeneration wave. No source change: every codec

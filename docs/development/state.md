@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-10-06 (**v2.8.1 — cyrius 6.6.18 pin + dist/ regenerated.** No source change. The 6.6.18 distlib writes compile-verified sidecars (the base drops `assert`; every profile drops `assert` / `vec` / `syscalls` where it never used them) and opens every bundle with a `# Requires` include block, so `include "dist/<bundle>.cyr"` alone compiles. Two raw-include suites added, built in CI with `--no-deps`: tests **4,500,528 across 29 suites**. Earlier refresh narratives live in CHANGELOG.)
+> **Last refresh**: 2026-10-08 (**v2.8.2 — `var loop` renamed `var more` in `src/zstd.cyr`** beside cyrius 6.7.5's `loop { … }` statement; no behaviour change, pin stays 6.6.18, dist/ regenerated. v2.8.1 was the cyrius 6.6.18 pin + compile-verified sidecars + the requires block + two raw-include suites; tests **4,500,528 across 29 suites**. Earlier refresh narratives live in CHANGELOG.)
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,9 +14,9 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.8.1` — single source of truth. 2.8.1 = **cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites**; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
+- **`VERSION`**: `2.8.2` — single source of truth. 2.8.2 = the `loop` → `more` rename beside cyrius 6.7.5's `loop { … }` statement; 2.8.1 = **cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites**; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
 - **`cyrius.cyml [package].cyrius`**: `6.6.18` — toolchain pin. 6.6.18's distlib derives each `.deps` sidecar by compile-verify (no longer copied from `[deps] stdlib`) and writes the bundle's requires block. It was 6.6.4 at 2.8.0; 6.6.4 added `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0 → 6.6.18 at 2.8.1. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
-- **Tag**: `2.8.1` (bare semver, no `v` prefix)
+- **Tag**: `2.8.2` (bare semver, no `v` prefix)
 - **Released**: 2026-10-06
 
 ## Distribution
