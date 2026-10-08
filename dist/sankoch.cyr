@@ -12182,7 +12182,7 @@ var _ze_prev = 0;   # chain: prev occurrence, indexed by pos & _ze_wmask
 # _ze_maxwin (a one-line change) if a record-heavy multi-MB consumer surfaces. Must stay
 # a power of two; the effective window floor (below) is strictly > BLKMAX so a block's
 # live chain slots never alias its own boundary.
-var _ze_maxwin = 524288;       # 512 KiB window cap (knob); _ze_prev = 4 MiB
+const _ze_maxwin = 524288;     # 512 KiB window cap (knob); _ze_prev = 4 MiB
 var _ze_wsize = 262144;        # per-call effective window (>= 2*BLKMAX floor)
 var _ze_wmask = 262143;        # _ze_wsize - 1
 var _ze_head_save = 0;         # 64K-bucket head shadow for the best-of snapshot
@@ -12574,10 +12574,10 @@ var _zo_mt_len = 0; var _zo_mt_ofb = 0; var _zo_mt_boff = 0;
 var _zo_litfreq = 0; var _zo_llfreq = 0; var _zo_mlfreq = 0; var _zo_offreq = 0;
 var _zo_litsum = 0; var _zo_llsum = 0; var _zo_mlsum = 0; var _zo_ofsum = 0;
 var _zo_litbp = 0; var _zo_llbp = 0; var _zo_mlbp = 0; var _zo_ofbp = 0;
-var _zo_optlevel = 2;
+const _zo_optlevel = 2;
 var _zo_ins = 0;
 var _zo_alloced = 0;
-var _zo_suff = 128;
+const _zo_suff = 128;
 # Chain-walk saturation cutoff (2.7.5 repetitive-data mitigation). On maximally-
 # repetitive record data the frame-global hash chain (2.7.4) grows to thousands of
 # links that all yield the SAME saturated match length at ever-larger — hence strictly
@@ -12593,11 +12593,13 @@ var _zo_suff = 128;
 # depth-warmup cutoff (no length gate) was measured 10-30x worse on object code — the
 # gate, not chain position, is what separates saturated duplicates from useful depth.
 # _zo_chain_cut == 0 disables the cutoff entirely (restores pre-2.7.5 exhaustive walk).
-var _zo_chain_cut = 128;
-var _zo_chain_gate = 32;
+# 2.8.3: this file's never-written tuning knobs (_ze_maxwin, _zo_optlevel, _zo_suff, the two
+# cutoff knobs, _zo_predef, _zo_globalrep) are `const`: no storage, each use is its value.
+const _zo_chain_cut = 128;
+const _zo_chain_gate = 32;
 var _ze_use_opt = 0;
-var _zo_predef = 0;
-var _zo_globalrep = 0;
+const _zo_predef = 0;
+const _zo_globalrep = 0;
 
 fn _zo_alloc() {
     if (_zo_alloced == 1) { return 0; }
@@ -15602,8 +15604,8 @@ fn _star_symlink_safe(link_rel, target) {
 # never do that — merged-/usr rootfs images write to `usr/lib/foo.so` directly and carry
 # `lib -> usr/lib` only as a leaf compat symlink — so the strict rule costs nothing in
 # practice while removing the aliasing class entirely.
-var _STAR_FNV_OFF = 0xcbf29ce484222325;
-var _STAR_FNV_PRIME = 0x100000001b3;
+const _STAR_FNV_OFF = 0xcbf29ce484222325;
+const _STAR_FNV_PRIME = 0x100000001b3;
 
 # Allocate a ledger: [+0 capacity][+8 count][+16 buckets-ptr]. 0 = empty bucket.
 fn _star_ledger_new() {
@@ -16319,8 +16321,8 @@ fn _zip_path_safe(name) {
 # Keys are the 64-bit FNV-1a hash of the canonical path (drop "." and empty components).
 # A hash collision can only cause an over-reject, never let an escape through, so the guard
 # is sound by construction.
-var _ZIP_FNV_OFF = 0xcbf29ce484222325;
-var _ZIP_FNV_PRIME = 0x100000001b3;
+const _ZIP_FNV_OFF = 0xcbf29ce484222325;
+const _ZIP_FNV_PRIME = 0x100000001b3;
 
 # Ledger: [+0 capacity][+8 count][+16 buckets]. 0 = empty bucket.
 fn _zip_led_new_a(a, n) {

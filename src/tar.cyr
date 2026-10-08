@@ -234,8 +234,8 @@ fn _star_symlink_safe(link_rel, target) {
 # never do that — merged-/usr rootfs images write to `usr/lib/foo.so` directly and carry
 # `lib -> usr/lib` only as a leaf compat symlink — so the strict rule costs nothing in
 # practice while removing the aliasing class entirely.
-var _STAR_FNV_OFF = 0xcbf29ce484222325;
-var _STAR_FNV_PRIME = 0x100000001b3;
+const _STAR_FNV_OFF = 0xcbf29ce484222325;
+const _STAR_FNV_PRIME = 0x100000001b3;
 
 # Allocate a ledger: [+0 capacity][+8 count][+16 buckets-ptr]. 0 = empty bucket.
 fn _star_ledger_new() {

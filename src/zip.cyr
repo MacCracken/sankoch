@@ -238,8 +238,8 @@ fn _zip_path_safe(name) {
 # Keys are the 64-bit FNV-1a hash of the canonical path (drop "." and empty components).
 # A hash collision can only cause an over-reject, never let an escape through, so the guard
 # is sound by construction.
-var _ZIP_FNV_OFF = 0xcbf29ce484222325;
-var _ZIP_FNV_PRIME = 0x100000001b3;
+const _ZIP_FNV_OFF = 0xcbf29ce484222325;
+const _ZIP_FNV_PRIME = 0x100000001b3;
 
 # Ledger: [+0 capacity][+8 count][+16 buckets]. 0 = empty bucket.
 fn _zip_led_new_a(a, n) {

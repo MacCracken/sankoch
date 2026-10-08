@@ -24,9 +24,12 @@ The chain walk bails after `_zo_chain_cut` **consecutive** candidates fail to ex
 only once `best >= _zo_chain_gate`**. Any improvement resets the fail counter.
 
 ```
-_zo_chain_gate = 32    # only cut once we already hold a substantial match
-_zo_chain_cut  = 128   # ... and this many consecutive non-improving candidates have passed
+const _zo_chain_cut = 128;   # ... this many consecutive non-improving candidates have passed
+const _zo_chain_gate = 32;   # only cut once we already hold a substantial match
 ```
+
+Both are `const` since 2.8.3 (they were never written at run time): retuning is still a one-line
+edit of the declaration, and nothing can change them from outside.
 
 ## Why the length gate is load-bearing (the non-obvious part)
 
