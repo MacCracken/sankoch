@@ -520,9 +520,57 @@ fn test_zc_lazy_beats_greedy() {
     return 0;
 }
 
+# The optimal parser's backtrack (levels 7-9, `_zo_lz_parse`) walks the DP chain from the
+# last match back to the segment's first node, storing each node, then emits them forward.
+# A walk that stops one node early emits a sequence whose literal run is short of its real
+# position: a stream our own decoder accepts and decodes to WRONG bytes. Multi-node chains are
+# rare: of fuzz_zstd's 500 level 7-9 round-trips, a walk that breaks at its first node fails
+# exactly two (skewed narrow alphabet at level 8, seed 98; skewed wide at level 9, seed 48), and
+# the fuzz harness does not fail on an assertion (2.8.3 found it; roadmap). Those two inputs,
+# rebuilt here with fuzz_zstd's generator, are the rows that fail; the sweep around them keeps
+# the chain shape covered if the parse's pricing moves. 2.8.3 wrote the walk as `loop { … break; }`.
+var _zbt_state = 0;
+
+fn _zbt_next() {
+    _zbt_state = _zbt_state * 6364136223846793005 + 1442695040888963407;
+    return (_zbt_state >> 33) & 255;
+}
+
+# fuzz_zstd's `_zf_gen` modes 2 (0..7) and 3 (25 % in 128..255, else 0..7).
+fn _zbt_gen(src, n, mode, seed) {
+    _zbt_state = seed;
+    var i = 0;
+    while (i < n) {
+        var b = _zbt_next() & 7;
+        if (mode == 3) {
+            if ((b & 3) == 0) { b = 128 + (_zbt_next() & 127); } else { b = _zbt_next() & 7; }
+        }
+        store8(src + i, b);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_zc_optimal_backtrack() {
+    var src = alloc(6144);
+    _zbt_gen(src, (98 * 61) % 6144, 2, 98 * 3266489917);
+    _z_rt_lvl(src, (98 * 61) % 6144, 8, "zstd_encode optimal backtrack: narrow skew, level 8 (fuzz seed 98)");
+    _zbt_gen(src, (48 * 61) % 6144, 3, 48 * 668265263);
+    _z_rt_lvl(src, (48 * 61) % 6144, 9, "zstd_encode optimal backtrack: wide skew, level 9 (fuzz seed 48)");
+    var seed = 40;
+    while (seed <= 56) {
+        var n = 1024 + (seed * 61) % 5120;
+        _zbt_gen(src, n, 2 + (seed & 1), seed * 2246822519);
+        _z_rt_lvl(src, n, 7 + (seed % 3), "zstd_encode optimal backtrack sweep (levels 7-9)");
+        seed = seed + 1;
+    }
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zc_record_parse();
+    test_zc_optimal_backtrack();
     test_zc_lazy_beats_greedy();
     test_zc_malformed_survive();
     test_zc_repeat_offsets();

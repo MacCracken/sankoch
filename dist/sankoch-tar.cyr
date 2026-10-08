@@ -11350,22 +11350,19 @@ fn _zo_lz_parse(src, bstart, bend) {
             store64(_zo_bof + storeEnd * 8, ls_bof);
             storeStart = storeEnd;
         }
-        var more = 1;
-        while (more == 1) {
+        loop {
             var n_litlen = load64(_zo_litlen + sp * 8);
             var n_mlen = load64(_zo_mlen + sp * 8);
             var n_off = load64(_zo_off + sp * 8);
             var n_bof = load64(_zo_bof + sp * 8);
             store64(_zo_litlen + storeStart * 8, n_litlen);
-            if (n_mlen == 0) { more = 0; }
-            else {
-                storeStart = storeStart - 1;
-                store64(_zo_litlen + storeStart * 8, n_litlen);
-                store64(_zo_mlen + storeStart * 8, n_mlen);
-                store64(_zo_off + storeStart * 8, n_off);
-                store64(_zo_bof + storeStart * 8, n_bof);
-                sp = sp - n_litlen - n_mlen;
-            }
+            if (n_mlen == 0) { break; }
+            storeStart = storeStart - 1;
+            store64(_zo_litlen + storeStart * 8, n_litlen);
+            store64(_zo_mlen + storeStart * 8, n_mlen);
+            store64(_zo_off + storeStart * 8, n_off);
+            store64(_zo_bof + storeStart * 8, n_bof);
+            sp = sp - n_litlen - n_mlen;
         }
         # emit forward
         var q = storeStart;
