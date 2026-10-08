@@ -1,10 +1,14 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.8.0**); open issue queue **0**. 2.8.0 shipped the Brotli decoder
+> **Status**: Stable (**v2.8.3**); open issue queue **0**. 2.8.0 shipped the Brotli decoder
 > (rekha's WOFF2) and the per-profile arena-reset fix that made every codec profile link again.
-> Next: **2.8.x**: Brotli encoder, then SIMD CRC-32, then GPU texture, then the P(-1) closeout.
+> 2.8.1–2.8.3 were toolchain releases: the cyrius 6.6.18 pin (2.8.1), the `loop` rename (2.8.2), and
+> the cyrius 6.7.5 pin with the dictionary as an `[embed]`, the zstd backtrack as a `loop` and the
+> private knobs as `const` (2.8.3, the cyrius W2 stdlib wave).
+> Next: **2.8.x**: Brotli encoder (2.8.4), then SIMD CRC-32, then GPU texture, then the P(-1) closeout.
 > ⚠ The **DEFLATE match-finder** backlog item is no longer speculative: sit has
-> measured it as its single worst benchmark row; see Backlog. | **Last Updated**: 2026-09-16
+> measured it as its single worst benchmark row; see Backlog. ⚠ Before the next pin move, read
+> [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-08
 
 This file is the **forward** ladder — the committed next releases
 (**▶ Scheduled**) and an unscheduled **Backlog** to be re-organised when the
@@ -36,10 +40,15 @@ refinement).
 
 The **2.8.x line** (see **▶ Scheduled** below):
 - **2.8.0** shipped the Brotli decoder;
-- **2.8.1** = Brotli encoder;
-- **2.8.2** = SIMD CRC-32 (`PCLMULQDQ`);
-- **2.8.3** = GPU texture compression;
+- **2.8.1–2.8.3** shipped toolchain moves (no feature; see CHANGELOG);
+- **2.8.4** = Brotli encoder;
+- **2.8.5** = SIMD CRC-32 (`PCLMULQDQ`);
+- **2.8.6** = GPU texture compression;
 - then a **P(-1) hardening pass** closes out the line.
+
+The feature releases were renumbered at 2.8.3 (they were 2.8.1–2.8.3): the toolchain releases took
+those numbers first. A toolchain or ecosystem release that lands ahead of one again takes the next
+patch number and shifts the ladder; the order is what is committed, not the numbers.
 
 No P(-1) pass *leads* the line (deliberate). The closeout audits the un-audited 2.7.x encoder
 surface together with the 2.8.x additions before the next minor opens. The remaining Backlog item
@@ -47,9 +56,9 @@ surface together with the 2.8.x additions before the next minor opens. The remai
 
 ---
 
-## ▶ Next — 2.8.1
+## ▶ Next — 2.8.4
 
-Nothing preempts 2.8.1. Two findings are carried into the **2.8.x-closeout P(-1) pass** (below):
+Nothing preempts 2.8.4. Two findings are carried into the **2.8.x-closeout P(-1) pass** (below):
 
 ⚠ **Kraft completeness in `_huff_build`.** It is a latent correctness gap, not a fixed bug:
 `_huff_build` never verifies **Kraft completeness**, so an incomplete Huffman table is buildable and
@@ -89,7 +98,7 @@ opened **straight into the feature**: no P(-1) pass *leads* it (deliberate). Ins
 pass** (below), before the next minor opens. That surface is BT4 `son[]`, the 4 MiB frame-global chain,
 the DP-optimal arrays, and the window/cutoff math.
 
-### 2.8.1 — Brotli encoder (RFC 7932)
+### 2.8.4 — Brotli encoder (RFC 7932)
 
 The encode half of the codec 2.8.0 started. It completes Brotli the way 2.5.5 completed zstd.
 
@@ -107,7 +116,7 @@ The encode half of the codec 2.8.0 started. It completes Brotli the way 2.5.5 co
 - **Tests.** Fuzz round-trips (encode → both decoders) and a reference-CLI smoke. The encoder's surface
   joins the closeout P(-1) scope.
 
-### 2.8.2 — SIMD CRC-32 via `PCLMULQDQ`
+### 2.8.5 — SIMD CRC-32 via `PCLMULQDQ`
 
 A carryless-multiply (fold-based) CRC-32 on x86_64, beyond the portable
 **slice-by-8** table fold 2.3.4 already banked (~2×, wire-identical, x86_64 +
@@ -129,7 +138,7 @@ Approach (mirrors the prior arcs' "verify each bite" cadence):
    the table path.
 - Ref: Intel, "Fast CRC Computation … Using PCLMULQDQ" (whitepaper, 2009).
 
-### 2.8.3 — GPU texture compression (BC1–BC7 / ASTC)
+### 2.8.6 — GPU texture compression (BC1–BC7 / ASTC)
 
 The one genuinely different codec: **lossy** and GPU-format-specific, so it does
 not fit sankoch's "lossless" identity the way every prior codec did.
@@ -160,23 +169,60 @@ Scope — the surface accrued since the last audit (2.6.4, ZIP), audited togethe
   lines of new indexing / OOM / integer-range surface never security-reviewed.
 - **The 2.8.x additions**:
   - **the Brotli decoder (2.8.0)**: attacker-controlled indices into its tables, the IMTF and
-    dictionary paths, and the one NUL-bearing literal. Run the libbrotlidec mutation differential
-    that 2.8.0 did not;
+    dictionary paths, and the dictionary literal (an `[embed]` since 2.8.3). Run the libbrotlidec
+    mutation differential that 2.8.0 did not;
   - **the runtime reset seam (2.8.0)**: per-module resets vs the memoized-global inventory,
     `src/reset_<profile>.cyr` registration, the stranded-canary predicate, and the canary-arm residual
     (a real 8-byte OOM that recovers within one call);
-  - **the Brotli encoder (2.8.1)**;
-  - **the hand-assembled `PCLMULQDQ` CRC fold (2.8.2)**: its silent-corruption risk is the whole reason
+  - **the Brotli encoder (2.8.4)**;
+  - **the hand-assembled `PCLMULQDQ` CRC fold (2.8.5)**: its silent-corruption risk is the whole reason
     it needs the wire-identical gate and an audit;
-  - **the GPU texture codec's block encoder (2.8.3)**.
-- **The carried findings** from ▶ Next: `_huff_build` Kraft completeness, and the coverage review as a
-  matrix.
+  - **the GPU texture codec's block encoder (2.8.6)**.
+- **The carried findings** from ▶ Next: `_huff_build` Kraft completeness, the `_dyn_header_bits`
+  bound, and the coverage review as a matrix.
+- **Found at 2.8.3** (the cyrius W2 pin release; recorded, not fixed there — W2 carried only its
+  planned scope):
+  - ⚠ **Five of the seven fuzz harnesses do not fail on an assertion.** `fuzz_lz4`, `fuzz_deflate`,
+    `fuzz_xz`, `fuzz_bzip2` and `fuzz_zstd` end `main` with `return 0;`, not
+    `return assert_summary();` as `fuzz_zip` and `fuzz_brotli` do, so CI's fuzz step fails only on a
+    crash or its 60 s timeout: a round-trip mismatch prints `FAIL:` and exits 0. Measured: a zstd
+    optimal-parse backtrack that stops at its first node makes `fuzz_zstd` print 10 `FAIL` lines and
+    exit 0. Fix: `return assert_summary();` in all five, after confirming each runs clean. This is the
+    coverage-matrix review's first entry: a harness that cannot fail is not coverage.
+  - **The optimal-parse backtrack had almost no coverage.** Only 2 of fuzz_zstd's 500 level 7-9
+    round-trips build a multi-node DP chain (the 2.8.3 mutation run); `tests/tcyr/zstd_compress.tcyr`
+    `test_zc_optimal_backtrack` now pins those two inputs. Look for the same shape in xz's optimal
+    parse.
+  - **A `while (1)` → `loop { … }` sweep**: 18 sites in `src/` (bzip2 7, deflate 4, xz 3, and one each
+    in gzip, huffman, lz4, zlib) plus 1 in the tests; emulated breaks become `break`. Prove it the way
+    2.8.3 proved the backtrack walk: compressed output hashed across levels, identical before and
+    after.
+  - **Stray merge lines in the raw-include suites' headers.** `tests/tcyr/sankoch_raw_include.tcyr` and
+    `sankoch_zlib_raw_include.tcyr` each carry a second, truncated copy of the header after the first,
+    including a live line `include "dist/<bundle>.cyr"` followed by the leftover words
+    `` ` alone compiles.``. Harmless today (the file compiles, and the second include of the same
+    bundle is a no-op), but it is a stale line a reader takes for the real include.
 - Plus the standard closeout gates (cleanliness / dead-code / stale-comment sweeps, a fresh
   benchmark baseline, the security-audit dossier under [`docs/audit/`](../audit/), and a
   doc-health pass).
 
 Primitive sources for the codec items (Rice/Golomb, range encoder, LPC, GPU
 dispatch) are tabulated under [§ Primitive sources](#primitive-sources-for-future-codecs) below.
+
+---
+
+## Next minor (2.9.0) — public names as 6.7.x types
+
+Public-surface changes, so a minor (2.8.3 kept 6.7.x adoption to private names):
+
+- **Public integer constants → `const`**: `TAR_*` (12, `src/tar.cyr`), `ZIP_*` (21, `src/zip.cyr`) and
+  `SANKOCH_ARENA_MAGIC` are never-written `var`s today. A `const` beside a same-name `var` is a hard
+  error in cyrius, so survey cyrius's `lib/` and every fold for each name first.
+- **A `SANKOCH_ERR_*` namespace** for the error codes: `enum Error`'s bare `OK` / `ERR_*` names and
+  the `TAR_ERR_*` values share the stdlib's one global namespace with every consumer.
+- **`: bool`** on the public predicates, and on the five private path / checksum safety predicates
+  (`_star_path_safe`, `_star_symlink_safe`, `_star_ledger_prefix_unsafe`, `_star_checksum_ok`,
+  `_zip_path_safe` — they return only 0 / 1 today; offered as optional at 2.8.3 and left for here).
 
 ---
 
@@ -215,7 +261,7 @@ into a fresh ladder** when a consumer surfaces.
   must be gated on a byte-identical-output test across a real corpus before a
   benchmark number is quoted.**
 
-  Open-ended and large. Pairs naturally with the 2.8.2 SIMD work already
+  Open-ended and large. Pairs naturally with the 2.8.5 SIMD work already
   scheduled, but note that CRC-32 via `PCLMULQDQ` does **not** touch this — the
   cost here is match finding in `lz77.cyr`, not checksumming.
 
@@ -254,7 +300,7 @@ Because the per-codec distlib profiles let a consumer pull only the closure it
 needs (see *Modular by profile* in [`CLAUDE.md`](../../CLAUDE.md)), sankoch is the
 home for **every** lossless-compression codec — new formats never bloat consumers
 that don't use them, so nothing is "a separate crate." Brotli decode shipped in 2.8.0
-(encode is 2.8.1), and **GPU texture compression** (2.8.3) is the one not-yet-implemented codec;
+(encode is 2.8.4), and **GPU texture compression** (2.8.6) is the one not-yet-implemented codec;
 Zstandard is done (decode 2.5.0, sovereign encoder 2.5.5, beats `zstd -3`, optimal
 parse 2.7.3 — its remaining record-data ratio residue is the 2.7.4 window item, not
 a new codec).
@@ -371,74 +417,25 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.6.4 at 2.8.0).
 
 ---
 
-## Moving the cyrius pin to 6.6.6
+## Toolchain notes for the next pin move
 
-**Current pin:** `cyrius = "6.6.4"` (`cyrius.cyml`).
+⛔ **Do not move the pin past 6.7.5 until cyrius stops counting sankoch's own fold as an `[embed]`
+owner.** cyrius refuses an `[embed] NAME` that any leaf of the pinned stdlib snapshot declares, and
+sankoch's own bundle IS a leaf of that snapshot (`lib/sankoch.cyr`). Measured at 2.8.3: with the 2.8.3
+`dist/sankoch.cyr` in place of the stdlib's `lib/sankoch.cyr` (what the cyrius release that refolds
+2.8.3 installs), `cyrius build src/lib.cyr` stops with `[embed] _brotli_dict_bin: _brotli_dict_bin is
+already declared by the stdlib leaf sankoch`. At 6.7.5 it builds because that fold is 2.8.2, whose
+literal had the old name — which is why 2.8.3 renamed the accessor from `_brotli_dict_data`. The fix is
+cyrius's (skip the leaf the project itself folds); renaming the embed every release is not one. Filed
+with the 2.8.3 W2 report.
 
-No source change needed. Two things are worth knowing before the bump, both small.
+**Every compile in this project carries the dictionary.** cyrius prepends the `[embed]` module to each
+build here, `--no-deps` included. A build that also includes a bundle carrying the embed (the
+link-gate probes for `full` / `brotli` / `woff`, `sankoch_raw_include.tcyr`) defines the accessor
+twice: cycc warns `duplicate fn '_brotli_dict_bin'` and links the bundle's (the later) definition. That
+warning is expected. A bundle that calls the accessor without listing it under `embed` is refused by
+`cyrius distlib`, which CI's dist gate runs for every profile.
 
-**The library itself does no file I/O.** Every `src/*.cyr` module — the codecs,
-the bit readers/writers, `tar`, `zip`, `stream`, `runtime` — has zero `sys_open`
-/ `file_open` / `file_write_all` call sites. Compression runs on buffers the
-caller supplies, so the Windows `O_APPEND` / `O_TRUNC` data corruption 6.6.6 fixes
-cannot reach the shipped surface at all. That is the answer for every downstream
-consumer that vendors `dist/sankoch.cyr`.
-
-**The dev smoke programs are a different story, and they contradict the docs.**
-Six of them create-and-truncate an output file with the raw flag word `577`
-(`O_WRONLY|O_CREAT|O_TRUNC`):
-
-- `programs/brotli_smoke.cyr:41`, `programs/tar_smoke.cyr:101`,
-  `programs/zip_smoke.cyr:27`, `programs/zstd_smoke.cyr:42`,
-  `programs/zstd_encode_smoke.cyr:40`, `programs/deflate_flush_smoke.cyr:54`.
-
-Before 6.6.6 a PE build's `O_TRUNC` did not truncate, so a smoke run producing
-*shorter* output than a previous run left the old tail attached — which for a
-compressed stream means a file that decodes to garbage past the real end, and a
-smoke test that fails for a reason that has nothing to do with the codec.
-`docs/guides/getting-started.md:8` says "macOS / Windows are not supported", but
-`src/runtime.cyr:101` carries a live `#ifdef CYRIUS_TARGET_WIN` arm in the arena
-guard (alongside the macOS one), so sankoch does compile for PE. Those two
-statements disagree; worth reconciling one way or the other at some point, but it
-is not a blocker for this pin — 6.6.6 makes the smokes correct on PE either way.
-
-No `O_APPEND` anywhere in the repo outside vendored `lib/`.
-
-**Everything else 6.6.6 tightens was checked and is absent:** 0 structs (so
-neither the different-struct-copy error nor the by-value deep-copy change has a
-site), 0 `async fn`, 0 `operator` fns, 0 `ret2` / `rethi`, no SIMD intrinsics, one
-`: cstring` and it is a return type, not a param. No `var` inside a top-level
-block. No own `vec_*` definitions, so `assert.cyr`'s new transitive `vec.cyr`
-include cannot collide with the 30 assert call sites. No raw `SYS_STATFS`. `lib/`
-holds no symlinks and `cyrius.lock` is present and writable, so 6.6.6's fail-hard
-`cyrius deps` / `publish` is a no-op.
-
-One apparent global redeclaration is not one: `g_len` and `exit_code` each appear
-in several `programs/*_smoke.cyr` files, but those are separate entry points that
-are never co-linked, so 6.6.6's "a later redeclaration now wins everywhere" flip
-and the new different-type-co-linked-global error do not apply.
-
-After bumping: the usual `cyrius test` / `cyrius fuzz` / `cyrius distlib`, and if
-anyone is going to run the smokes on Windows, run `zstd_encode_smoke` twice with
-a smaller input the second time and confirm the output file shrinks.
-
-## Recorded by cyrius 6.6.19 (2026-10-06) — for the next cyrius pin move
-
-⛔ **Needs cyrius >= 6.6.19 — do not bump the pin until 6.6.19 is tagged and out.** Docs-only note from the cyrius
-6.6.19 lanes; each item is this repo's to adopt when it pins ≥ 6.6.19. Nothing here gates a cyrius release.
-
-- **`scripts/brotli_dict2cyr.py` and `scripts/nul-literal-gate.py` can retire for `[embed]`** (cyrius P2, shipped
-  in 6.6.19). sankoch is a FOLDED stdlib: the change lands here, then cyrius re-vendors `lib/sankoch.cyr`
-  byte-identical from the tag.
-  `[embed] NAME = "path"` in cyrius.cyml gives every compile `NAME()` (the file's bytes, NUL-terminated) and
-  `NAME_len()`, read from the file at build time — no generated `.cyr`, nothing to drift. Explicit entries only
-  (the `{dir, glob}` set form is refused by name). All embeds share cycc's 2 MiB string pool with the program's
-  own literals, and every binary of the project (test binaries too) carries every declared embed. Reference: the
-  cyrius guide's *Embedding data files: [embed]*, CHANGELOG [6.6.19] *Embed — P2*.
-  - The 122,784-byte RFC 7932 dictionary becomes `[embed] _brotli_dict_data = "data/brotli-dict.bin"` (the
-    accessor keeps its current name; `_brotli_dict_data_len()` comes with it), carried by `[lib] embed` and
-    `[lib.woff] embed` (and any profile that bundles `src/brotli_dict.cyr` today). The bytes are escaped `\xHH` by
-    cyrius, NULs included (safe since the 6.6.15 interning-window fix), on a `#skip-lint` line — the shape the
-    script writes.
-  - Stays yours: the NDBITS / offset tables and the pinned-FNV verify of the dictionary.
-  - `cyrius distlib --check` becomes the freshness gate for the dictionary bundle.
+The 6.6.6 pin notes and the cyrius 6.6.19 notes that stood here are done: 2.8.1 moved the pin to
+6.6.18, 2.8.3 adopted `[embed]` and retired both Python gates, and the getting-started platform line
+now says what CI actually covers (CHANGELOG [2.8.1], [2.8.3]).

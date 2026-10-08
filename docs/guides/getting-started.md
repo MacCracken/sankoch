@@ -5,7 +5,13 @@
 ## Prerequisites
 
 - Cyrius toolchain at the version pinned in [`cyrius.cyml [package].cyrius`](../../cyrius.cyml). Install via `cyrius_new` (bootstrapper) or a GitHub release tarball.
-- Linux on x86_64 or aarch64. macOS / Windows are not supported.
+- Linux on x86_64 for this repo's CI, which builds and tests there and cross-builds aarch64.
+  The library itself is target-neutral (no syscalls or file access in `src/`; the arena guard in
+  `src/runtime.cyr` carries macOS, Windows and AGNOS arms, and the profile link gate builds every
+  alloc-bearing profile for AGNOS), and it compiles for Windows PE and macOS Mach-O as well. The folded
+  `lib/sankoch.cyr` ships with every target cyrius supports, but nothing in this repo runs the suites
+  on macOS or Windows. (This line read "macOS / Windows are not supported" until 2.8.3, which the
+  source's own macOS / Windows arms contradicted.)
 
 ## Build, test, bench
 
