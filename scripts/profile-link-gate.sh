@@ -607,6 +607,11 @@ for prof in $PROFILES; do
     } | fill_vectors > "$probe"
     probe_main | fill_vectors >> "$probe"
 
+    # The probe is built inside this project, so cyrius prepends cyrius.cyml's [embed] module
+    # (_brotli_dict_bin, 2.8.3) as it does to every compile here. A bundle that carries the embed
+    # ([lib], [lib.brotli], [lib.woff]) defines it again, later: cycc warns "duplicate fn" and
+    # the bundle's definition is the one linked (the last wins). A bundle that calls the accessor
+    # without carrying it never reaches this gate: `cyrius distlib` refuses to write it.
     env -u CYRIUS_DCE cyrius build "$probe" "$dir/probe.bin" > "$dir/build.log" 2>&1
     brc=$?
     if [ $brc -ne 0 ] || grep -qE 'undefined function|refusing to emit' "$dir/build.log"; then

@@ -1,8 +1,18 @@
 # 0001 — Brotli decode ships in the full bundle and in `[lib.brotli]` / `[lib.woff]`, with its dictionary as a generated literal
 
-- **Status**: Accepted
+- **Status**: Accepted; the dictionary's *form* amended at 2.8.3 (below)
 - **Date**: 2026-09-16
 - **Deciders**: sankoch maintainers (filing: rekha)
+
+> **Amendment (2.8.3).** The dictionary is no longer a generated `src/` literal. It is
+> `cyrius.cyml [embed] _brotli_dict_bin` (cyrius >= 6.6.19): cyrius renders the same 122,784 bytes
+> from `docs/sources/brotli/dictionary.bin` at every compile, and into the `[lib]`, `[lib.brotli]`
+> and `[lib.woff]` bundles, which list it under `embed`. `src/brotli_dict.cyr` keeps the geometry
+> and the FNV-1a self-check; `scripts/brotli_dict2cyr.py`, its CI `cmp` step and the NUL-literal
+> gate are retired ([architecture 004](../architecture/004-string-literal-nul-rule.md)). Placement,
+> API and the once-per-process verify are unchanged. The accessor was renamed from
+> `_brotli_dict_data` because cyrius refuses an `[embed]` name that a leaf of the pinned stdlib
+> already declares, and the folded `lib/sankoch.cyr` (2.8.2) declares that one.
 
 ## Context
 

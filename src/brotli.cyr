@@ -51,12 +51,12 @@
 #  6. C's "zero-length word at distance <= 120" TRANSFORM error (a custom-dictionary guard) is not
 #     implemented: with the RFC dictionary an empty word needs a distance > 34,816.
 #
-# Every string literal in this file is NUL-free (the cyrius 6.6.4 string-interning hazard: a
-# periodic literal containing NUL can be aliased onto storage the next literal overwrites).
-# Irregular tables are hex text; their CRC-32s are pinned against docs/sources/brotli/tables.txt
-# by tests/tcyr/brotli_decompress.tcyr.
+# Irregular tables are hex text (written NUL-free while the pin carried the cyrius 6.6.4
+# string-interning hazard, fixed in 6.6.15); their CRC-32s are pinned against
+# docs/sources/brotli/tables.txt by tests/tcyr/brotli_decompress.tcyr.
 #
-# Closure: types.cyr, brotli_dict.cyr, runtime.cyr. No stdlib calls, no checksum module.
+# Closure: types.cyr, brotli_dict.cyr, runtime.cyr, and the [embed] _brotli_dict_bin (the dictionary
+# bytes; cyrius.cyml). No stdlib calls, no checksum module.
 #
 # SPDX-License-Identifier: GPL-3.0-only
 
@@ -253,14 +253,14 @@ fn _brd_init_tables(): i64 {
         store8(&_brd_rev8 + p, r);
         p = p + 1;
     }
-    # Dictionary geometry, copied from the generated data module.
+    # Dictionary geometry from brotli_dict.cyr; the bytes are the [embed] _brotli_dict_bin.
     k = 0;
     while (k < 25) {
         store64(&_brd_ndbits + k * 8, _brotli_dict_ndbits(k));
         store64(&_brd_doff + k * 8, _brotli_dict_offset(k));
         k = k + 1;
     }
-    _brd_dict_addr = _brotli_dict_data();
+    _brd_dict_addr = _brotli_dict_bin();
     # Transforms (RFC 7932 Appendix B, C type numbering: 0 Identity, 1-9 OmitLast1-9,
     # 10 UppercaseFirst, 11 UppercaseAll, 12-20 OmitFirst1-9).
     var t = &_brd_tr;

@@ -46,6 +46,8 @@ modules = [
     "src/runtime.cyr",
     "src/lib.cyr",
 ]
+# The RFC 7932 dictionary bytes ([embed] below). A bundle carries only the embeds it names.
+embed = ["_brotli_dict_bin"]
 
 # `[lib.core]` is the kernel-safe profile (`cyrius distlib core` →
 # dist/sankoch-core.cyr). Pure-compute LZ4 block + frame decompress —
@@ -220,9 +222,10 @@ modules = [
 ]
 
 # `[lib.brotli]` — RFC 7932 Brotli DECODE (2.8.0). Self-contained: its own bit reader,
-# prefix codes and static dictionary; no checksum or deflate modules. The ~123 KB
-# dictionary literal lives in brotli_dict.cyr, which only this profile, [lib.woff] and
-# [lib] carry. Needs the sankoch alloc/mutex runtime for its lazy workspace.
+# prefix codes and static dictionary; no checksum or deflate modules. The 122,784-byte
+# dictionary is the [embed] _brotli_dict_bin (2.8.3; a generated literal before), which only
+# this profile, [lib.woff] and [lib] carry, beside brotli_dict.cyr's geometry and self-check.
+# Needs the sankoch alloc/mutex runtime for its lazy workspace.
 [lib.brotli]
 modules = [
     "src/types.cyr",
@@ -231,6 +234,7 @@ modules = [
     "src/runtime.cyr",
     "src/reset_brotli.cyr",
 ]
+embed = ["_brotli_dict_bin"]
 
 # `[lib.woff]` — web-font containers (2.8.0): WOFF 1.0 (zlib per table) + WOFF2 (Brotli).
 # rekha's profile. ONE sankoch bundle per program (src/runtime.cyr), so the two codecs ship
@@ -252,6 +256,18 @@ modules = [
     "src/runtime.cyr",
     "src/reset_woff.cyr",
 ]
+embed = ["_brotli_dict_bin"]
+
+# `[embed]` (cyrius >= 6.6.19): the RFC 7932 Appendix A static dictionary, 122,784 bytes,
+# byte-identical to google/brotli v1.2.0 c/common/dictionary.bin. cyrius generates
+# `_brotli_dict_bin()` (the bytes, NUL-terminated) and `_brotli_dict_bin_len()` from the file
+# at every compile in this project, and writes the same module into each bundle whose
+# `[lib...] embed` lists the name — nothing generated is committed under src/. The decoder
+# checks the bytes once per process against the FNV-1a pinned in src/brotli_dict.cyr.
+# Through 2.8.2 the literal was src/brotli_dict.cyr itself, written by a Python generator
+# that CI re-ran and `cmp`ed (both retired at 2.8.3).
+[embed]
+_brotli_dict_bin = "docs/sources/brotli/dictionary.bin"
 
 [deps]
 stdlib = [

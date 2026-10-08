@@ -300,8 +300,11 @@ fn test_t1_ws_layout() {
 # ================================================================
 
 fn test_t2_dictionary() {
-    var d = _brotli_dict_data();
+    var d = _brotli_dict_bin();
     assert(_brotli_dict_size() == 122784, "T2 dictionary size");
+    # 2.8.3: the bytes are cyrius.cyml [embed] _brotli_dict_bin (docs/sources/brotli/dictionary.bin),
+    # so the file's length is checked against the RFC's here.
+    assert(_brotli_dict_bin_len() == _brotli_dict_size(), "T2 [embed] length is the RFC 7932 size");
     assert(crc32(d, 122784) == 0x5136cb04, "T2 dictionary CRC-32 (RFC 7932 App. A)");
     assert(_brotli_dict_crc32() == 0x5136cb04, "T2 pinned CRC-32 accessor");
     assert(_brotli_dict_verify(d) == 1, "T2 FNV-1a verify accepts the literal");
@@ -2263,7 +2266,7 @@ fn test_t4_dict_cells() {
     assert(_brd_dict(5, 1, 64) == 5, "T4 word 1 of length 5 at position 5");
     assert(_brv_guarded(buf, 13) == 1 && _brv_guarded(d + 10, 64) == 1 && _brd_pos == 5,
       "T4 writes at _brd_pos only, _brd_pos not advanced");
-    assert(crc32(d + 5, 5) == crc32(_brotli_dict_data() + 4096 + 5, 5), "T4 word bytes from DOFFSET[5] + 5");
+    assert(crc32(d + 5, 5) == crc32(_brotli_dict_bin() + 4096 + 5, 5), "T4 word bytes from DOFFSET[5] + 5");
     assert(_brd_r0 == 101 && _brd_r1 == 102 && _brd_r2 == 103 && _brd_r3 == 104, "T4 the distance ring is untouched");
     _brd_pos = 0;
     # One-time self-check: a corrupted literal fails closed, and so does the _brd_dict_ok hook.

@@ -30,9 +30,13 @@ byte-identical to the committed file. The `enough` probe is not re-run by the ex
 
 ## How they are used
 
-- `scripts/brotli_dict2cyr.py docs/sources/brotli/dictionary.bin src/brotli_dict.cyr` generates the
-  dictionary module. It also accepts the RFC 7932 plain text and parses Appendix A, so the bytes can be
-  re-derived from the standard alone. CI regenerates the module and `cmp`s it with the committed copy.
+- `dictionary.bin` is embedded directly (2.8.3): `cyrius.cyml [embed] _brotli_dict_bin` makes cyrius
+  render its bytes into every compile and into the `[lib]`, `[lib.brotli]` and `[lib.woff]` bundles,
+  so CI's dist gate is its freshness check. `src/brotli_dict.cyr` holds the geometry and the FNV-1a
+  self-check, and `tests/tcyr/brotli_decompress.tcyr` pins the length, CRC-32 and both ends. Through
+  2.8.2 the file was turned into a generated `src/brotli_dict.cyr` literal by
+  `scripts/brotli_dict2cyr.py`, which could also re-derive the bytes from the RFC 7932 plain text
+  (Appendix A); it is retired, and recoverable from the `2.8.2` tag.
 - `tests/tcyr/brotli_decompress.tcyr` renders each runtime table in `tables.txt` line format and
   compares its CRC-32 with the value pinned here. The CRC gate is the authority, not the hex text in
   `src/brotli.cyr`.

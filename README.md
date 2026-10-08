@@ -272,7 +272,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | bzip2.cyr      | `.bz2` de/compress — bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 | full  |
 | zstd.cyr       | `.zst` de/compress (RFC 8878) — own FSE/Huffman, LZ77 + repcode parse, DP optimal parse at levels 7–9 | full    |
 | brotli.cyr     | Brotli decode (RFC 7932) — prefix codes, context maps + IMTF, block switching, command loop, dictionary transforms | full, brotli, woff |
-| brotli_dict.cyr | **Generated** RFC 7932 static dictionary literal (`scripts/brotli_dict2cyr.py`; never hand-edit) | full, brotli, woff |
+| brotli_dict.cyr | RFC 7932 dictionary geometry + FNV-1a self-check; the 122,784 bytes are `cyrius.cyml [embed] _brotli_dict_bin` (`docs/sources/brotli/dictionary.bin`) | full, brotli, woff |
 | tar.cyr        | Shared POSIX ustar/v7 tar pull-cursor; `tar_open_auto` sniffs gzip/xz/bzip2/zstd; path-traversal guards | full    |
 | zip.cyr        | PKZIP `.zip` container — in-memory reader + writer, methods 0/8, Zip64, streaming, Unix metadata | full    |
 | zip_methods.cyr | ZIP methods 12/93/95 (bzip2/zstd/xz), kept out of the lean `[lib.zip]` profile        | full    |

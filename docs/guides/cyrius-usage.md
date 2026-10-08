@@ -140,9 +140,6 @@ for f in src/*.cyr programs/*.cyr tests/tcyr/*.tcyr tests/bcyr/*.bcyr fuzz/*.fcy
   cyrius fmt --check "$f" > /dev/null 2>&1 || echo "needs fmt: $f"   # ONE file per call
 done
 cyrius vet  src/lib.cyr         # audit include dependencies
-python3 scripts/nul-literal-gate.py   # no NUL in string literals (docs/architecture/004)
-python3 scripts/brotli_dict2cyr.py docs/sources/brotli/dictionary.bin build/brotli_dict.regen.cyr \
-  && cmp build/brotli_dict.regen.cyr src/brotli_dict.cyr   # generated module is current
 bash scripts/brotli-smoke.sh          # local only: differential vs brotli -d 1.2.0 (needs the CLI)
 ```
 
