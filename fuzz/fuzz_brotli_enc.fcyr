@@ -1,0 +1,231 @@
+# sankoch — Brotli (RFC 7932) encoder fuzz harness (2.8.4)
+#
+# The encoder must turn every input, at every quality, into a stream that sankoch's decoder (and,
+# per scripts/brotli-encode-smoke.sh, the reference `brotli -d`) returns byte-exact; it must never
+# read past src + src_len, never write past dst + dst_cap, never exceed brotli_compress_bound,
+# and must fail closed (ERR_BUFFER_TOO_SMALL) on any shorter dst.
+# Inputs (2,000 encodes, ~10 s): random sizes 0..4,096 (nine in ten) or up to 300,000
+# (crossing meta-block boundaries), random quality 0..11, from eight generators: uniform bytes,
+# small alphabets (2..16 symbols), runs, a base block repeated with random edits (match-heavy,
+# with distance-cache hits), pseudo-words, little-endian counters, a signed random walk, and
+# concatenations of the others.
+# Invariants on every encode: 0 < r <= bound with src flush against a PROT_NONE page (a read past
+# src_len faults) and dst flush against one at dst_cap = bound (a write past it faults); the
+# stream decodes at the exact length to the input; every 7th input is re-encoded into a random
+# shorter cap (ERR_BUFFER_TOO_SMALL, dst again flush against the guard) and at exactly r (same
+# bytes); every 11th goes through compress_level / decompress(FORMAT_BROTLI) too.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0;
+
+fn _fuzz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fz_rand(n) {
+    var v = _fuzz_next() | (_fuzz_next() << 8) | (_fuzz_next() << 16);
+    return v % n;
+}
+
+var _FZ_MAX = 300000;
+var _fz_gsrc = 0;      # guard page: inputs end flush against it
+var _fz_gdst = 0;      # guard page: streams end flush against it
+var _fz_buf = 0;       # generated input
+var _fz_out = 0;       # decoded output
+var _fz_ref = 0;       # the first stream (re-encode checks)
+
+fn _fz_guard_map(n) {
+    var pages = (n + 4095) & (0 - 4096);
+    var m = syscall(SYS_MMAP, 0, pages + 4096, 3, 34, 0 - 1, 0);   # PROT_READ|WRITE, MAP_PRIVATE|ANON
+    var nr = 10;                                     # mprotect: x86_64 10, aarch64 226
+    if (SYS_LSEEK != 8) { nr = 226; }
+    assert(m > 0 && syscall(nr, m + pages, 4096, 0) == 0, "guard page mapped");
+    return m + pages;
+}
+
+# Generator g into buf[0..n).
+fn _fz_gen(buf, n, g) {
+    var i = 0;
+    if (g == 0) {
+        while (i < n) {
+            store8(buf + i, _fuzz_next());
+            i = i + 1;
+        }
+    } elif (g == 1) {
+        var k = 2 + _fz_rand(15);
+        var base = _fz_rand(256);
+        while (i < n) {
+            store8(buf + i, (base + _fz_rand(k)) & 255);
+            i = i + 1;
+        }
+    } elif (g == 2) {
+        while (i < n) {
+            var run = 1 + _fz_rand(200);
+            var b = _fuzz_next();
+            var j = 0;
+            while (j < run && i < n) {
+                store8(buf + i, b);
+                i = i + 1;
+                j = j + 1;
+            }
+        }
+    } elif (g == 3) {
+        var bl = 1 + _fz_rand(400);
+        while (i < n && i < bl) {
+            store8(buf + i, _fuzz_next());
+            i = i + 1;
+        }
+        while (i < n) {
+            var src = i - bl;
+            if (_fz_rand(4) == 0 && i > 70000) { src = _fz_rand(i); }   # an occasional far match
+            store8(buf + i, load8(buf + src));
+            if (_fz_rand(30) == 0) { store8(buf + i, _fuzz_next()); }
+            i = i + 1;
+        }
+    } elif (g == 4) {
+        var freq = "eeeeeeettttaaaooiinnsshrdlucmwfgypbvk";
+        var fl = strlen(freq);
+        while (i < n) {
+            var wl = 1 + _fz_rand(8);
+            var j2 = 0;
+            while (j2 < wl && i < n) {
+                store8(buf + i, load8(freq + _fz_rand(fl)));
+                i = i + 1;
+                j2 = j2 + 1;
+            }
+            if (i < n) {
+                store8(buf + i, 32);
+                i = i + 1;
+            }
+        }
+    } elif (g == 5) {
+        var v = _fz_rand(1000);
+        var step = 1 + _fz_rand(5);
+        while (i < n) {
+            store8(buf + i, (v >> ((i & 3) * 8)) & 255);
+            if ((i & 3) == 3) { v = v + step; }
+            i = i + 1;
+        }
+    } elif (g == 6) {
+        var w = 0;
+        while (i < n) {
+            w = w + _fz_rand(7) - 3;
+            store8(buf + i, w & 255);
+            i = i + 1;
+        }
+    } else {
+        while (i < n) {
+            var seg = 1 + _fz_rand(5000);
+            if (seg > n - i) { seg = n - i; }
+            _fz_gen(buf + i, seg, _fz_rand(7));
+            i = i + seg;
+        }
+    }
+    return 0;
+}
+
+var _fz_bad_rt = 0;
+var _fz_bad_bound = 0;
+var _fz_bad_short = 0;
+var _fz_bad_exact = 0;
+var _fz_bad_api = 0;
+var _fz_n_short = 0;
+
+fn _fz_one(it) {
+    var n = _fz_rand(4097);
+    if (_fz_rand(10) == 0) { n = _fz_rand(_FZ_MAX + 1); }
+    var q = _fz_rand(12);
+    _fz_gen(_fz_buf, n, _fz_rand(8));
+    var s = _fz_gsrc - n;
+    var i = 0;
+    while (i < n) {
+        store8(s + i, load8(_fz_buf + i));
+        i = i + 1;
+    }
+    var bound = brotli_compress_bound(n);
+    var d = _fz_gdst - bound;
+    var r = brotli_compress_level(s, n, d, bound, q);
+    if (r <= 0 || r > bound) {
+        _fz_bad_bound = _fz_bad_bound + 1;
+        return 0;
+    }
+    var o = brotli_decompress_capped(d, r, _fz_out, n + 1, n + 1);
+    if (n == 0) { o = brotli_decompress(d, r, _fz_out, 0); }
+    var ok = 1;
+    if (o != n) { ok = 0; }
+    i = 0;
+    while (i < n && ok == 1) {
+        if (load8(_fz_out + i) != load8(_fz_buf + i)) { ok = 0; }
+        i = i + 1;
+    }
+    if (ok == 0) {
+        _fz_bad_rt = _fz_bad_rt + 1;
+        return 0;
+    }
+    if (it % 7 == 0) {
+        i = 0;
+        while (i < r) {
+            store8(_fz_ref + i, load8(d + i));
+            i = i + 1;
+        }
+        var cap = _fz_rand(r);                   # 0 .. r - 1
+        var d2 = _fz_gdst - cap;
+        if (brotli_compress_level(s, n, d2, cap, q) != 0 - ERR_BUFFER_TOO_SMALL) {
+            _fz_bad_short = _fz_bad_short + 1;
+        }
+        _fz_n_short = _fz_n_short + 1;
+        var d3 = _fz_gdst - r;
+        if (brotli_compress_level(s, n, d3, r, q) != r) {
+            _fz_bad_exact = _fz_bad_exact + 1;
+        } else {
+            i = 0;
+            while (i < r) {
+                if (load8(d3 + i) != load8(_fz_ref + i)) {
+                    _fz_bad_exact = _fz_bad_exact + 1;
+                    i = r;
+                }
+                i = i + 1;
+            }
+        }
+    }
+    if (it % 11 == 0) {
+        var d4 = _fz_gdst - bound;
+        var r4 = compress_level(FORMAT_BROTLI, s, n, d4, bound, q);
+        if (r4 != r) { _fz_bad_api = _fz_bad_api + 1; }
+        if (n > 0 && decompress(FORMAT_BROTLI, d4, r4, _fz_out, n) != n) { _fz_bad_api = _fz_bad_api + 1; }
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    _fuzz_state = 0x5EED2084;
+    _fz_gsrc = _fz_guard_map(_FZ_MAX);
+    _fz_gdst = _fz_guard_map(brotli_compress_bound(_FZ_MAX));
+    _fz_buf = alloc(_FZ_MAX + 64);
+    _fz_out = alloc(_FZ_MAX + 64);
+    _fz_ref = alloc(brotli_compress_bound(_FZ_MAX) + 64);
+    var iters = 2000;
+    var it = 0;
+    while (it < iters) {
+        _fz_one(it);
+        it = it + 1;
+    }
+    assert_eq(_fz_bad_bound, 0, "fuzz_brotli_enc: every encode succeeds within brotli_compress_bound");
+    assert_eq(_fz_bad_rt, 0, "fuzz_brotli_enc: every stream decodes byte-exact");
+    assert_eq(_fz_bad_short, 0, "fuzz_brotli_enc: every shorter dst is ERR_BUFFER_TOO_SMALL");
+    assert_eq(_fz_bad_exact, 0, "fuzz_brotli_enc: an exact dst gives the same stream");
+    assert_eq(_fz_bad_api, 0, "fuzz_brotli_enc: compress_level / decompress(FORMAT_BROTLI) agree");
+    assert(_fz_n_short > 250, "fuzz_brotli_enc: short-cap re-encodes run");
+    fmt_int(iters);
+    sys_write(1, " encodes\n", 9);
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

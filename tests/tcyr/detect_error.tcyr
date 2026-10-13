@@ -177,6 +177,11 @@ fn test_oom_compress_sweep() {
     # so its OOM paths are finally sweepable — they were structurally invisible before.
     _oom_compress_path(FORMAT_ZSTD, 6, 30);
     _oom_retry_path(FORMAT_ZSTD, 6, 30);
+    # 2.8.4: the Brotli encoder — three allocations (workspace, hash counters, bucket table),
+    # each through the seam; quality 1 and 9 size the bucket table differently.
+    _oom_compress_path(FORMAT_BROTLI, 1, 6);
+    _oom_compress_path(FORMAT_BROTLI, 9, 6);
+    _oom_retry_path(FORMAT_BROTLI, 9, 6);
     # Recovery: fresh tables, no fault → normal compress works + decodes.
     _sankoch_reset_tables();
     var src = alloc(256);
@@ -298,8 +303,11 @@ fn test_oom_brotli_decompress_sweep() {
     _oom_brotli_path(0, "oom brotli_decompress sweep");
     _oom_brotli_path(1, "oom brotli_decompress_capped sweep");
     _oom_brotli_path(2, "oom decompress(FORMAT_BROTLI) sweep");
-    assert_eq(compress(FORMAT_BROTLI, OOM_BR_TEXT, 83, _tb_large, 8192), 0 - ERR_UNSUPPORTED_FORMAT,
-      "compress(FORMAT_BROTLI) is unsupported (decode-only codec)");
+    # 2.8.4: compress(FORMAT_BROTLI) encodes (it was ERR_UNSUPPORTED_FORMAT through 2.8.3).
+    var r = compress(FORMAT_BROTLI, OOM_BR_TEXT, 83, _tb_large, 8192);
+    assert(r > 0, "compress(FORMAT_BROTLI) encodes (2.8.4)");
+    var back = alloc(96);
+    assert_eq(decompress(FORMAT_BROTLI, _tb_large, r, back, 96), 83, "compress(FORMAT_BROTLI) round-trips");
     return 0;
 }
 

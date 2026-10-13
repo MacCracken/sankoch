@@ -11,7 +11,8 @@
 #   detect_format(src, src_len)                          -> Format or -err
 #   plus stream_*, lz4f_*, zlib_*_dict, deflate_*_dict,
 #   and {deflate,zlib,gzip}_enc_init_dict (v2.2.0+),
-#   brotli_decompress / brotli_decompress_capped (2.8.0, decode only)
+#   brotli_decompress / brotli_decompress_capped (2.8.0),
+#   brotli_compress / brotli_compress_level / brotli_compress_bound (2.8.4)
 
 # --- Standard library dependencies (order matters) ---
 include "lib/syscalls.cyr"
@@ -51,6 +52,7 @@ include "src/bzip2.cyr"
 include "src/zstd.cyr"
 include "src/brotli_dict.cyr"
 include "src/brotli.cyr"
+include "src/brotli_enc.cyr"
 include "src/tar.cyr"
 include "src/zip.cyr"
 include "src/zip_methods.cyr"
@@ -91,6 +93,7 @@ fn _sankoch_reset_tables(): i64 {
     _bzip2_reset_tables();
     _zstd_reset_tables();
     _brotli_reset_tables();
+    _brotli_enc_reset_tables();
     return 0;
 }
 
@@ -100,9 +103,9 @@ fn compress(format, src, src_len, dst, dst_cap): i64 {
 }
 
 # Compress with explicit level (1=fast, 6=default, 9=best). Honored by the
-# DEFLATE-based formats (deflate/zlib/gzip), bzip2 (block size 100..900 KB), and
-# zstd (match-finder depth + lazy). LZ4 / LZ4F and xz ignore it (accepted for
-# API uniformity).
+# DEFLATE-based formats (deflate/zlib/gzip), bzip2 (block size 100..900 KB),
+# zstd (match-finder depth + lazy) and Brotli (quality 0..11, the `brotli -q`
+# scale; 2.8.4). LZ4 / LZ4F and xz ignore it (accepted for API uniformity).
 fn compress_level(format, src, src_len, dst, dst_cap, level): i64 {
     if (src_len < 0 || dst_cap < 0) { return 0 - ERR_INVALID_INPUT; }
     _sankoch_lock();
@@ -144,7 +147,10 @@ fn _compress_inner(format, src, src_len, dst, dst_cap, level): i64 {
         # unlocked inner (2.5.9 M-12 wrapped the public entry in _sankoch_lock).
         return _zstd_compress_inner(src, src_len, dst, dst_cap, level);
     }
-    # FORMAT_BROTLI lands here too: decode-only codec (2.8.0).
+    if (format == FORMAT_BROTLI) {
+        # Brotli encode (2.8.4): the level is the quality, 0..11 on the `brotli -q` scale.
+        return _brotli_compress_inner(src, src_len, dst, dst_cap, level);
+    }
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 

@@ -346,6 +346,67 @@ fn test_brotli_workspace_survives_a_reset() {
     return 0;
 }
 
+# Brotli encode (2.8.4): the workspace slab, the hash counters and the bucket table (sized by
+# `_bre_hbb`). Encodes the link-gate text at quality 9 (the largest bucket table) and returns the
+# stream length, with the stream in `out`; 0 when it does not decode back exactly.
+fn _ar_brotli_enc(out, cap): i64 {
+    var tl = strlen(AR_BR_TEXT);
+    var n = tl * 64;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        store8(src + i, load8(AR_BR_TEXT + (i % tl)));
+        i = i + 1;
+    }
+    var r = brotli_compress_level(src, n, out, cap, 9);
+    if (r <= 0) { return 0; }
+    var back = alloc(n);
+    if (brotli_decompress(out, r, back, n) != n) { return 0; }
+    i = 0;
+    while (i < n) {
+        if (load8(back + i) != load8(src + i)) { return 0; }
+        i = i + 1;
+    }
+    return r;
+}
+
+fn test_brotli_encoder_survives_a_reset() {
+    # Warm the encoder, measure the arena, reset, hand every byte to a victim, encode again. A
+    # memoized slab or hash table that survived the reset would build the second stream inside the
+    # victim; the stream must also be byte-identical to the first.
+    alloc_reset();
+    _brotli_enc_reset_tables();                  # build in THIS epoch, inside the measured span
+    var first = alloc(8192);
+    var r1 = _ar_brotli_enc(first, 8192);
+    assert(r1 > 0, "brotli enc: warm encode round-trips");
+    assert(_bre_ws != 0 && _bre_hnum != 0 && _bre_hbuck != 0, "brotli enc: workspace and hash built");
+    assert_eq(_bre_hbb, 6, "brotli enc: quality 9 bucket table (2^6 per bucket)");
+    var words = (alloc_used() + 64) / 8;
+    var saved = syscall(SYS_MMAP, 0, 1 << 16, 3, 34, 0 - 1, 0);   # the first stream, off the arena
+    var i = 0;
+    while (i < r1) {
+        store8(saved + i, load8(first + i));
+        i = i + 1;
+    }
+    alloc_reset();
+    var victim = alloc(words * 8);
+    _ar_fill64(victim, words, 0x5A5AC3C3A5A53C3C);
+    var second = alloc(8192);
+    var r2 = _ar_brotli_enc(second, 8192);
+    assert_eq(r2, r1, "brotli enc: same length after alloc_reset");
+    var same = 1;
+    i = 0;
+    while (i < r1) {
+        if (load8(second + i) != load8(saved + i)) { same = 0; }
+        i = i + 1;
+    }
+    assert_eq(same, 1, "brotli enc: same stream after alloc_reset");
+    assert_eq(_ar_bad64(victim, words, 0x5A5AC3C3A5A53C3C), 0, "brotli enc: caller memory untouched after alloc_reset");
+    assert(_bre_ws < victim || _bre_ws >= victim + words * 8, "brotli enc: workspace not inside the victim");
+    assert(_bre_hbuck < victim || _bre_hbuck >= victim + words * 8, "brotli enc: bucket table not inside the victim");
+    return 0;
+}
+
 fn test_reset_tables_zeroes_every_memoized_pointer() {
     # The contract, stated directly: after `_sankoch_reset_tables()` every memoized
     # arena pointer and every flag that gates one is 0. Warm every codec first so a
@@ -363,6 +424,9 @@ fn test_reset_tables_zeroes_every_memoized_pointer() {
     assert(_ze_wcnt != 0, "warm: zstd FSE weight scratch built");
     assert_eq(_ar_brotli_rt(), 1, "warm: brotli decode exact");
     assert(_brd_ws != 0, "warm: brotli workspace built");
+    var benc = alloc(8192);
+    assert(_ar_brotli_enc(benc, 8192) > 0, "warm: brotli encode exact");
+    assert(_bre_ws != 0 && _bre_hbuck != 0, "warm: brotli encoder built");
 
     _sankoch_reset_tables();
     # xz BT4 + zstd optimal parser + zstd FSE weights (the three 2.7.10 missed).
@@ -413,6 +477,8 @@ fn test_reset_tables_zeroes_every_memoized_pointer() {
       | _ze_plan_ready | _ze_pmode | _ze_ct_ll | _ze_ct_of | _ze_ct_ml, 0,
       "reset: zstd pools + flags");
     assert_eq(_brd_ws, 0, "reset: brotli workspace");
+    assert_eq(_bre_ws | _bre_hnum | _bre_hbuck, 0, "reset: brotli encoder workspace + hash");
+    assert_eq(_bre_hbb, 0 - 1, "reset: brotli encoder bucket-table size");
     return 0;
 }
 
@@ -619,6 +685,7 @@ fn main(): i64 {
     test_zstd_fse_weight_scratch_survives_a_reset();
     test_every_alloc_bearing_codec_survives_a_reset();
     test_brotli_workspace_survives_a_reset();
+    test_brotli_encoder_survives_a_reset();
     test_unlocked_public_builders_guard_the_arena();
     test_failed_canary_arm_still_detects_a_reset();
     test_stranded_canary_does_not_misfire_in_steady_state();

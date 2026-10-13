@@ -202,6 +202,25 @@ fn bench_br(name, path, buf, bmax, out, ocap, iters) {
     return dlen;
 }
 
+# Brotli encode line (2.8.4): brotli_compress_level at quality q, then decimal MB/s of input.
+fn bench_bre(name, src, slen, q, dst, dcap, iters) {
+    var clen = brotli_compress_level(src, slen, dst, dcap, q);
+    if (clen <= 0) { _print("  SKIP "); _print(name); _nl(); return 0 - 1; }
+    var start = time_ns();
+    var i = 0;
+    while (i < iters) { brotli_compress_level(src, slen, dst, dcap, q); i = i + 1; }
+    var ns_per = (time_ns() - start) / iters;
+    if (ns_per < 1) { ns_per = 1; }
+    var mbx10 = slen * 10000 / ns_per;
+    _print("  "); _print(name);
+    _print("  in="); _print_int(slen);
+    _print("  out="); _print_int(clen);
+    _print("  ns/op="); _print_int(ns_per);
+    _print("  MB/s="); _print_int(mbx10 / 10); _print("."); _print_int(mbx10 % 10);
+    _nl();
+    return clen;
+}
+
 # LZ4 frame compress benchmark (direct — no FORMAT_LZ4F in the generic API).
 fn bench_lz4f_c(name, src, slen, dst, dcap, iters) {
     var clen = lz4f_compress(src, slen, dst, dcap);
@@ -569,6 +588,33 @@ fn main() {
       bbuf, 262144, bout, 524288, 200);
     bench_br("brotli d records  68K", "tests/data/brotli/small/bswitch_records_68k.q11w16.br",
       bbuf, 262144, bout, 524288, 20);
+    println("");
+
+    # ---- brotli encode (2.8.4) — informational, not SIZE-gated (the encoder is new; its output
+    # is not frozen). Quality is the `brotli -q` scale; 6 is compress(FORMAT_BROTLI)'s default.
+    # The 152K text is alice29.txt (google testdata), decoded from its committed stream.
+    println("--- brotli encode (RFC 7932, no dictionary) ---");
+    var alen = _bench_read("tests/data/brotli/google/alice29.txt.compressed", bbuf, 262144);
+    var atxt = alloc(262144);
+    var an = 0;
+    if (alen > 0) { an = decompress(FORMAT_BROTLI, bbuf, alen, atxt, 262144); }
+    var bcap = brotli_compress_bound(262144);
+    var benc = alloc(bcap);
+    if (an > 0) {
+        bench_bre("brotli c text q1 152K", atxt, an, 1, benc, bcap, 10);
+        bench_bre("brotli c text q6 152K", atxt, an, 6, benc, bcap, 10);
+        bench_bre("brotli c text q9 152K", atxt, an, 9, benc, bcap, 5);
+    }
+    fill_text(src4k, 4096);
+    bench_bre("brotli c text  4K q6", src4k, 4096, 6, benc, bcap, 50);
+    fill_zeros(src4k, 4096);
+    bench_bre("brotli c zeros 4K q6", src4k, 4096, 6, benc, bcap, 50);
+    fill_random(src4k, 4096);
+    bench_bre("brotli c rand  4K q6", src4k, 4096, 6, benc, bcap, 50);
+    if (an > 0) {
+        var bl6 = brotli_compress_level(atxt, an, benc, bcap, 6);
+        bench_d("brotli d own q6 152K", FORMAT_BROTLI, benc, bl6, bout, 524288, 20);
+    }
     println("");
 
     # ---- ratio-capped decompress (2.4.5) — informational, not SIZE-gated.

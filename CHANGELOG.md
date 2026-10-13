@@ -7,6 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.4] — 2026-10-13
+
+**The Brotli encoder (RFC 7932)** — the encode half of the codec 2.8.0 started, completing Brotli as
+2.5.5 completed zstd — and **the cyrius pin moves 6.7.5 → 6.7.10**, the move 2.8.3 had to block. The
+pin move was made and verified on its own first (no source change, every gate green, all 12 bundles
+byte-identical); the encoder followed on that toolchain. The 47 `SIZE` lines are identical to
+2.8.3's: no existing encoder changed.
+
+### Added
+
+- **Brotli encoder** — new `src/brotli_enc.cyr` (1,865 lines), listed in `[lib]` only, after
+  `src/brotli.cyr` ([ADR 0002](docs/adr/0002-brotli-encoder-placement-and-quality.md)):
+  - **API**: `brotli_compress(src, src_len, dst, dst_cap)` (quality 6),
+    `brotli_compress_level(…, quality)` (0..11, the `brotli -q` scale; out-of-range values clamp),
+    `brotli_compress_bound(src_len)` (google/brotli's `BrotliEncoderMaxCompressedSize`, a
+    guarantee here: architecture [005](docs/architecture/005-brotli-encoder-invariants.md)).
+    `compress(FORMAT_BROTLI)` / `compress_level(FORMAT_BROTLI, …, level)` now encode, the level
+    passed through as the quality; through 2.8.3 they returned `ERR_UNSUPPORTED_FORMAT`.
+  - **Interop**: every quality's output decodes byte-exact through the reference `brotli -d` 1.2.0
+    and through `brotli_decompress`. New `scripts/brotli-encode-smoke.sh` +
+    `programs/brotli_encode_smoke.cyr`: 19 fixtures × 12 qualities (empty, 1 byte, meta-block
+    boundaries, random, zeros, records, JSON, a deep-tree Fibonacci input, UTF-8, an ELF binary,
+    LiberationSans, and an 18 MiB input whose repeat lies past the 24-bit window), each also
+    self-checked through sankoch's decoder and against the bound.
+  - **Shape** (first cut, no static dictionary — a valid RFC 7932 stream needs none): WBITS 16 when
+    it covers the input, else the smallest of 18..24; 256 KiB meta-blocks, each written compressed
+    only when no larger than storing it (else rewound and stored, the ring restored);
+    google/brotli's H5 bucketed hash (2^15 buckets × 2^bb positions), the distance cache checked
+    first, its backward-reference score, a lazy step from quality 3 and the incompressible-run
+    skip; `ShouldCompress` (an incompressible meta-block is stored without being modeled); one
+    block type per category, NPOSTFIX = NDIRECT = 0; literal context modeling from quality 4 —
+    each candidate mode (UTF8 and SIGNED; all four from quality 9) is clustered by an estimate,
+    then the candidates and a single tree are compared by **exact** cost, so context modeling never
+    costs literal bits; length-limited (15) Huffman with count-limit doubling, simple and complex
+    prefix codes with run-length-coded lengths; context maps with MTF + zero runs + IMTF.
+  - **Ratio** (informational, not SIZE-gated): smaller than `brotli -q N -w 24` at q1–q6 on source
+    text, an ELF binary and a TTF font (by 1.5–12 %); within 1 % at q9 on those; 10–13 % larger at
+    q11, where the reference adds the static dictionary, block splitting and its optimal parse. On
+    record-structured data the reference leads from q5. Qualities 10 and 11 equal 9 at 2.8.4. Full
+    tables: [`docs/benchmarks/2026-10-13-2.8.4-brotli-encoder.md`](docs/benchmarks/2026-10-13-2.8.4-brotli-encoder.md).
+  - **Speed** (this machine): alice29 152 KB at 18.6 MB/s (q1), 7.3 MB/s (q6), 5.4 MB/s (q9).
+  - **Memory** (arena, first use, memoized): a 2.15 MiB workspace + 128 KiB of hash counters + a
+    128 KiB × 2^bb bucket table — about 2.4 MiB at quality 0, 6.3 MiB at 6, 10.3 MiB at 9–11. The
+    table grows when a later call needs more, never shrinks.
+  - **Profiles**: `[lib.brotli]` and `[lib.woff]` stay decode-only (rekha reads fonts; nothing asks
+    to write Brotli from a profile). `_brotli_enc_reset_tables` is registered in `lib.cyr` only.
+- **Bench**: a `brotli encode` section (alice29 at q1 / q6 / q9; 4 KB text / zeros / random at q6;
+  a decode of the q6 stream). Informational, outside the SIZE block.
+- **Docs**: [ADR 0002](docs/adr/0002-brotli-encoder-placement-and-quality.md) (placement, the
+  quality scale, exact-cost context modeling) and [architecture 005](docs/architecture/005-brotli-encoder-invariants.md)
+  (the bound, the mirrored distance ring, the window limit, the shared decoder tables, memory).
+
+### Changed
+
+- **cyrius pin 6.7.5 → 6.7.10** (`cyrius.cyml`). The 2.8.3 blocker is gone: cyrius 6.7.6 no longer
+  counts the project's own fold as an `[embed]` owner, so this repo builds against a stdlib whose
+  `lib/sankoch.cyr` is the 2.8.3 fold declaring `_brotli_dict_bin` (6.7.10 ships exactly that).
+  `cyrius deps` re-vendored `lib/` (19 of 28 leaves changed: alloc, atomic, fmt, fnptr, mmap, the
+  syscall peers, thread*, vec; `lib/` and `cyrius.lock` stay untracked). The move needed **no source
+  change**, verified before any encoder work: lint / fmt / vet clean, all 12 bundles regenerated
+  byte-identical to 2.8.3, the 12-profile link gate, all 29 suites (4,500,567 assertions, 0 failed),
+  raw-include `--no-deps` builds, the aarch64 cross-build, all 7 fuzz harnesses, and the 47 SIZE
+  lines identical. 6.7.6–6.7.10's behaviour changes (packed narrow struct fields and the struct
+  "handle line", `dyn` reserved, arity checks on forward calls, slice element widths) reach nothing
+  here: sankoch declares no struct and no such name. cyrius 6.7.10's lint adds a *note* (not a
+  warning; CI gates on warnings) on `types.cyr`'s bare `ERR_*` members, which the 2.9.0
+  `SANKOCH_ERR_*` item already covers.
+- **`compress(FORMAT_BROTLI)` encodes** (above). Three checks that pinned the old
+  `ERR_UNSUPPORTED_FORMAT` now pin a round trip instead: `detect_error.tcyr`,
+  `brotli_decompress.tcyr` T6, and the full bundle's probe in `scripts/profile-link-gate.sh`, whose
+  `pg_rt` loop now covers `FORMAT_BROTLI` (encode → decode before and after `alloc_reset()`).
+- **`src/types.cyr`**: the `FORMAT_BZIP2` / `FORMAT_ZSTD` / `FORMAT_BROTLI` comments said "decode
+  only"; bzip2 and zstd have encoded since 2.4.3 / 2.5.5, and Brotli does now.
+- **`dist/` regenerated** (cyrius 6.7.10 `distlib`): all 12 bundles read `# Version: 2.8.4`. The full
+  bundle gains the encoder (18,392 → 20,265 lines); every profile bundle changes only in its header
+  and the `types.cyr` comments.
+
+### Fixed
+
+- **The raw-include suites' stray header lines** (a 2.8.3 closeout finding): `sankoch_raw_include.tcyr`
+  and `sankoch_zlib_raw_include.tcyr` each carried a second, truncated copy of their header,
+  including a live duplicate `include "dist/<bundle>.cyr"` line. Removed; the files compile and run
+  as before.
+
+### Tests
+
+- **New `tests/tcyr/brotli_compress.tcyr`** (16 functions, 77 assertions): E1 tables against the
+  decoder's own (length codes vs its command LUT, every insert-and-copy cell, distances 1..70,000
+  plus samples to 2^24 vs its distance LUT, short codes vs its ring arithmetic, the Q16 log2); E2
+  every prefix-code shape written by the encoder and read back by the decoder's `_brd_read_code`
+  (1,600 random histograms over alphabets 2..704, the one-symbol code-length code, repeat chains,
+  the length limiter on Fibonacci counts), each symbol decoding in exactly its length; E3 2,000
+  context maps through `_brd_read_cmap`; E4 round trips at every quality (0..4,096 B × 8 kinds, and
+  64 KiB..600 KB across the WBITS and meta-block boundaries) with `src` and `dst` flush against
+  PROT_NONE pages and `dst` at exactly the bound, dispatch parity and determinism; E5 every shorter
+  `dst_cap` is `ERR_BUFFER_TOO_SMALL` with no write past it, and argument errors; E6 the stored
+  fallback, and the distance ring across a stored meta-block; E7 the 24-bit window (18 MiB); E8 OOM
+  at each of the three allocations and at the hash growth, with no latch; E9 each of the four
+  context modes chosen for the input built for it.
+  - **Mutation-checked**: 14 planted encoder bugs, 13 fail the suite (wrong ring rule, a writer
+    store 4 bytes past `dst_cap`, no window limit, a match reading past the meta-block, a code-length
+    trim off by one, an unreversed repeat chain, an untracked previous length, IMTF bit 0, a dropped
+    second context byte, unsorted simple codes, the ring not restored after a stored block, a wrong
+    short-code table, a bound one byte short). The 14th (recording a position in the hash before
+    looking it up) costs only ratio: the lookup skips distance 0.
+- **`arena_reset.tcyr`** (+12): the encoder's four memoized values in the inventory cell, and a
+  survival cell (encode, `alloc_reset()`, the whole arena handed to a victim, encode again: the same
+  stream, the victim untouched). Without the `lib.cyr` registration it fails with 20,695 victim
+  words overwritten.
+- **`detect_error.tcyr`** (+19): `FORMAT_BROTLI` in the OOM sweeps (quality 1 and 9) and the
+  partial-OOM retry sweep.
+- **`sankoch_raw_include.tcyr`** (+3): a quality-9 encode and decode from the bundle alone.
+- **New `fuzz/fuzz_brotli_enc.fcyr`** (8th harness, auto-discovered by CI): 2,000 encodes of eight
+  input generators (0..4,096 B, one in ten up to 300,000 B) at random qualities, `src` and `dst`
+  guard-paged, every stream decoded exactly; every 7th re-encoded into a random shorter cap and at the
+  exact length; every 11th through `compress_level` / `decompress(FORMAT_BROTLI)`. It ends `return
+  assert_summary();`, so a failed check fails CI (the 2.8.3 finding about the older five harnesses
+  still stands for the closeout). About 12 s.
+- **Pre-release review**: an independent adversarial review of `brotli_enc.cyr` (workspace bounds
+  against their worst cases, out-of-bounds reads / writes, the bitstream field by field against the
+  decoder, shifts and overflow, the rewind and the bound proof, OOM / arena reset, termination) found
+  **no HIGH or MEDIUM issue**, and 1,500 further random inputs, a repeat at exactly the 24-bit
+  window edge, and five 1 MiB pathological inputs at quality 9 (10–382 ms each) all decoded through
+  `brotli -d`. One LOW, fixed: `brotli_compress_bound` gave a size for `src_len > 2^32 - 1`, which
+  the encoder rejects; it now returns `ERR_INVALID_INPUT` too (two E5 rows). Dead code removed:
+  `_bre_cluster`'s unused total. Recorded, not changed: raising the quality step by step strands each
+  smaller bucket table (0 → 7 strands about 7.9 MiB until the next `alloc_reset()`), and every call
+  zeroes 128 KiB of hash counters (architecture 005, *Memory*).
+- **Totals: 4,500,678 assertions across 30 suites, 0 failed** (was 4,500,567 across 29); 8 fuzz
+  harnesses clean; the 12-profile link gate, core tripwire, aarch64 cross-build (including
+  `fuzz_brotli_enc`), lint / fmt / vet all green.
+
 ## [2.8.3] — 2026-10-08
 
 The cyrius W2 stdlib-wave release: the pin moves to **6.7.5**, and three 6.7.x features replace code

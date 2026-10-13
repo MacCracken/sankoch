@@ -714,7 +714,8 @@ fn test_t6_caps() {
     assert(decompress(FORMAT_BROTLI, s, 0 - 1, d, 70000) == 0 - ERR_INVALID_INPUT, "T6 decompress src_len -1");
     # dst == 0 with dst_cap == 0 is allowed for an empty stream.
     assert(brotli_decompress("\x3b", 1, 0, 0) == 0, "T6 empty stream into dst 0 / cap 0");
-    assert(compress(FORMAT_BROTLI, s, 16, d, 70000) == 0 - ERR_UNSUPPORTED_FORMAT, "T6 compress is unsupported");
+    var ce = compress(FORMAT_BROTLI, s, 16, d, 70000);   # 2.8.4: the encoder (was unsupported)
+    assert(ce > 0 && brotli_decompress(d, ce, s + 4096, 64) == 16, "T6 compress(FORMAT_BROTLI) round-trips (2.8.4)");
     assert(detect_format("\x3b\x3b", 2) != FORMAT_BROTLI, "T6 detect_format never returns Brotli");
     return 0;
 }

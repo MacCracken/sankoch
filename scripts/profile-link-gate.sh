@@ -387,10 +387,11 @@ probe_body_tar() {
     printf '    return 0;\n}\n'
 }
 
-# Brotli has no encoder, so its probes are decode-only: the link-gate vector below (a
-# dictionary + context-map stream) through both public entries, plus a 16-byte uncompressed
-# meta-block that allocates nothing. Both run in each pass, so the second pass decodes after
-# alloc_reset() with the old workspace slab owned by the victim buffer.
+# [lib.brotli] and [lib.woff] carry no Brotli encoder (2.8.4 keeps brotli_enc.cyr in [lib] only),
+# so these probes are decode-only: the link-gate vector below (a dictionary + context-map stream)
+# through both public entries. Both run in each pass, so the second pass decodes after
+# alloc_reset() with the old workspace slab owned by the victim buffer. The full probe also
+# round-trips the encoder (compress_level(FORMAT_BROTLI, ...) in its pg_rt loop).
 pg_brotli() {
     cat <<CYR
     v = pg_hex("__BR__");
@@ -436,10 +437,9 @@ probe_body_full() {
     pg_expect(decompress(FORMAT_LZ4F, v, _pg_len, out, PG_N + 64), out, P, PG_N, "decompress(LZ4F vector)");
     v = pg_hex("__BR__");
     pg_expect(decompress(FORMAT_BROTLI, v, _pg_len, out, PG_N + 64), out, P, PG_N, "decompress(BROTLI vector)");
-    if (compress(FORMAT_BROTLI, P, PG_N, out, PG_N + 64) != 0 - ERR_UNSUPPORTED_FORMAT) { pg_fail("compress(BROTLI) must be unsupported"); }
 CYR
     pg_brotli full
-    for f in LZ4 LZ4F DEFLATE ZLIB GZIP XZ BZIP2 ZSTD; do
+    for f in LZ4 LZ4F DEFLATE ZLIB GZIP XZ BZIP2 ZSTD BROTLI; do
         pg_rt "compress_level(FORMAT_$f, G, GN, c, GN * 2 + 4096, 9)" \
               "decompress(FORMAT_$f, c, cl, o, GN + 64)" "full $f"
     done

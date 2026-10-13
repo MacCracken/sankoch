@@ -1,0 +1,1208 @@
+# sankoch — Brotli (RFC 7932) encoder suite (2.8.4)
+#
+# E1  tables against the decoder's: every insert / copy length code's base and extra bits against
+#     the decoder's command LUT (_brd_cmd), every length 0..40,000 plus each code's range ends
+#     through _bre_ins_code / _bre_copy_code, every (insert code, copy code, implicit) symbol's
+#     cell, every distance 1..70,000 (and samples to 2^24) through _bre_dsym against the decoder's
+#     distance LUT (_brd_dlut), short codes against the decoder's ring arithmetic, the Q16 log2.
+# E2  prefix codes, writer against reader: Huffman depths are complete and within the limit
+#     (count-limit doubling on Fibonacci counts); random histograms over alphabets 2..704 in every
+#     shape the writer branches on (1..4 symbols, equal lengths = a one-symbol code-length code,
+#     long runs = RLE, sparse = zero runs) are stored by _bre_store_code and read back by the
+#     decoder's _brd_read_code, and every used symbol decodes from its code in exactly its length.
+# E3  context maps: _bre_store_cmap -> the decoder's _brd_read_cmap is the identity.
+# E4  round trips at every quality 0..11 over generated inputs (empty .. 600,000 bytes, across the
+#     WBITS 16 / 18 and meta-block boundaries) with src flush against a PROT_NONE page (no
+#     over-read) and dst flush against one at exactly brotli_compress_bound (no over-write);
+#     output <= the bound; exact-cap decode; dispatch parity (compress / compress_level /
+#     decompress with FORMAT_BROTLI); determinism across calls and hash growth.
+# E5  dst bounds: every cap below the stream's length is ERR_BUFFER_TOO_SMALL with dst flush
+#     against a PROT_NONE page (a write past dst_cap faults); the exact length succeeds with the
+#     same bytes; argument errors.
+# E6  the stored fallback: incompressible input costs exactly its stored size; mixed input mixes
+#     both meta-block kinds and still beats storing; the distance ring survives a stored block.
+# E7  window: an 18 MiB input whose repeat lies past the 24-bit window round-trips (a match beyond
+#     (1 << 24) - 16 would decode as a dictionary reference).
+# E8  OOM: a fault at each workspace allocation (and at the hash growth to a higher quality) is
+#     ERR_OOM, and the next call succeeds with no reset (no latch).
+# E9  literal context modeling: LSB6 / MSB6 / UTF8 / SIGNED are each chosen for the input built
+#     for it, and the clustered context map (NTREESL >= 2) round-trips.
+#
+# Reference-CLI interop (`brotli -d` 1.2.0 on every quality) is scripts/brotli-encode-smoke.sh.
+#
+# Run: cyrius test tests/tcyr/brotli_compress.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+var _bc_rng = 0x9E3779B97F4A7C15;
+var _bc_gsrc = 0;      # PROT_NONE page; inputs copied to end flush against it
+var _bc_gdst = 0;      # PROT_NONE page; streams written to end flush against it
+var _BC_GMAX = 1048576;
+var _bc_out = 0;       # decode buffer
+var _bc_in = 0;        # input staging
+var _bc_s2 = 0;        # second stream buffer (parity / determinism)
+
+fn _bc_rand(n) {
+    _bc_rng = _bc_rng * 6364136223846793005 + 1442695040888963407;
+    return (_bc_rng >> 33) % n;
+}
+
+# RW pages for n bytes followed by one PROT_NONE page; returns the guard page's address, so a
+# buffer of k bytes placed at (returned - k) ends flush against it.
+fn _bc_guard_map(n) {
+    var pages = (n + 4095) & (0 - 4096);
+    var m = syscall(SYS_MMAP, 0, pages + 4096, 3, 34, 0 - 1, 0);   # PROT_READ|WRITE, MAP_PRIVATE|ANON
+    var nr = 10;                                     # mprotect: x86_64 10, aarch64 226
+    if (SYS_LSEEK != 8) { nr = 226; }
+    assert(m > 0 && syscall(nr, m + pages, 4096, 0) == 0, "guard page mapped");
+    return m + pages;
+}
+
+fn _bc_init() {
+    _heap_base = syscall(12, 0);
+    _heap_end = _heap_base + 134217728;
+    syscall(12, _heap_end);
+    _heap_ptr = _heap_base;
+    _bc_gsrc = _bc_guard_map(_BC_GMAX);
+    _bc_gdst = _bc_guard_map(_BC_GMAX + 65536);
+    _bc_out = alloc(_BC_GMAX + 64);
+    _bc_in = alloc(_BC_GMAX + 64);
+    _bc_s2 = alloc(_BC_GMAX + 65536);
+    return 0;
+}
+
+# ================================================================
+# E1: tables
+# ================================================================
+
+fn test_e1_length_codes() {
+    _bre_init_tables();
+    # Code bases / extra bits against the decoder's command LUT, cell by cell.
+    var ib = "aaaaiiaqiqq";
+    var cb = "aiaiaiqaqiq";
+    var ok = 1;
+    var sym = 0;
+    while (sym < 704) {
+        var cell = sym >> 6;
+        var ic = load8(ib + cell) - 97 + ((sym >> 3) & 7);
+        var cc = load8(cb + cell) - 97 + (sym & 7);
+        var e = load64(&_brd_cmd + sym * 8);
+        if ((e & 65535) != load64(&_bre_ins_base + ic * 8)) { ok = 0; }
+        if (((e >> 32) & 31) != load64(&_bre_ins_nb + ic * 8)) { ok = 0; }
+        if (((e >> 16) & 4095) != load64(&_bre_cpy_base + cc * 8)) { ok = 0; }
+        if (((e >> 40) & 31) != load64(&_bre_cpy_nb + cc * 8)) { ok = 0; }
+        sym = sym + 1;
+    }
+    assert(ok == 1, "E1: length-code tables equal the decoder's command LUT");
+    # Every length lands inside its code's range.
+    ok = 1;
+    var n = 0;
+    while (n <= 40000) {
+        var c = _bre_ins_code(n);
+        var b = load64(&_bre_ins_base + c * 8);
+        if (n < b || n >= b + (1 << load64(&_bre_ins_nb + c * 8))) { ok = 0; }
+        if (n >= 2) {
+            var c2 = _bre_copy_code(n);
+            var b2 = load64(&_bre_cpy_base + c2 * 8);
+            if (n < b2 || n >= b2 + (1 << load64(&_bre_cpy_nb + c2 * 8))) { ok = 0; }
+        }
+        n = n + 1;
+    }
+    assert(ok == 1, "E1: every insert / copy length 0..40000 inside its code's range");
+    # Each code's last value, and the 24-bit tops.
+    ok = 1;
+    var k = 0;
+    while (k < 24) {
+        var top = load64(&_bre_ins_base + k * 8) + (1 << load64(&_bre_ins_nb + k * 8)) - 1;
+        if (_bre_ins_code(top) != k) { ok = 0; }
+        if (_bre_ins_code(load64(&_bre_ins_base + k * 8)) != k) { ok = 0; }
+        var ctop = load64(&_bre_cpy_base + k * 8) + (1 << load64(&_bre_cpy_nb + k * 8)) - 1;
+        if (_bre_copy_code(ctop) != k) { ok = 0; }
+        if (_bre_copy_code(load64(&_bre_cpy_base + k * 8)) != k) { ok = 0; }
+        k = k + 1;
+    }
+    assert(ok == 1, "E1: every code's first and last length map back to it");
+    assert_eq(_bre_ins_code(22594 + 16777215), 23, "E1: insert 22594 + 2^24 - 1 is code 23");
+    assert_eq(_bre_copy_code(2118 + 16777215), 23, "E1: copy 2118 + 2^24 - 1 is code 23");
+    return 0;
+}
+
+fn test_e1_cmd_symbols() {
+    _bre_init_tables();
+    var ok = 1;
+    var okimp = 1;
+    var ic = 0;
+    while (ic < 24) {
+        var cc = 0;
+        while (cc < 24) {
+            var ul = 0;
+            while (ul < 2) {
+                var sym = _bre_cmd_sym(ic, cc, ul);
+                if (sym < 0 || sym >= 704) {
+                    ok = 0;
+                } else {
+                    var e = load64(&_brd_cmd + sym * 8);
+                    if ((e & 65535) != load64(&_bre_ins_base + ic * 8)) { ok = 0; }
+                    if (((e >> 16) & 4095) != load64(&_bre_cpy_base + cc * 8)) { ok = 0; }
+                    var imp = (e >> 50) & 1;
+                    var want = 0;
+                    if (ul == 1 && ic < 8 && cc < 16) { want = 1; }
+                    if (imp != want) { okimp = 0; }
+                }
+                ul = ul + 1;
+            }
+            cc = cc + 1;
+        }
+        ic = ic + 1;
+    }
+    assert(ok == 1, "E1: every (insert code, copy code) symbol decodes to that pair");
+    assert(okimp == 1, "E1: implicit-distance cells exactly when asked and the codes fit");
+    return 0;
+}
+
+# The decoder's distance for symbol / extra (NPOSTFIX = NDIRECT = 0) through its own LUT.
+fn test_e1_distances() {
+    _bre_init_tables();
+    _brd_init_tables();
+    assert(_brd_ws_ensure() == 0, "E1: decoder workspace");
+    _brd_dlut(0, 0);
+    var lut = _brd_ws + BRD_WS_DLUT;
+    var ok = 1;
+    var d = 1;
+    while (d <= 70000) {
+        var s = _bre_dsym(d + 15);
+        var de = load64(lut + s * 8);
+        if (s < 16 || s >= 64) { ok = 0; }
+        if ((de >> 32) != _bre_dnb) { ok = 0; }
+        if (_bre_dx >= (1 << _bre_dnb)) { ok = 0; }
+        if ((de & 0xFFFFFFFF) + _bre_dx != d) { ok = 0; }
+        d = d + 1;
+    }
+    var i = 0;
+    while (i < 20000) {
+        var dd = 1 + _bc_rand(16777200);
+        var s2 = _bre_dsym(dd + 15);
+        var de2 = load64(lut + s2 * 8);
+        if (s2 >= 64 || (de2 >> 32) != _bre_dnb || (de2 & 0xFFFFFFFF) + _bre_dx != dd) { ok = 0; }
+        i = i + 1;
+    }
+    var top = 16777200;                          # the largest WBITS 24 distance
+    var s3 = _bre_dsym(top + 15);
+    if ((load64(lut + s3 * 8) & 0xFFFFFFFF) + _bre_dx != top) { ok = 0; }
+    assert(ok == 1, "E1: distance symbols + extra bits decode to the distance (1..70000, samples, 2^24 - 16)");
+    # Short codes against the decoder's ring arithmetic (brotli.cyr _brd_mb_body).
+    var oks = 1;
+    var nshort = 0;
+    var t = 0;
+    while (t < 3000) {
+        _bre_r0 = 1 + _bc_rand(60);
+        _bre_r1 = 1 + _bc_rand(60);
+        _bre_r2 = 1 + _bc_rand(60);
+        _bre_r3 = 1 + _bc_rand(60);
+        var x = 1;
+        while (x <= 70) {
+            var c = _bre_dcode(x);
+            if (c >= 16) {
+                if (c != x + 15) { oks = 0; }
+            } else {
+                nshort = nshort + 1;
+                var got = _bre_r0;
+                if (c == 1) { got = _bre_r1; }
+                if (c == 2) { got = _bre_r2; }
+                if (c == 3) { got = _bre_r3; }
+                if (c >= 4) {
+                    var base = _bre_r0;
+                    var sb = c - 4;
+                    if (c >= 10) {
+                        base = _bre_r1;
+                        sb = c - 10;
+                    }
+                    got = base + ((BRD_SHORT_DELTA >> (sb << 2)) & 15) - 3;
+                }
+                if (got != x) { oks = 0; }
+            }
+            x = x + 1;
+        }
+        t = t + 1;
+    }
+    _bre_r0 = 4;
+    _bre_r1 = 11;
+    _bre_r2 = 15;
+    _bre_r3 = 16;
+    assert(oks == 1, "E1: every short distance code names its distance under the decoder's ring rule");
+    assert(nshort > 10000, "E1: short codes exercised");
+    return 0;
+}
+
+fn test_e1_log2() {
+    _bre_init_tables();
+    assert_eq(_bre_log2q(1), 0, "E1: log2(1) = 0");
+    var ok = 1;
+    var k = 0;
+    while (k < 40) {
+        if (_bre_log2q(1 << k) != (k << 16)) { ok = 0; }
+        k = k + 1;
+    }
+    assert(ok == 1, "E1: log2(2^k) = k exactly, k < 40");
+    assert_eq(_bre_log2q(3), 103872, "E1: log2(3) in Q16 (1.584962...)");
+    assert_eq(_bre_log2q(10), 217705, "E1: log2(10) in Q16 (3.321928...)");
+    ok = 1;
+    var prev = 0;
+    var x = 1;
+    while (x < 300000) {
+        var v = _bre_log2q(x);
+        if (v < prev) { ok = 0; }
+        prev = v;
+        x = x + 1;
+    }
+    assert(ok == 1, "E1: log2 is monotone over 1..300000");
+    return 0;
+}
+
+# ================================================================
+# E2: prefix codes
+# ================================================================
+
+var _bc_hist = 0;      # i64 x 704
+var _bc_dep = 0;       # u8 x 704
+var _bc_bits = 0;      # u16 x 704
+var _bc_buf = 0;       # stream scratch
+var _bc_sbuf = 0;      # symbol-stream scratch
+
+fn _bc_e2_init() {
+    if (_bc_hist != 0) { return 0; }
+    _bc_hist = alloc(704 * 8);
+    _bc_dep = alloc(712);
+    _bc_bits = alloc(1424);
+    _bc_buf = alloc(65536);
+    _bc_sbuf = alloc(65536);
+    _bre_init_tables();
+    _bre_set_quality(1);
+    assert(_bre_ws_ensure() == 0, "E2: encoder workspace");
+    assert(_brd_ws_ensure() == 0, "E2: decoder workspace");
+    return 0;
+}
+
+fn _bc_w_start(buf, cap) {
+    _bre_out = buf;
+    _bre_cap = cap;
+    _bre_bp = 0;
+    _bre_acc = 0;
+    _bre_nb = 0;
+    _bre_err = 0;
+    return 0;
+}
+
+# 1 when the Huffman depths of hist (alpha symbols) are complete (Kraft sum exactly 1 with >= 2
+# used symbols), within limit, and 0 exactly for unused symbols.
+fn _bc_kraft_ok(alpha, limit) {
+    var used = 0;
+    var sum = 0;
+    var i = 0;
+    while (i < alpha) {
+        var d = load8(_bc_dep + i);
+        var c = load64(_bc_hist + i * 8);
+        if ((c > 0) != (d > 0)) { return 0; }
+        if (d > limit) { return 0; }
+        if (d > 0) {
+            used = used + 1;
+            sum = sum + (1 << (15 - d));
+        }
+        i = i + 1;
+    }
+    if (used >= 2 && sum != 32768) { return 0; }
+    return 1;
+}
+
+# Store hist's code, read it back with the decoder, then decode every used symbol (in a shuffled
+# stream of their codes) and require each code's exact length. Returns 1 on success.
+fn _bc_code_rt(alpha) {
+    _bc_w_start(_bc_buf, 65536);
+    _bre_store_code(_bc_hist, alpha, _bc_dep, _bc_bits);
+    _bre_flush();
+    if (_bre_err != 0) { return 0; }
+    _brd_reader_init(_bc_buf, _bre_bp);
+    var tab = _brd_ws + BRD_WS_TAB_I;
+    var r = _brd_read_code(alpha, tab, 1080);
+    if (r < 0) { return 0; }
+    # The symbol stream: every used symbol once, in a random order, then a sentinel run of zeros.
+    var used = 0;
+    var one = 0 - 1;
+    var i = 0;
+    while (i < alpha) {
+        if (load64(_bc_hist + i * 8) > 0) {
+            used = used + 1;
+            one = i;
+        }
+        i = i + 1;
+    }
+    if (used <= 1) {                             # 0-bit code: any input decodes to the symbol
+        store64(_bc_sbuf, 0);
+        _brd_reader_init(_bc_sbuf, 8);
+        var want = one;
+        if (used == 0) { want = 0; }
+        if (_brd_sym(tab) != want) { return 0; }
+        if ((_brd_ip - _brd_src) * 8 - _brd_nb != 0) { return 0; }   # no bit consumed
+        return 1;
+    }
+    var order = alloc(alpha * 8 + 8);
+    var n = 0;
+    i = 0;
+    while (i < alpha) {
+        if (load64(_bc_hist + i * 8) > 0) {
+            store64(order + n * 8, i);
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    i = n - 1;
+    while (i > 0) {
+        var j = _bc_rand(i + 1);
+        var t = load64(order + i * 8);
+        store64(order + i * 8, load64(order + j * 8));
+        store64(order + j * 8, t);
+        i = i - 1;
+    }
+    _bc_w_start(_bc_sbuf, 65536);
+    var total = 0;
+    i = 0;
+    while (i < n) {
+        var s = load64(order + i * 8);
+        _bre_put(load16(_bc_bits + s * 2), load8(_bc_dep + s));
+        total = total + load8(_bc_dep + s);
+        i = i + 1;
+    }
+    _bre_flush();
+    _brd_reader_init(_bc_sbuf, _bre_bp);
+    var pos = 0;
+    i = 0;
+    while (i < n) {
+        var s2 = load64(order + i * 8);
+        if (_brd_sym(tab) != s2) { return 0; }
+        pos = pos + load8(_bc_dep + s2);
+        if ((_brd_ip - _brd_src) * 8 - _brd_nb != pos) { return 0; }
+        i = i + 1;
+    }
+    if (pos != total) { return 0; }
+    return 1;
+}
+
+fn _bc_zero_hist(alpha) {
+    var i = 0;
+    while (i < alpha) {
+        store64(_bc_hist + i * 8, 0);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_e2_depths() {
+    _bc_e2_init();
+    var ok = 1;
+    var t = 0;
+    while (t < 400) {
+        var alpha = 2 + _bc_rand(703);
+        _bc_zero_hist(alpha);
+        var k = 1 + _bc_rand(alpha);
+        var i = 0;
+        while (i < k) {
+            var c = 1 + _bc_rand(1000);
+            store64(_bc_hist + _bc_rand(alpha) * 8, c * c * c);
+            i = i + 1;
+        }
+        _bre_huff_depths(_bc_hist, alpha, 15, _bc_dep);
+        if (_bc_kraft_ok(alpha, 15) == 0) { ok = 0; }
+        t = t + 1;
+    }
+    assert(ok == 1, "E2: random Huffman depths complete and <= 15");
+    # Fibonacci counts: the natural tree is 29 deep; count-limit doubling must fit 15.
+    _bc_zero_hist(64);
+    var a = 1;
+    var b = 1;
+    var i2 = 0;
+    while (i2 < 30) {
+        store64(_bc_hist + i2 * 8, a);
+        var tt = a + b;
+        a = b;
+        b = tt;
+        i2 = i2 + 1;
+    }
+    _bre_huff_depths(_bc_hist, 64, 15, _bc_dep);
+    assert(_bc_kraft_ok(64, 15) == 1, "E2: Fibonacci counts limited to 15");
+    _bre_huff_depths(_bc_hist, 64, 5, _bc_dep);
+    assert(_bc_kraft_ok(64, 5) == 1, "E2: Fibonacci counts limited to 5 (30 symbols)");
+    # The code-length alphabet at its limit: 18 symbols, skewed.
+    ok = 1;
+    t = 0;
+    while (t < 300) {
+        _bc_zero_hist(18);
+        var j = 0;
+        while (j < 18) {
+            if (_bc_rand(3) != 0) { store64(_bc_hist + j * 8, 1 << _bc_rand(20)); }
+            j = j + 1;
+        }
+        _bre_huff_depths(_bc_hist, 18, 5, _bc_dep);
+        if (_bc_kraft_ok(18, 5) == 0) { ok = 0; }
+        t = t + 1;
+    }
+    assert(ok == 1, "E2: code-length-code depths complete and <= 5");
+    return 0;
+}
+
+# shape: 0 random skewed, 1 equal counts, 2 runs of equal counts, 3 sparse, 4 Fibonacci-deep
+fn _bc_fill_hist(alpha, k, shape) {
+    _bc_zero_hist(alpha);
+    var i = 0;
+    if (shape == 0) {
+        while (i < k) {
+            var c = 1 + _bc_rand(200);
+            store64(_bc_hist + _bc_rand(alpha) * 8, c * c);
+            i = i + 1;
+        }
+    } elif (shape == 1) {
+        var start = _bc_rand(alpha);
+        while (i < k) {
+            store64(_bc_hist + ((start + i) % alpha) * 8, 100);
+            i = i + 1;
+        }
+    } elif (shape == 2) {
+        var p = 0;
+        while (p < alpha) {
+            var run = 1 + _bc_rand(40);
+            var v = 0;
+            if (_bc_rand(3) != 0) { v = 1 << _bc_rand(12); }
+            var q = 0;
+            while (q < run && p < alpha) {
+                store64(_bc_hist + p * 8, v);
+                p = p + 1;
+                q = q + 1;
+            }
+        }
+    } elif (shape == 3) {
+        while (i < k) {
+            store64(_bc_hist + _bc_rand(alpha) * 8, 1 + _bc_rand(5));
+            i = i + 1;
+        }
+    } else {
+        var a = 1;
+        var b = 1;
+        while (i < k && i < alpha) {
+            store64(_bc_hist + ((i * 37) % alpha) * 8, a);
+            var t = a + b;
+            a = b;
+            b = t;
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+fn test_e2_store_read() {
+    _bc_e2_init();
+    var alphas = alloc(96);
+    store64(alphas, 2);
+    store64(alphas + 8, 3);
+    store64(alphas + 16, 5);
+    store64(alphas + 24, 26);
+    store64(alphas + 32, 64);
+    store64(alphas + 40, 70);
+    store64(alphas + 48, 256);
+    store64(alphas + 56, 704);
+    var ok = 1;
+    var cases = 0;
+    var ai = 0;
+    while (ai < 8) {
+        var alpha = load64(alphas + ai * 8);
+        var shape = 0;
+        while (shape < 5) {
+            var t = 0;
+            while (t < 40) {
+                var k = 1 + _bc_rand(alpha);
+                if (t < 6) { k = t; }                # 0..5 used symbols: the simple-code shapes
+                if (k > alpha) { k = alpha; }
+                _bc_fill_hist(alpha, k, shape);
+                if (_bc_code_rt(alpha) == 0) { ok = 0; }
+                cases = cases + 1;
+                t = t + 1;
+            }
+            shape = shape + 1;
+        }
+        ai = ai + 1;
+    }
+    assert(ok == 1, "E2: every stored prefix code reads back and decodes each symbol in its exact length");
+    assert_eq(cases, 1600, "E2: cases run");
+    # The one-symbol code-length code: 16 symbols of equal length in a 26-symbol alphabet (no RLE
+    # below 51 symbols), so the code-length sequence is one symbol repeated.
+    _bc_zero_hist(26);
+    var i = 0;
+    while (i < 16) {
+        store64(_bc_hist + i * 8, 7);
+        i = i + 1;
+    }
+    assert(_bc_code_rt(26) == 1, "E2: one-symbol code-length code");
+    # Every literal used equally: 256 lengths of 8, run-length coded.
+    _bc_zero_hist(256);
+    i = 0;
+    while (i < 256) {
+        store64(_bc_hist + i * 8, 3);
+        i = i + 1;
+    }
+    assert(_bc_code_rt(256) == 1, "E2: 256 equal literals (repeat-code chains)");
+    # The last symbol of the largest alphabet alone and in a pair (simple-code symbol width).
+    _bc_zero_hist(704);
+    store64(_bc_hist + 703 * 8, 9);
+    assert(_bc_code_rt(704) == 1, "E2: symbol 703 alone");
+    store64(_bc_hist, 1);
+    assert(_bc_code_rt(704) == 1, "E2: symbols 0 and 703");
+    return 0;
+}
+
+# ================================================================
+# E3: context maps
+# ================================================================
+
+fn test_e3_cmaps() {
+    _bc_e2_init();
+    var map = alloc(64);
+    var got = alloc(64);
+    var ok = 1;
+    var t = 0;
+    while (t < 2000) {
+        var nt = 1 + _bc_rand(64);
+        var kind = t % 4;
+        var i = 0;
+        while (i < 64) {
+            var v = _bc_rand(nt);
+            if (kind == 1) { v = (i * nt) / 64; }               # sorted runs
+            if (kind == 2 && _bc_rand(4) != 0) { v = 0; }       # mostly zero
+            if (kind == 3 && i > 0 && _bc_rand(3) != 0) { v = load8(map + i - 1); }   # repeats
+            store8(map + i, v);
+            i = i + 1;
+        }
+        _bc_w_start(_bc_buf, 65536);
+        _bre_store_cmap(map, 64, nt);
+        _bre_flush();
+        _brd_reader_init(_bc_buf, _bre_bp);
+        var r = _brd_read_cmap(64, got);
+        if (r != nt) { ok = 0; }
+        i = 0;
+        while (i < 64) {
+            if (load8(got + i) != load8(map + i)) { ok = 0; }
+            i = i + 1;
+        }
+        # The reader must have consumed exactly what was written, up to the final padding.
+        if (_brd_byte_pos() > _bc_buf + _bre_bp) { ok = 0; }
+        t = t + 1;
+    }
+    assert(ok == 1, "E3: 2000 context maps (random, runs, zero-heavy, repeats) read back identical");
+    return 0;
+}
+
+# ================================================================
+# E4: round trips
+# ================================================================
+
+# Fill buf[0..n) with input kind k.
+fn _bc_gen(buf, n, k) {
+    var words = "the quick brown fox jumps over lazy dog sankoch brotli compress stream block window ";
+    var wl = strlen(words);
+    var i = 0;
+    if (k == 0) {
+        while (i < n) {
+            store8(buf + i, 0);
+            i = i + 1;
+        }
+    } elif (k == 1) {
+        while (i < n) {
+            store8(buf + i, _bc_rand(256));
+            i = i + 1;
+        }
+    } elif (k == 2) {                            # text: words from a small vocabulary
+        while (i < n) {
+            var w = _bc_rand(14) * 6;
+            var j = 0;
+            while (j < 6 && i < n) {
+                store8(buf + i, load8(words + ((w + j) % wl)));
+                i = i + 1;
+                j = j + 1;
+            }
+            if (i < n && _bc_rand(9) == 0) {
+                store8(buf + i, 48 + _bc_rand(10));
+                i = i + 1;
+            }
+        }
+    } elif (k == 3) {                            # records with a drifting counter
+        var r = 0;
+        while (i < n) {
+            var s = "row00000 | const-field | 000\n";
+            var j2 = 0;
+            while (j2 < 29 && i < n) {
+                var ch = load8(s + j2);
+                if (j2 >= 3 && j2 < 8) {
+                    var dv = r;
+                    var dk = 7 - j2;
+                    while (dk > 0) {
+                        dv = dv / 10;
+                        dk = dk - 1;
+                    }
+                    ch = 48 + (dv % 10);
+                }
+                if (j2 == 26) { ch = 48 + (r % 7); }
+                store8(buf + i, ch);
+                i = i + 1;
+                j2 = j2 + 1;
+            }
+            r = r + 1;
+        }
+    } elif (k == 4) {                            # random-length runs of random bytes
+        while (i < n) {
+            var run = 1 + _bc_rand(300);
+            var b = _bc_rand(256);
+            var q = 0;
+            while (q < run && i < n) {
+                store8(buf + i, b);
+                i = i + 1;
+                q = q + 1;
+            }
+        }
+    } elif (k == 5) {                            # little-endian counters (binary structure)
+        var v = 0;
+        while (i < n) {
+            store8(buf + i, (v >> ((i & 3) * 8)) & 255);
+            if ((i & 3) == 3) { v = v + 3 + _bc_rand(2); }
+            i = i + 1;
+        }
+    } elif (k == 6) {                            # alternating text and random segments
+        while (i < n) {
+            var seg = 200 + _bc_rand(3000);
+            if (seg > n - i) { seg = n - i; }
+            var kk = 2;
+            if (_bc_rand(2) == 0) { kk = 1; }
+            _bc_gen(buf + i, seg, kk);
+            i = i + seg;
+        }
+    } else {                                     # four-symbol alphabet
+        while (i < n) {
+            store8(buf + i, 97 + _bc_rand(4));
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+var _bc_rt_bad = 0;
+var _bc_rt_n = 0;
+
+# Compress src[0..n) at quality q with src and dst each flush against a guard page, check
+# <= bound, decode at the exact cap, compare. Returns the stream length (or -1).
+fn _bc_rt(src, n, q) {
+    var s = _bc_gsrc - n;
+    var i = 0;
+    while (i < n) {
+        store8(s + i, load8(src + i));
+        i = i + 1;
+    }
+    var bound = brotli_compress_bound(n);
+    var d = _bc_gdst - bound;
+    var c = brotli_compress_level(s, n, d, bound, q);
+    _bc_rt_n = _bc_rt_n + 1;
+    if (c <= 0 || c > bound) {
+        _bc_rt_bad = _bc_rt_bad + 1;
+        return 0 - 1;
+    }
+    var o = brotli_decompress_capped(d, c, _bc_out, n + 1, n + 1);
+    if (n == 0) { o = brotli_decompress(d, c, _bc_out, 0); }
+    if (o != n) {
+        _bc_rt_bad = _bc_rt_bad + 1;
+        return 0 - 1;
+    }
+    i = 0;
+    while (i < n) {
+        if (load8(_bc_out + i) != load8(src + i)) {
+            _bc_rt_bad = _bc_rt_bad + 1;
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    return c;
+}
+
+fn test_e4_small() {
+    var sizes = alloc(256);
+    var ns = 0;
+    var lst = "0 1 2 3 4 5 6 7 8 9 15 16 17 31 32 64 100 255 256 511 512 513 1000 2048 4096 ";
+    var i = 0;
+    var v = 0;
+    while (load8(lst + i) != 0) {
+        var ch = load8(lst + i);
+        if (ch == 32) {
+            store64(sizes + ns * 8, v);
+            ns = ns + 1;
+            v = 0;
+        } else {
+            v = v * 10 + ch - 48;
+        }
+        i = i + 1;
+    }
+    _bc_rt_bad = 0;
+    _bc_rt_n = 0;
+    var k = 0;
+    while (k < 8) {
+        var si = 0;
+        while (si < ns) {
+            var n = load64(sizes + si * 8);
+            _bc_gen(_bc_in, n, k);
+            var q = 0;
+            while (q <= 11) {
+                _bc_rt(_bc_in, n, q);
+                q = q + 1;
+            }
+            si = si + 1;
+        }
+        k = k + 1;
+    }
+    assert_eq(_bc_rt_bad, 0, "E4: small inputs (0..4096 B, 8 kinds) round-trip at every quality");
+    assert_eq(_bc_rt_n, 8 * ns * 12, "E4: small round trips run");
+    return 0;
+}
+
+fn test_e4_large() {
+    _bc_rt_bad = 0;
+    _bc_rt_n = 0;
+    # WBITS 16 / 18 boundary (65520) and the first meta-block boundary (262144).
+    var sz = alloc(64);
+    store64(sz, 65520);
+    store64(sz + 8, 65521);
+    store64(sz + 16, 262143);
+    store64(sz + 24, 262144);
+    store64(sz + 32, 262145);
+    store64(sz + 40, 600000);
+    var si = 0;
+    while (si < 6) {
+        var n = load64(sz + si * 8);
+        var k = 2;
+        while (k <= 6) {
+            if (k != 4) {
+                _bc_gen(_bc_in, n, k);
+                _bc_rt(_bc_in, n, 1);
+                _bc_rt(_bc_in, n, 5);
+                if (si == 3 || si == 5) {
+                    _bc_rt(_bc_in, n, 9);
+                    _bc_rt(_bc_in, n, 11);
+                }
+            }
+            k = k + 2;
+        }
+        si = si + 1;
+    }
+    assert_eq(_bc_rt_bad, 0, "E4: 64 KiB .. 600 KB inputs round-trip (WBITS and meta-block boundaries)");
+    assert_eq(_bc_rt_n, 32, "E4: large round trips run");
+    return 0;
+}
+
+fn test_e4_dispatch_and_determinism() {
+    var n = 50000;
+    _bc_gen(_bc_in, n, 6);
+    var cap = brotli_compress_bound(n);
+    var a = alloc(cap);
+    var b = alloc(cap);
+    var ok = 1;
+    var q = 0;
+    while (q <= 11) {
+        var na = brotli_compress_level(_bc_in, n, a, cap, q);
+        var nb = compress_level(FORMAT_BROTLI, _bc_in, n, b, cap, q);
+        if (na <= 0 || na != nb) { ok = 0; }
+        var i = 0;
+        while (i < na) {
+            if (load8(a + i) != load8(b + i)) { ok = 0; }
+            i = i + 1;
+        }
+        q = q + 1;
+    }
+    assert(ok == 1, "E4: compress_level(FORMAT_BROTLI) == brotli_compress_level at every quality");
+    var n6 = brotli_compress(_bc_in, n, a, cap);
+    var c6 = compress(FORMAT_BROTLI, _bc_in, n, b, cap);
+    var n6b = brotli_compress_level(_bc_in, n, _bc_s2, cap, 6);
+    assert(n6 > 0 && n6 == c6 && n6 == n6b, "E4: compress(FORMAT_BROTLI) == brotli_compress == quality 6");
+    var same = 1;
+    var j = 0;
+    while (j < n6) {
+        if (load8(a + j) != load8(b + j) || load8(a + j) != load8(_bc_s2 + j)) { same = 0; }
+        j = j + 1;
+    }
+    assert(same == 1, "E4: the three quality-6 streams are identical");
+    assert_eq(decompress(FORMAT_BROTLI, a, n6, _bc_out, n), n, "E4: decompress(FORMAT_BROTLI) round trip");
+    # Determinism across calls and across hash growth: a fresh quality-1 stream equals the one made
+    # after quality 9 grew the bucket table, and a second quality-9 run equals the first.
+    _sankoch_reset_tables();
+    var f1 = brotli_compress_level(_bc_in, n, a, cap, 1);
+    var g9 = brotli_compress_level(_bc_in, n, b, cap, 9);
+    var f1b = brotli_compress_level(_bc_in, n, _bc_s2, cap, 1);
+    ok = 1;
+    if (f1 != f1b) { ok = 0; }
+    j = 0;
+    while (j < f1 && ok == 1) {
+        if (load8(a + j) != load8(_bc_s2 + j)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "E4: quality 1 is identical before and after the hash grew");
+    var g9b = brotli_compress_level(_bc_in, n, a, cap, 9);
+    ok = 1;
+    if (g9 != g9b) { ok = 0; }
+    j = 0;
+    while (j < g9 && ok == 1) {
+        if (load8(a + j) != load8(b + j)) { ok = 0; }
+        j = j + 1;
+    }
+    assert(ok == 1, "E4: quality 9 is identical across calls");
+    return 0;
+}
+
+# ================================================================
+# E5: dst bounds, arguments
+# ================================================================
+
+fn test_e5_dst_bounds() {
+    var kinds = 0;
+    var bad = 0;
+    var runs = 0;
+    var k = 0;
+    while (k < 4) {
+        var n = 3000;
+        var q = 5;
+        if (k == 0) { _bc_gen(_bc_in, n, 2); }
+        if (k == 1) { _bc_gen(_bc_in, n, 1); }   # stored (incompressible)
+        if (k == 2) {
+            n = 100;
+            q = 0;
+            _bc_gen(_bc_in, n, 0);
+        }
+        if (k == 3) { n = 0; }
+        var full = brotli_compress_level(_bc_in, n, _bc_s2, brotli_compress_bound(n), q);
+        if (full <= 0) { bad = bad + 1; }
+        var cap = full;
+        while (cap >= 0) {
+            var d = _bc_gdst - cap;
+            var r = brotli_compress_level(_bc_in, n, d, cap, q);
+            runs = runs + 1;
+            if (cap == full) {
+                if (r != full) { bad = bad + 1; }
+                var i = 0;
+                while (i < full) {
+                    if (load8(d + i) != load8(_bc_s2 + i)) { bad = bad + 1; }
+                    i = i + 1;
+                }
+            } else {
+                if (r != 0 - ERR_BUFFER_TOO_SMALL) { bad = bad + 1; }
+            }
+            if (cap > 64 && cap < full - 64) {
+                cap = cap - 1 - _bc_rand(97);
+                if (cap < 64) { cap = 64; }
+            } else {
+                cap = cap - 1;
+            }
+        }
+        kinds = kinds + 1;
+        k = k + 1;
+    }
+    assert_eq(bad, 0, "E5: exact cap: same bytes; any shorter cap: ERR_BUFFER_TOO_SMALL, no write past it");
+    assert(runs > 300, "E5: caps swept");
+    # Arguments.
+    var b = alloc(64);
+    assert_eq(brotli_compress(b, 0 - 1, b, 64), 0 - ERR_INVALID_INPUT, "E5: src_len < 0");
+    assert_eq(brotli_compress(b, 4, b, 0 - 1), 0 - ERR_INVALID_INPUT, "E5: dst_cap < 0");
+    assert_eq(brotli_compress(0, 4, b, 64), 0 - ERR_INVALID_INPUT, "E5: src NULL with src_len > 0");
+    assert_eq(brotli_compress(b, 4, 0, 64), 0 - ERR_INVALID_INPUT, "E5: dst NULL with dst_cap > 0");
+    assert_eq(compress(FORMAT_BROTLI, b, 0 - 1, b, 64), 0 - ERR_INVALID_INPUT, "E5: compress() src_len < 0");
+    assert_eq(brotli_compress_bound(0 - 1), 0 - ERR_INVALID_INPUT, "E5: bound of a negative length");
+    assert_eq(brotli_compress_bound(0), 2, "E5: bound(0)");
+    assert_eq(brotli_compress_bound(4294967296), 0 - ERR_INVALID_INPUT, "E5: bound past 2^32 - 1 (as the encoder)");
+    assert_eq(brotli_compress(b, 4294967296, b, 64), 0 - ERR_INVALID_INPUT, "E5: src_len past 2^32 - 1");
+    assert_eq(brotli_compress_bound(16384), 16384 + 10, "E5: bound(16384)");
+    assert_eq(brotli_compress(b, 0, b, 64), 1, "E5: empty input is one byte");
+    assert_eq(load8(b), 6, "E5: empty stream = WBITS 16, ISLAST, ISLASTEMPTY (0x06)");
+    var q = 0 - 3;
+    while (q <= 14) {
+        if (brotli_compress_level(_bc_in, 100, _bc_s2, 256, q) <= 0) { bad = bad + 1; }
+        q = q + 1;
+    }
+    assert_eq(bad, 0, "E5: out-of-range qualities clamp");
+    return 0;
+}
+
+# ================================================================
+# E6: the stored fallback
+# ================================================================
+
+fn test_e6_stored() {
+    var n = 600000;
+    _bc_gen(_bc_in, n, 1);
+    var cap = brotli_compress_bound(n);
+    var c = brotli_compress_level(_bc_in, n, _bc_s2, cap, 6);
+    # Three stored meta-blocks (262144, 262144, 75712): WBITS 20 (4 bits) + 24 header bits ->
+    # 4 bytes, then 3 + 3 header bytes, then the 1-byte ISLAST / ISLASTEMPTY trailer.
+    assert_eq(c, n + 11, "E6: random 600000 B is stored: n + 11 bytes");
+    assert(c <= cap, "E6: within the bound");
+    assert_eq(brotli_decompress_capped(_bc_s2, c, _bc_out, n, n), n, "E6: stored stream decodes");
+    # Text, random, text: the middle meta-block alone is stored.
+    _bc_gen(_bc_in, 262144, 2);
+    _bc_gen(_bc_in + 262144, 262144, 1);
+    _bc_gen(_bc_in + 524288, 262144, 2);
+    var m = 786432;
+    var cm = brotli_compress_level(_bc_in, m, _bc_s2, brotli_compress_bound(m), 6);
+    assert(cm > 262144 && cm < 262144 + 262144 / 2, "E6: mixed: one stored + two compressed meta-blocks");
+    var o = brotli_decompress_capped(_bc_s2, cm, _bc_out, m, m);
+    var ok = 1;
+    if (o != m) { ok = 0; }
+    var i = 0;
+    while (i < m && ok == 1) {
+        if (load8(_bc_out + i) != load8(_bc_in + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, "E6: mixed stream round-trips");
+    return 0;
+}
+
+# Records, a stored (random) meta-block, records again, at several qualities: the third meta-block
+# leans on repeat-distance codes, so a ring left as the stored block's discarded parse moved it
+# would decode wrong (architecture 005 §2).
+fn test_e6_ring_across_stored() {
+    var mb = 262144;
+    var m = 3 * mb;
+    var ok = 1;
+    var q = 1;
+    while (q <= 9) {
+        _bc_gen(_bc_in, mb, 3);
+        # Random, but every 1,000 bytes an 8-byte copy from 500 back: the parse finds and pushes
+        # distance 500, yet the block stays incompressible (ShouldCompress stores it).
+        var b2 = _bc_in + mb;
+        _bc_gen(b2, mb, 1);
+        var j = 1000;
+        while (j + 8 < mb) {
+            var t = 0;
+            while (t < 8) {
+                store8(b2 + j + t, load8(b2 + j - 500 + t));
+                t = t + 1;
+            }
+            j = j + 1000;
+        }
+        _bc_gen(_bc_in + 2 * mb, mb, 3);
+        # The third block opens with an 8-byte copy from 500 back (out of the stored block): coded
+        # correctly it needs an explicit distance; against a ring left at the stored block's
+        # discarded parse (last distance 500) it would be code 0 and decode from the wrong place.
+        var t3 = 0;
+        while (t3 < 8) {
+            store8(_bc_in + 2 * mb + t3, load8(_bc_in + 2 * mb - 500 + t3));
+            t3 = t3 + 1;
+        }
+        var c = brotli_compress_level(_bc_in, m, _bc_s2, brotli_compress_bound(m), q);
+        if (c <= mb || c >= mb + mb / 4) { ok = 0; }
+        var o = brotli_decompress_capped(_bc_s2, c, _bc_out, m, m);
+        if (o != m) { ok = 0; }
+        var i = 0;
+        while (i < m && ok == 1) {
+            if (load8(_bc_out + i) != load8(_bc_in + i)) { ok = 0; }
+            i = i + 1;
+        }
+        q = q + 4;
+    }
+    assert(ok == 1, "E6: records / stored / records round-trips (the ring is restored with a stored block)");
+    return 0;
+}
+
+# ================================================================
+# E7: the window limit
+# ================================================================
+
+fn test_e7_window() {
+    # X (1 MiB random), 16 MiB of a short period, X again: the second X lies 17 MiB back, beyond
+    # the WBITS 24 window, so it must be coded without those matches.
+    var mib = 1048576;
+    var n = 18 * mib;
+    var src = alloc(n);
+    _bc_gen(src, mib, 1);
+    var i = mib;
+    while (i < 17 * mib) {
+        store8(src + i, 65 + (i % 13));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < mib) {
+        store8(src + 17 * mib + i, load8(src + i));
+        i = i + 1;
+    }
+    var cap = brotli_compress_bound(n);
+    var dst = alloc(cap);
+    var c = brotli_compress_level(src, n, dst, cap, 1);
+    assert(c > 2 * mib && c < 2 * mib + 65536, "E7: both copies of X are coded as literals");
+    var out = alloc(n);
+    var o = brotli_decompress_capped(dst, c, out, n, n);
+    var ok = 1;
+    if (o != n) { ok = 0; }
+    i = 0;
+    while (i < n && ok == 1) {
+        if (load8(out + i) != load8(src + i)) { ok = 0; }
+        i = i + 1;
+    }
+    assert(ok == 1, "E7: 18 MiB round-trips through the 16 MiB - 16 window");
+    return 0;
+}
+
+# ================================================================
+# E8: OOM
+# ================================================================
+
+fn test_e8_oom() {
+    var n = 20000;
+    _bc_gen(_bc_in, n, 2);
+    var cap = brotli_compress_bound(n);
+    var bad = 0;
+    var f = 0;
+    while (f < 3) {
+        _sankoch_reset_tables();
+        _sankoch_alloc_set_fail_at(f);
+        var r = brotli_compress_level(_bc_in, n, _bc_s2, cap, 4);
+        _sankoch_alloc_set_fail_at(0 - 1);
+        if (r != 0 - ERR_OOM) { bad = bad + 1; }
+        var r2 = brotli_compress_level(_bc_in, n, _bc_s2, cap, 4);   # no reset: no latch
+        if (r2 <= 0) { bad = bad + 1; }
+        if (brotli_decompress(_bc_s2, r2, _bc_out, n) != n) { bad = bad + 1; }
+        f = f + 1;
+    }
+    assert_eq(bad, 0, "E8: each workspace allocation fault is ERR_OOM, and the retry succeeds");
+    _sankoch_reset_tables();
+    _sankoch_alloc_set_fail_at(3);
+    var r3 = brotli_compress_level(_bc_in, n, _bc_s2, cap, 4);
+    _sankoch_alloc_set_fail_at(0 - 1);
+    assert(r3 > 0, "E8: the encoder makes exactly three allocations at quality 4");
+    # Growth: quality 1 built a small hash; quality 9 grows it, and that allocation fails.
+    _sankoch_reset_tables();
+    assert(brotli_compress_level(_bc_in, n, _bc_s2, cap, 1) > 0, "E8: quality 1 warm");
+    _sankoch_alloc_set_fail_at(0);
+    var r4 = brotli_compress_level(_bc_in, n, _bc_s2, cap, 9);
+    _sankoch_alloc_set_fail_at(0 - 1);
+    assert_eq(r4, 0 - ERR_OOM, "E8: a failed hash growth is ERR_OOM");
+    var r5 = brotli_compress_level(_bc_in, n, _bc_s2, cap, 9);
+    assert(r5 > 0 && brotli_decompress(_bc_s2, r5, _bc_out, n) == n, "E8: the grown hash works on retry");
+    var r6 = brotli_compress_level(_bc_in, n, _bc_s2, cap, 1);
+    assert(r6 > 0 && brotli_decompress(_bc_s2, r6, _bc_out, n) == n, "E8: quality 1 on the grown hash");
+    return 0;
+}
+
+# ================================================================
+# E9: literal context modeling
+# ================================================================
+
+# Pseudo-English: words of 1..9 letters drawn from a frequency-skewed alphabet, capitals after
+# a full stop, commas and full stops between words.
+fn _bc_prose(buf, n) {
+    var freq = "eeeeeeeeeeeettttttttaaaaaaaaoooooooiiiiiiinnnnnnnssssssrrrrrrhhhhhhllllddddcccuuummmwwffggyyppbbvk";
+    var fl = strlen(freq);
+    var i = 0;
+    var cap = 1;
+    while (i < n) {
+        var wl = 1 + _bc_rand(9);
+        var j = 0;
+        while (j < wl && i < n) {
+            var ch = load8(freq + _bc_rand(fl));
+            if (cap == 1 && j == 0) { ch = ch - 32; }
+            store8(buf + i, ch);
+            i = i + 1;
+            j = j + 1;
+        }
+        cap = 0;
+        var r = _bc_rand(12);
+        if (r == 0 && i < n) {
+            store8(buf + i, 46);
+            i = i + 1;
+            cap = 1;
+        } elif (r == 1 && i < n) {
+            store8(buf + i, 44);
+            i = i + 1;
+        }
+        if (i < n) {
+            store8(buf + i, 32);
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
+# The mode the last single-meta-block compress chose.
+fn _bc_mode_of(n, q) {
+    var cap = brotli_compress_bound(n);
+    var c = brotli_compress_level(_bc_in, n, _bc_s2, cap, q);
+    if (c <= 0) { return 0 - 1; }
+    var o = brotli_decompress(_bc_s2, c, _bc_out, n);
+    if (o != n) { return 0 - 2; }
+    var i = 0;
+    while (i < n) {
+        if (load8(_bc_out + i) != load8(_bc_in + i)) { return 0 - 3; }
+        i = i + 1;
+    }
+    return _bre_mode;
+}
+
+fn test_e9_context_modes() {
+    var n = 30000;
+    var i = 0;
+    # LSB6: the next byte's low six bits are a function of the previous byte's low six bits; the
+    # top two bits are random.
+    store8(_bc_in, 1);
+    i = 1;
+    while (i < n) {
+        store8(_bc_in + i, (((load8(_bc_in + i - 1) & 63) * 7 + 13) & 63) | (_bc_rand(4) << 6));
+        i = i + 1;
+    }
+    assert_eq(_bc_mode_of(n, 9), 0, "E9: LSB6 input codes in mode LSB6 at quality 9");
+    assert(_bre_k >= 2, "E9: LSB6 input clusters into several trees");
+    var m5 = _bc_mode_of(n, 5);
+    assert(m5 == 2 || m5 == 3, "E9: quality 5 tries only UTF8 and SIGNED");
+    # MSB6: the next byte's top six bits are a function of the previous byte's top six bits.
+    store8(_bc_in, 1);
+    i = 1;
+    while (i < n) {
+        store8(_bc_in + i, ((((load8(_bc_in + i - 1) >> 2) * 37 + 11) & 63) << 2) | _bc_rand(4));
+        i = i + 1;
+    }
+    assert_eq(_bc_mode_of(n, 9), 1, "E9: MSB6 input codes in mode MSB6 at quality 9");
+    # UTF8: prose-like pseudo-words (few matches, many literals) — letter / space / punctuation /
+    # capital classes are what the UTF8 context distinguishes.
+    _bc_prose(_bc_in, n);
+    assert_eq(_bc_mode_of(n, 6), 2, "E9: text codes in mode UTF8");
+    assert(_bre_k >= 2, "E9: text clusters into several trees");
+    # SIGNED: a slow random walk of small signed steps (two's complement bytes).
+    var v = 0;
+    i = 0;
+    while (i < n) {
+        v = v + _bc_rand(5) - 2;
+        store8(_bc_in + i, v & 255);
+        i = i + 1;
+    }
+    assert_eq(_bc_mode_of(n, 6), 3, "E9: a signed random walk codes in mode SIGNED");
+    return 0;
+}
+
+fn main() {
+    _bc_init();
+    test_e1_length_codes();
+    test_e1_cmd_symbols();
+    test_e1_distances();
+    test_e1_log2();
+    test_e2_depths();
+    test_e2_store_read();
+    test_e3_cmaps();
+    test_e4_small();
+    test_e4_large();
+    test_e4_dispatch_and_determinism();
+    test_e5_dst_bounds();
+    test_e6_stored();
+    test_e6_ring_across_stored();
+    test_e7_window();
+    test_e8_oom();
+    test_e9_context_modes();
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

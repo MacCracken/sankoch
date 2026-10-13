@@ -26,6 +26,7 @@
 
 ## Index
 
+- [`005-brotli-encoder-invariants.md`](005-brotli-encoder-invariants.md) (2.8.4): a Brotli meta-block is written compressed only when no larger than storing it (what makes `brotli_compress_bound` hold); the encoder's distance ring mirrors the decoder's push rule and is restored with a stored block; matches never reach past the window (a farther distance is a dictionary reference); literal contexts and bit order come from the decoder's tables; memory by quality.
 - [`004-string-literal-nul-rule.md`](004-string-literal-nul-rule.md): **retired at 2.8.3** (the pin is past cyrius 6.6.15's interning fix; the dictionary is now an `[embed]`). Kept as the record of the cycc 6.6.4 interning hazard and the gate that enforced it from 2.8.0 to 2.8.2.
 - [`003-per-profile-reset-dispatch.md`](003-per-profile-reset-dispatch.md): `_sankoch_reset_tables` is defined once per bundle (`lib.cyr` or `src/reset_<profile>.cyr`); the four-place registration rule for a lazy global; one sankoch bundle per program; why not `#ifdef` markers.
 - [`002-lazy-globals-and-alloc-reset.md`](002-lazy-globals-and-alloc-reset.md) — every lazy global here is a raw arena pointer memoized behind `if (ptr == 0)`, `_sankoch_mtx` included; `alloc_reset()` invalidates all of them silently. Why the canary detection is exact rather than heuristic, and where the guard runs (lock, unlocked builders, stranded canary).

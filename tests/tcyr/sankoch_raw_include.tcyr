@@ -13,13 +13,6 @@
 # Run with:
 #   cyrius test tests/tcyr/sankoch_raw_include.tcyr
 
-include "dist/sankoch.cyr"` alone compiles.
-# The 2.8.0 bundle had no such block: this file failed to compile against it
-# (the bundle's mutex/fnptr references had no definition in scope). The bundle
-# is included FIRST so the assert framework's own includes cannot supply what
-# the bundle forgot. Run with:
-#   cyrius test tests/tcyr/sankoch_raw_include.tcyr
-
 include "dist/sankoch.cyr"
 include "lib/assert.cyr"
 
@@ -54,10 +47,30 @@ fn test_raw_include_zlib_roundtrip() {
     return 0;
 }
 
+# 2.8.4: the Brotli encoder is in the full bundle (and only there).
+fn test_raw_include_brotli_roundtrip() {
+    var n = 4096;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) {
+        store8(src + i, 97 + ((i * 7) % 13));
+        i = i + 1;
+    }
+    var cap = brotli_compress_bound(n);
+    var c = alloc(cap);
+    var clen = brotli_compress_level(src, n, c, cap, 9);
+    assert(clen > 0 && clen < n, "raw include: brotli_compress_level ok");
+    var d = alloc(n);
+    assert(brotli_decompress(c, clen, d, n) == n, "raw include: brotli_decompress length");
+    assert(memeq(src, d, n) == 1, "raw include: brotli round-trip bytes");
+    return 0;
+}
+
 fn main() {
     alloc_init();
     test_raw_include_crc32_check_value();
     test_raw_include_zlib_roundtrip();
+    test_raw_include_brotli_roundtrip();
     return assert_summary();
 }
 

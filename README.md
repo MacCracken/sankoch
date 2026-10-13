@@ -19,7 +19,7 @@ release in [`VERSION`](VERSION)).
 | xz / LZMA2      | `FORMAT_XZ`      | ✓     | —         | `xz -dc` / `xz -d`     |
 | bzip2           | `FORMAT_BZIP2`   | ✓     | —         | `bzip2 -dc` / `bzip2 -d` |
 | zstd            | `FORMAT_ZSTD`    | ✓     | —         | `zstd` / `zstd -d`     |
-| Brotli (decode) | `FORMAT_BROTLI`  | decode | —        | `brotli -d`            |
+| Brotli          | `FORMAT_BROTLI`  | ✓     | —         | `brotli -d`            |
 
 zstd is a **full codec** — decode (`zstd_decompress` / `FORMAT_ZSTD`,
 v2.5.0+) and encode (`zstd_compress` / `compress(FORMAT_ZSTD, …)`, v2.5.5+):
@@ -57,12 +57,20 @@ speed gap to xz's optimized C persists. `--check=sha256` streams are
 rejected (no SHA-256 primitive — fails closed rather than accept an
 unverified payload).
 
-Brotli is **decode-only** (`brotli_decompress` / `FORMAT_BROTLI`, v2.8.0+). It implements all of
-RFC 7932: context modeling, block switching, window sizes 10–24 bits, and the 122,784-byte static
-dictionary with its 121 transforms. It decodes one complete stream into a caller buffer, with a
-fail-closed output ceiling and trailing bytes rejected, as `brotli -d` does. It is validated
-byte-for-byte against `brotli -d` 1.2.0 (google testdata, quality 0–11 × window 10–24 sweeps, a
-WOFF2-shaped font stream) and fuzzed with guard-paged buffers. The encoder is scheduled for 2.8.4, the next feature release.
+Brotli is a **full codec** — decode (`brotli_decompress` / `FORMAT_BROTLI`, v2.8.0+) and encode
+(`brotli_compress` / `compress(FORMAT_BROTLI, …)`, v2.8.4+). The decoder implements all of RFC 7932:
+context modeling, block switching, window sizes 10–24 bits, and the 122,784-byte static dictionary
+with its 121 transforms. It decodes one complete stream into a caller buffer, with a fail-closed
+output ceiling and trailing bytes rejected, as `brotli -d` does. It is validated byte-for-byte
+against `brotli -d` 1.2.0 (google testdata, quality 0–11 × window 10–24 sweeps, a WOFF2-shaped font
+stream) and fuzzed with guard-paged buffers. The encoder takes a quality 0..11 on the `brotli -q`
+scale (default 6): a bucketed-hash LZ77 parse with the distance cache and a lazy step, literal
+context modeling chosen by exact cost, and length-limited prefix codes, with incompressible
+meta-blocks stored. Every quality's output decodes byte-exact through `brotli -d` 1.2.0. Without
+the static dictionary, block splitting and an optimal parse (later ratio steps) it is smaller than
+`brotli -q N` at q1–q6 on source, binary and font fixtures, within 1 % at q9, and 10–13 % larger
+at q11; on record-structured data the reference's lead starts earlier (+15 % to +57 % at q9). The
+encoder is in the full bundle only: the `brotli` and `woff` profiles stay decode-only.
 
 ## Containers
 
@@ -110,13 +118,23 @@ gzip_decompress_with_ratio_cap(src, src_len, dst, dst_cap, max_ratio)    -> byte
 var ctx = zlib_dec_init_capped(dst, dst_cap, expected_src_len, max_ratio)   # also deflate_/gzip_
 ```
 
-### Brotli decode (v2.8.0+)
+### Brotli (decode v2.8.0+, encode v2.8.4+)
 
 ```cyr
 brotli_decompress(src, src_len, dst, dst_cap)                     -> bytes or -err
 brotli_decompress_capped(src, src_len, dst, dst_cap, max_output)  -> bytes or -err  # max_output clamped to dst_cap, may exceed 16 MiB
 decompress(FORMAT_BROTLI, src, src_len, dst, dst_cap)             -> bytes or -err
+
+brotli_compress(src, src_len, dst, dst_cap)                       -> bytes or -err  # quality 6
+brotli_compress_level(src, src_len, dst, dst_cap, quality)        -> bytes or -err  # 0..11, the brotli -q scale
+brotli_compress_bound(src_len)                                    -> worst-case stream size
+compress_level(FORMAT_BROTLI, src, src_len, dst, dst_cap, quality) -> bytes or -err
 ```
+
+Size `dst` with `brotli_compress_bound`: a meta-block is written compressed only when that is no
+larger than storing it, so the bound always holds; a smaller `dst_cap` that the stream does not fit
+is `ERR_BUFFER_TOO_SMALL`. Encoder memory grows with quality: about 2.4 MiB at 0, 6.3 MiB at 6 and
+10.3 MiB at 9–11 (arena, allocated on first use).
 
 `src` must be exactly one stream: bytes after it are `ERR_CORRUPT_DATA`. An output past `dst_cap`
 is `ERR_BUFFER_TOO_SMALL`, and one past the ceiling is `ERR_OUTPUT_LIMIT`; whichever bound is
@@ -245,8 +263,8 @@ bash scripts/profile-link-gate.sh        # every bundle links, runs, survives al
 
 **Profiles** (`cyrius.cyml`, one bundle each under `dist/`): full, `core` (kernel-safe LZ4
 decode), `zlib`, `gzip`, `xz`, `bzip2`, `zstd`, `tar` (every envelope), `zip` (store + DEFLATE),
-`zipall` (every ZIP method), `brotli` (Brotli decode), and `woff` (the zlib closure + Brotli, for
-WOFF 1.0 + WOFF2). **Use one sankoch bundle per program.** Profiles are closures, not layers, and two
+`zipall` (every ZIP method), `brotli` (Brotli decode), and `woff` (the zlib closure + Brotli decode,
+for WOFF 1.0 + WOFF2). Brotli *encode* is in the full bundle only. **Use one sankoch bundle per program.** Profiles are closures, not layers, and two
 in one program collide. Pick the smallest single profile that carries every codec you need.
 
 Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
@@ -272,6 +290,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | bzip2.cyr      | `.bz2` de/compress — bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 | full  |
 | zstd.cyr       | `.zst` de/compress (RFC 8878) — own FSE/Huffman, LZ77 + repcode parse, DP optimal parse at levels 7–9 | full    |
 | brotli.cyr     | Brotli decode (RFC 7932) — prefix codes, context maps + IMTF, block switching, command loop, dictionary transforms | full, brotli, woff |
+| brotli_enc.cyr | Brotli encode (RFC 7932) — bucketed-hash LZ77 + distance cache + lazy step, context modeling by exact cost, prefix-code writer, stored fallback | full |
 | brotli_dict.cyr | RFC 7932 dictionary geometry + FNV-1a self-check; the 122,784 bytes are `cyrius.cyml [embed] _brotli_dict_bin` (`docs/sources/brotli/dictionary.bin`) | full, brotli, woff |
 | tar.cyr        | Shared POSIX ustar/v7 tar pull-cursor; `tar_open_auto` sniffs gzip/xz/bzip2/zstd; path-traversal guards | full    |
 | zip.cyr        | PKZIP `.zip` container — in-memory reader + writer, methods 0/8, Zip64, streaming, Unix metadata | full    |

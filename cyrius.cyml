@@ -5,7 +5,7 @@ description = "Lossless compression + archive library — LZ4, DEFLATE, zlib, gz
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/sankoch"
 language = "cyrius"
-cyrius = "6.7.5"
+cyrius = "6.7.10"
 
 [build]
 entry = "src/lib.cyr"
@@ -39,6 +39,7 @@ modules = [
     "src/zstd.cyr",
     "src/brotli_dict.cyr",
     "src/brotli.cyr",
+    "src/brotli_enc.cyr",
     "src/tar.cyr",
     "src/zip.cyr",
     "src/zip_methods.cyr",
@@ -225,7 +226,8 @@ modules = [
 # prefix codes and static dictionary; no checksum or deflate modules. The 122,784-byte
 # dictionary is the [embed] _brotli_dict_bin (2.8.3; a generated literal before), which only
 # this profile, [lib.woff] and [lib] carry, beside brotli_dict.cyr's geometry and self-check.
-# Needs the sankoch alloc/mutex runtime for its lazy workspace.
+# Needs the sankoch alloc/mutex runtime for its lazy workspace. The ENCODER (src/brotli_enc.cyr,
+# 2.8.4) is in [lib] only, so this profile and [lib.woff] stay decode-only (docs/adr/0002).
 [lib.brotli]
 modules = [
     "src/types.cyr",

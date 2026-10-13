@@ -24,6 +24,7 @@ If the decision could credibly have gone the other way, write the ADR. A reader 
 ## Index
 
 - [`0001-brotli-decoder-placement.md`](0001-brotli-decoder-placement.md) (Accepted, 2.8.0): Brotli decode in the full bundle plus `[lib.brotli]` / `[lib.woff]`; the dictionary as a generated literal; trailing bytes rejected; the measured DCE cost.
+- [`0002-brotli-encoder-placement-and-quality.md`](0002-brotli-encoder-placement-and-quality.md) (Accepted, 2.8.4): the Brotli encoder as `src/brotli_enc.cyr` in `[lib]` only (the decode profiles stay decode-only); quality 0..11 on the `brotli -q` scale, default 6; literal context modeling chosen by exact cost.
 
 Older load-bearing decisions (zero deps, no FFI, no floating point, all mutable state behind one mutex) are codified in `CLAUDE.md` and the audit history. Some candidates that could earn an ADR retroactively if any of them surfaces a future reader asking *why* again:
 

@@ -18,7 +18,7 @@
 
 ## Goal
 
-Own lossless compression. One library provides LZ4, LZ4F, DEFLATE, zlib, gzip, xz, bzip2, and zstd de/compression and Brotli decode, plus a shared tar cursor, for everything downstream: ark packages, AGNOS initrd, git object reads, shravan/tarang container formats. Zero external dependencies, zero C FFI, zero shell-outs to `gzip`.
+Own lossless compression. One library provides LZ4, LZ4F, DEFLATE, zlib, gzip, xz, bzip2, zstd, and Brotli de/compression, plus a shared tar cursor, for everything downstream: ark packages, AGNOS initrd, git object reads, shravan/tarang container formats. Zero external dependencies, zero C FFI, zero shell-outs to `gzip`.
 
 ## Current State
 
@@ -51,6 +51,7 @@ cyrius distlib brotli                    # → dist/sankoch-brotli.cyr (Brotli d
 cyrius distlib woff                      # → dist/sankoch-woff.cyr (zlib closure + Brotli: WOFF 1.0 + WOFF2)
 bash scripts/profile-link-gate.sh        # every bundle registers its resets, links, runs, survives alloc_reset
 bash scripts/brotli-smoke.sh             # local: Brotli differential vs reference `brotli -d` (needs the CLI)
+bash scripts/brotli-encode-smoke.sh      # local: every encoder quality decoded by reference `brotli -d` (--sizes: vs `brotli -q N`)
 ```
 
 Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
@@ -76,6 +77,7 @@ src/
   bzip2.cyr        — .bz2 de/compress: bit reader/writer + Huffman + MTF/RLE2 + inverse/forward BWT + RLE1 (bzip2_decompress / bzip2_compress)
   zstd.cyr         — RFC-8878 zstd de/compress: FSE/Huffman + repcode-aware + adaptive-FSE-table encoder (zstd_decompress / zstd_compress / zstd_compress_level)
   brotli.cyr       — RFC 7932 Brotli DECODE: prefix codes, context maps + IMTF, block switching, dictionary transforms (brotli_decompress / _capped)
+  brotli_enc.cyr   — RFC 7932 Brotli ENCODE, [lib] only: bucketed-hash LZ77, context modeling by exact cost, stored fallback (brotli_compress / _level / _bound)
   brotli_dict.cyr  — RFC 7932 dictionary geometry (NDBITS / DOFFSET) + FNV-1a self-check; the bytes are cyrius.cyml [embed] _brotli_dict_bin
   tar.cyr          — shared tar cursor; tar_open_auto dispatches to gzip/xz/bzip2/zstd
   zip.cyr          — PKZIP .zip container: reader + writer, Zip64, streaming, Unix metadata
@@ -86,12 +88,14 @@ src/
 programs/
   core_smoke.cyr   — Kernel-safe tripwire: links ONLY [core] modules
   brotli_smoke.cyr — decode driver for scripts/brotli-smoke.sh
+  brotli_encode_smoke.cyr — encode driver (qualities 0..11) for scripts/brotli-encode-smoke.sh
 scripts/
   profile-link-gate.sh — per-profile registration + link + run + alloc_reset + AGNOS gate (CI/release); --list-profiles
   brotli-smoke.sh / brotli-craft.py / brotli-manifest.py / brotli_ref_decoder.py — Brotli reference tooling (tests/data/brotli/)
+  brotli-encode-smoke.sh — Brotli encoder interop vs reference `brotli -d`, sizes vs `brotli -q N`
 tests/tcyr/        — codec×direction suites + cross-cutting suites (checksum, detect_error, ratio_cap, stream, git_object) + _harness.tcyr (shared); counts in state.md
 tests/bcyr/        — benchmarks (sankoch.bcyr)
-fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd, zip, brotli — auto-discovered via fuzz/*.fcyr, all wired into CI)
+fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd, zip, brotli, brotli_enc — auto-discovered via fuzz/*.fcyr, all wired into CI)
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
   sankoch-core.cyr — kernel-safe profile; consumed as a DIRECT dep (not folded into
@@ -115,7 +119,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 - **Test after EVERY change**, not after the feature is done.
 - **ONE change at a time** — never bundle unrelated changes.
 - **Study the RFCs** — RFC 1951 is the DEFLATE bible; read before writing code.
-- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`; ZIP via `unzip` / `bsdtar` / Python `zipfile`; Brotli decode must agree with `brotli -d` (verdict and bytes). The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
+- **Reference-CLI compatibility is load-bearing** — zlib output must decode via Python `zlib.decompress`; gzip via `gunzip`; LZ4F via `lz4 -dc`; ZIP via `unzip` / `bsdtar` / Python `zipfile`; Brotli decode must agree with `brotli -d` (verdict and bytes), and every Brotli encoder quality must decode via `brotli -d`. The 1.6.1 xxHash32 bug is the cautionary tale (self-consistent round-trips hid a spec divergence for months).
 
 ## Rules (Hard Constraints)
 
@@ -141,6 +145,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 - **Bundle gate.** CI regenerates every `dist/` bundle (profile list from `cyrius.cyml`) and fails on drift or an untracked bundle.
 - **Reset registration.** A module that memoizes an arena pointer defines `_<module>_reset_tables` and registers it in `lib.cyr`'s `_sankoch_reset_tables` AND in every `src/reset_<profile>.cyr` whose profile lists the module; a new lazy global also goes into the `arena_reset.tcyr` inventory cell. A memoizing public entry reachable without the lock calls `_sankoch_arena_guard()` itself. See `docs/architecture/003-per-profile-reset-dispatch.md`.
 - **One sankoch bundle per program.** Profiles are closures, not layers; two in one program duplicate `runtime.cyr`'s globals and run the wrong reset. A consumer needing two codecs gets a profile that carries both (e.g. `[lib.woff]`).
+- **The Brotli encoder writes a meta-block compressed only when it is no larger than stored** (that is what makes `brotli_compress_bound` hold), and its distance ring mirrors the decoder's push rule, restored with every stored meta-block. Any ratio change (dictionary, block splitting, optimal parse) keeps both. See `docs/architecture/005-brotli-encoder-invariants.md`.
 - **The Brotli dictionary is an `[embed]`.** cyrius prepends the `_brotli_dict_bin` module (122,784 bytes) to **every** compile in this project — tests, fuzzers, programs, the link-gate probes — and writes it into a bundle only when that bundle's `[lib...] embed` lists it (`[lib]`, `[lib.brotli]`, `[lib.woff]`). A profile whose modules call it must list it, or `cyrius distlib` refuses the bundle. (The NUL-literal rule this line used to state was retired at 2.8.3 — the pin is past cyrius 6.6.15's interning fix; see `docs/architecture/004-string-literal-nul-rule.md`.)
 
 ## Process

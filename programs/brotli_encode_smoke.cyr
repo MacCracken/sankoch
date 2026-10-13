@@ -1,0 +1,97 @@
+# brotli_encode_smoke.cyr — compress build/brotli-enc/in at every quality 0..11 via sankoch's
+# brotli_compress_level, self-check each stream through sankoch's own brotli_decompress_capped, and
+# write it to build/brotli-enc/qNN.br. Driven by scripts/brotli-encode-smoke.sh, which then decodes
+# every stream with the reference `brotli -d` and cmps it against the input (the interop bar).
+# Paths are repo-relative (run from the repo root) and under build/, so a run survives a reboot.
+#
+# Exit: 0 all twelve written; 20 + err on an encode error; 10 / 11 on a self-check length / byte
+# mismatch; 12 when a stream exceeds brotli_compress_bound; 1-4 on I/O failure. The failing quality
+# is printed.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+
+var g_len = 0;
+
+fn read_all(path) {
+    var fd = sys_open(path, 0, 0);
+    if (fd < 0) { return 0; }
+    var sz = syscall(SYS_LSEEK, fd, 0, 2);
+    syscall(SYS_LSEEK, fd, 0, 0);
+    var buf = alloc(sz + 16);
+    var off = 0;
+    while (off < sz) {
+        var n = sys_read(fd, buf + off, sz - off);
+        if (n <= 0) { break; }
+        off = off + n;
+    }
+    sys_close(fd);
+    g_len = off;
+    return buf;
+}
+
+fn write_all(path, p, n) {
+    var fd = sys_open(path, 577, 420);   # O_WRONLY|O_CREAT|O_TRUNC, 0644
+    if (fd < 0) { return 3; }
+    var off = 0;
+    while (off < n) {
+        var w = sys_write(fd, p + off, n - off);
+        if (w <= 0) { break; }
+        off = off + w;
+    }
+    sys_close(fd);
+    if (off != n) { return 4; }
+    return 0;
+}
+
+fn enc(buf, dst, cap, chk, q) {
+    var n = brotli_compress_level(buf, g_len, dst, cap, q);
+    if (n < 0) { return 20 + (0 - n); }
+    if (n > brotli_compress_bound(g_len)) { return 12; }
+    var d = brotli_decompress_capped(dst, n, chk, g_len + 16, g_len + 16);
+    if (d != g_len) { return 10; }
+    var i = 0;
+    while (i < g_len) {
+        if (load8(chk + i) != load8(buf + i)) { return 11; }
+        i = i + 1;
+    }
+    var path = "build/brotli-enc/qNN.br";
+    var p = alloc(32);
+    var k = 0;
+    while (k < 24) {
+        store8(p + k, load8(path + k));
+        k = k + 1;
+    }
+    store8(p + 18, 48 + q / 10);
+    store8(p + 19, 48 + q % 10);
+    return write_all(p, dst, n);
+}
+
+fn run() {
+    var buf = read_all("build/brotli-enc/in");
+    if (buf == 0) { return 1; }
+    var cap = brotli_compress_bound(g_len);
+    var dst = alloc(cap + 16);
+    var chk = alloc(g_len + 32);
+    if (dst == 0 || chk == 0) { return 2; }
+    var q = 0;
+    while (q <= 11) {
+        var r = enc(buf, dst, cap, chk, q);
+        if (r != 0) {
+            fmt_int(q);
+            sys_write(1, " quality failed\n", 16);
+            return r;
+        }
+        q = q + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    return run();
+}
+
+var exit_code = main();
+sys_exit(exit_code);
