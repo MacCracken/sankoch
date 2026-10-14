@@ -289,7 +289,7 @@ fn _bc_w_start(buf, cap) {
     _bre_bp = 0;
     _bre_acc = 0;
     _bre_nb = 0;
-    _bre_err = 0;
+    _bre_ovf = 0;
     return 0;
 }
 
@@ -320,7 +320,7 @@ fn _bc_code_rt(alpha) {
     _bc_w_start(_bc_buf, 65536);
     _bre_store_code(_bc_hist, alpha, _bc_dep, _bc_bits);
     _bre_flush();
-    if (_bre_err != 0) { return 0; }
+    if (_bre_ovf != 0) { return 0; }
     _brd_reader_init(_bc_buf, _bre_bp);
     var tab = _brd_ws + BRD_WS_TAB_I;
     var r = _brd_read_code(alpha, tab, 1080);

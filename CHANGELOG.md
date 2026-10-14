@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.7] — 2026-10-14
+
+**The Brotli encoder's overflow flag renamed: `_bre_err` → `_bre_ovf`.** No API or behaviour change.
+
+### Fixed
+
+- **A global shared with niyama** (found by cyrius 6.7.11's distlib owner-rule census when it refolded
+  2.8.6). The encoder's "a flushed byte did not fit in `dst_cap`" flag was a top-level `var _bre_err`,
+  and niyama — another fold in the cyrius stdlib — declares a top-level `var _bre_err` of its own (its
+  regex engine's error code). cyrius accepts a repeated top-level `var`, so a program including both
+  `lib/sankoch.cyr` and `lib/niyama.cyr` compiled clean with ONE cell for both. Each resets it at the
+  start of its own operation (niyama's compile, the encoder's encode) and niyama reports through its
+  own `_bre_last_err`, so a single-threaded program saw nothing; a niyama compile and a Brotli encode
+  running at once on two threads could each read the other's value. cyrius's distlib owner rule also
+  refuses the name as an every-target tie (a bundle reaching it gets `Sidecar NOT written`). The flag is
+  `_bre_ovf` now (src/brotli_enc.cyr, 11 sites; the `brotli_compress.tcyr` row that resets it; the
+  name in architecture 005). Only `dist/sankoch.cyr` (the full bundle) carries the encoder; every
+  bundle is regenerated for the version line.
+
 ## [2.8.6] — 2026-10-13
 
 **The 2.8.x-closeout P(-1) pass** — the hardening release that closes the 2.8.x line: six adversarial

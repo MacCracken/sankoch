@@ -7,7 +7,7 @@ encoder's meta-block loop, its parse, or the decoder's tables.
 
 ## 1. A meta-block is written compressed only when that is no larger than storing it
 
-`_bre_encode` snapshots the writer (`_bre_bp`, `_bre_acc`, `_bre_nb`, `_bre_err`) and the
+`_bre_encode` snapshots the writer (`_bre_bp`, `_bre_acc`, `_bre_nb`, `_bre_ovf`) and the
 distance ring before each meta-block, writes it compressed, and compares the end bit position with
 what an uncompressed meta-block would reach from the same start: header bits, zero padding to a
 byte, `8 × MLEN`, plus the 2-bit empty `ISLAST` trailer and final padding when it is the last one.
