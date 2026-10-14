@@ -5,7 +5,7 @@
 > 2.8.1–2.8.3 were toolchain releases (cyrius 6.6.18, the `loop` rename, cyrius 6.7.5 with the
 > dictionary as an `[embed]`). **2.8.4 shipped the Brotli encoder** on cyrius **6.7.10**, and **2.8.5 the
 > PCLMULQDQ CRC-32 fold** (x86_64).
-> Next: **2.8.x**: GPU texture (2.8.6), then the P(-1) closeout.
+> Next: **2.8.6, the 2.8.x-closeout P(-1) pass.** GPU texture compression moved to mabda (ADR 0004).
 > ⚠ The **DEFLATE match-finder** backlog item is no longer speculative: sit has
 > measured it as its single worst benchmark row; see Backlog. Before the next pin move, read
 > [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-13
@@ -43,8 +43,8 @@ The **2.8.x line** (see **▶ Scheduled** below):
 - **2.8.1–2.8.3** shipped toolchain moves (no feature; see CHANGELOG);
 - **2.8.4** shipped the Brotli encoder (with the cyrius 6.7.10 pin);
 - **2.8.5** shipped the SIMD CRC-32 (`PCLMULQDQ` fold, x86_64);
-- **2.8.6** = GPU texture compression;
-- then a **P(-1) hardening pass** closes out the line.
+- **2.8.6** = the **P(-1) hardening pass** that closes out the line. GPU texture compression, which
+  held this slot, is mabda's work ([ADR 0004](../adr/0004-gpu-texture-compression-in-mabda.md)).
 
 The feature releases were renumbered at 2.8.3 (they were 2.8.1–2.8.3): the toolchain releases took
 those numbers first. A toolchain or ecosystem release that lands ahead of one again takes the next
@@ -56,9 +56,9 @@ match-finder, the Brotli encoder's ratio steps) stay parked.
 
 ---
 
-## ▶ Next — 2.8.6
+## ▶ Next — 2.8.6, the 2.8.x-closeout P(-1) pass
 
-Nothing preempts 2.8.6. Two findings are carried into the **2.8.x-closeout P(-1) pass** (below):
+Nothing preempts it. Two findings are carried into the **2.8.x-closeout P(-1) pass** (below):
 
 ⚠ **Kraft completeness in `_huff_build`.** It is a latent correctness gap, not a fixed bug:
 `_huff_build` never verifies **Kraft completeness**, so an incomplete Huffman table is buildable and
@@ -98,24 +98,7 @@ opened **straight into the feature**: no P(-1) pass *leads* it (deliberate). Ins
 pass** (below), before the next minor opens. That surface is BT4 `son[]`, the 4 MiB frame-global chain,
 the DP-optimal arrays, and the window/cutoff math.
 
-### 2.8.6 — GPU texture compression (BC1–BC7 / ASTC)
-
-The one genuinely different codec: **lossy** and GPU-format-specific, so it does
-not fit sankoch's "lossless" identity the way every prior codec did.
-
-- **First sub-step is a home decision, not code.** sankoch is the home for *every
-  lossless* codec (modular-by-profile), but a lossy texture codec may instead belong
-  with **mabda** — which already has generic compute dispatch (`compute.cyr`) and the
-  texture-format enums, but no codecs yet. Resolve this before writing a block encoder;
-  it decides the repo, the API shape, and whether the "lossless" framing in `CLAUDE.md`
-  needs qualifying.
-- **Then a first format** — a CPU reference block encoder (BC1/BC7 for desktop or ASTC
-  for mobile, driven by whichever consumer surfaces), block-based, validated against a
-  reference decoder.
-- Needs a consumer to pin *which* formats matter; scheduled as the direction, with the
-  home decision as its gating bite.
-
-### 2.8.x closeout — P(-1) hardening pass
+### 2.8.6 — the 2.8.x closeout: P(-1) hardening pass
 
 The P(-1) scaffold-hardening pass, run at the **end of the 2.8.x line** (before the next
 minor opens), per [`CLAUDE.md` § P(-1)](../../CLAUDE.md). It ships as its own release, as
@@ -143,7 +126,6 @@ Scope — the surface accrued since the last audit (2.6.4, ZIP), audited togethe
     the register contract (xmm0..5, no rbx / r12..15, no `ret`), the `len >= 64` guard (below it the
     kernel over-reads: mutation-verified), the known-answer probe's coverage, and that
     `scripts/crc32-clmul-asm.sh --check` still matches ([architecture 006](../architecture/006-crc32-pclmul-asm.md));
-  - **the GPU texture codec's block encoder (2.8.6)**.
 - **The carried findings** from ▶ Next: `_huff_build` Kraft completeness, the `_dyn_header_bits`
   bound, and the coverage review as a matrix.
 - **Found at 2.8.3** (the cyrius W2 pin release; recorded, not fixed there — W2 carried only its
@@ -167,8 +149,8 @@ Scope — the surface accrued since the last audit (2.6.4, ZIP), audited togethe
   benchmark baseline, the security-audit dossier under [`docs/audit/`](../audit/), and a
   doc-health pass).
 
-Primitive sources for the codec items (Rice/Golomb, range encoder, LPC, GPU
-dispatch) are tabulated under [§ Primitive sources](#primitive-sources-for-future-codecs) below.
+Primitive sources for future codec items (Rice/Golomb, range encoder, LPC) are tabulated under
+[§ Primitive sources](#primitive-sources-for-future-codecs) below.
 
 ---
 
@@ -226,6 +208,14 @@ into a fresh ladder** when a consumer surfaces.
   sit's cost is match finding in `lz77.cyr`, and zlib checks with Adler-32, not
   CRC-32.
 
+- **Primitives for mabda's texture work** (ADR 0004; mabda's filing
+  `docs/development/issues/2026-10-13-gpu-texture-compression-encoder.md`). Already available, no
+  sankoch work: KTX2 supercompression scheme 2 (Zstandard) via `zstd_decompress` / `zstd_compress_level`
+  and scheme 3 (ZLIB) via `zlib_decompress_capped` (exact `uncompressedByteLength` cap) /
+  `zlib_compress`; mabda takes sankoch through the stdlib fold. **On request**: a public cost estimate
+  ("bits this block costs after LZ + entropy coding, given the bytes before it") for a
+  rate-distortion-optimized BCn encoder, built from the existing match finders, Huffman / FSE coders
+  and the Q16 log2. Scheduled when mabda files the shape it needs; not before.
 - **A faster CRC-32 on aarch64.** 2.8.5 left aarch64 on slice-by-8 (ADR 0003): PMULL and the CRC32
   instructions are optional in ARMv8.0, and the supported feature check (AT_HWCAP) reads
   `/proc/self/auxv`, which `src/` may not open. Options when a consumer needs it: Linux's userland
@@ -288,7 +278,9 @@ Because the per-codec distlib profiles let a consumer pull only the closure it
 needs (see *Modular by profile* in [`CLAUDE.md`](../../CLAUDE.md)), sankoch is the
 home for **every** lossless-compression codec — new formats never bloat consumers
 that don't use them, so nothing is "a separate crate." Brotli decode shipped in 2.8.0
-and encode in 2.8.4, and **GPU texture compression** (2.8.6) is the one not-yet-implemented codec;
+and encode in 2.8.4. **Lossy** GPU texture compression (BC1–BC7 / ASTC) is not a sankoch codec: it
+lives in mabda ([ADR 0004](../adr/0004-gpu-texture-compression-in-mabda.md)), leaning on sankoch's
+lossless primitives (Backlog);
 Zstandard is done (decode 2.5.0, sovereign encoder 2.5.5, beats `zstd -3`, optimal
 parse 2.7.3 — its remaining record-data ratio residue is the 2.7.4 window item, not
 a new codec).
@@ -300,7 +292,6 @@ a new codec).
 | Rice/Golomb coding | shravan/FLAC | flac.cyr | 367-437 |
 | Range encoder | shravan/Opus | opus.cyr | 175-284 |
 | LPC prediction | shravan/FLAC | flac.cyr | 517-580 |
-| GPU compute dispatch | mabda | compute.cyr | 142 lines |
 
 ---
 
@@ -409,7 +400,7 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.10 at 2.8.4).
 
 ---
 
-*Last Updated: 2026-10-13 (**2.8.5 cut**: the PCLMULQDQ CRC-32 fold; the 2.8.5 section moved to CHANGELOG, Next is 2.8.6; the fold's review points in the closeout scope; a faster aarch64 CRC-32 added to the Backlog; File Summary, test, fuzz and distlib figures re-counted. Previous: 2026-10-13, the 2.8.4 cut.)*
+*Last Updated: 2026-10-13 (GPU texture compression moved to mabda (ADR 0004): the 2.8.6 section removed, the closeout is now 2.8.6 and ▶ Next, its texture-encoder scope item dropped, *Primitives for mabda's texture work* added to the Backlog. Previous: 2026-10-13, the 2.8.5 cut.)*
 
 ---
 

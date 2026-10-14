@@ -164,16 +164,21 @@ fixed in passing.
 whose bytes come from an assembler (`scripts/crc32-clmul-asm.sh --check`); it is in the closeout
 P(-1) scope.
 
+**GPU texture compression moved to mabda** (2026-10-13, [ADR 0004](../adr/0004-gpu-texture-compression-in-mabda.md)):
+it is lossy and GPU-specific, and mabda owns the formats, loaders and capability masks. It is filed in
+mabda (`docs/development/issues/2026-10-13-gpu-texture-compression-encoder.md` + a backlog line) for a
+later date. sankoch supplies lossless primitives: KTX2 Zstandard / ZLIB supercompression work today;
+an RDO cost estimate when mabda asks (roadmap Backlog).
+
 **▶ 2.8.x scheduled** ([`roadmap.md` § Scheduled](roadmap.md#-scheduled--28x)):
-1. **2.8.6 = GPU texture compression**, whose first sub-step is the sankoch vs mabda home decision. Next.
-2. **The 2.8.x-closeout P(-1) pass.** Scope: the 2.7.x encoder surface, the Brotli decoder + encoder,
-   the runtime reset seam, the PCLMULQDQ fold and the texture encoder. It carries the `_huff_build`
+1. **2.8.6 = the 2.8.x-closeout P(-1) pass.** Next. Scope: the 2.7.x encoder surface, the Brotli
+   decoder + encoder, the runtime reset seam and the PCLMULQDQ fold. It carries the `_huff_build`
    Kraft-completeness finding, the coverage-as-a-matrix review, the fuzz exit-code fix, and a
    `while (1)` → `loop` sweep.
-3. **2.9.0**: public `TAR_*` / `ZIP_*` constants as `const`, a `SANKOCH_ERR_*` namespace, `bool`
+2. **2.9.0**: public `TAR_*` / `ZIP_*` constants as `const`, a `SANKOCH_ERR_*` namespace, `bool`
    predicates.
 
-**Backlog (unscheduled)**: a wire-identical DEFLATE match-finder speedup, measured by sit as its worst
+**Backlog (unscheduled)**: primitives for mabda's texture work (on request); a wire-identical DEFLATE match-finder speedup, measured by sit as its worst
 row; the Brotli encoder's ratio steps (2.8.4 left them out by design).
 
 ## Consumers

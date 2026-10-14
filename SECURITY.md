@@ -66,8 +66,8 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   fixed before the cut (the mediums were test/gate blind spots, not decoder defects).
 
 Next periodic audit: the **2.8.x-closeout P(-1) pass** at the end of the 2.8.x line (the 2.7.x
-encoder surface, the Brotli decoder + encoder, the reset seam, the PCLMULQDQ CRC fold, the GPU
-texture encoder). Forward ladder in
+encoder surface, the Brotli decoder + encoder, the reset seam, the PCLMULQDQ CRC fold), released
+as 2.8.6. Forward ladder in
 [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Supported Versions

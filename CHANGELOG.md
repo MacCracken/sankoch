@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **GPU texture compression moved to mabda** ([ADR 0004](docs/adr/0004-gpu-texture-compression-in-mabda.md)).
+  The roadmap's 2.8.6 item (BC1–BC7 / ASTC encode) started with a home decision; the decision is
+  mabda, which owns the texture formats, the DDS / KTX2 loaders, the capability masks and compute.
+  sankoch stays lossless and supplies primitives: KTX2 supercompression schemes 2 (Zstandard) and 3
+  (ZLIB) need no sankoch change; a cost estimate for a rate-distortion-optimized BCn encoder is on the
+  Backlog, to be built when mabda asks. Filed in mabda as
+  `docs/development/issues/2026-10-13-gpu-texture-compression-encoder.md` plus a backlog line in its
+  roadmap. The closeout P(-1) pass becomes 2.8.6 and ▶ Next. Docs only: no source, test or bundle
+  change.
+
 ## [2.8.5] — 2026-10-13
 
 **CRC-32 folds with PCLMULQDQ on x86_64** — the roadmap's SIMD CRC-32 item. Where the CPU has the
