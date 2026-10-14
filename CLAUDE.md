@@ -52,6 +52,7 @@ cyrius distlib woff                      # → dist/sankoch-woff.cyr (zlib closu
 bash scripts/profile-link-gate.sh        # every bundle registers its resets, links, runs, survives alloc_reset
 bash scripts/brotli-smoke.sh             # local: Brotli differential vs reference `brotli -d` (needs the CLI)
 bash scripts/brotli-encode-smoke.sh      # local: every encoder quality decoded by reference `brotli -d` (--sizes: vs `brotli -q N`)
+bash scripts/crc32-clmul-asm.sh --check  # local: the PCLMULQDQ fold's bytes match its .S, and its math (needs binutils/gcc)
 ```
 
 Full command reference: [`docs/guides/cyrius-usage.md`](docs/guides/cyrius-usage.md).
@@ -63,7 +64,7 @@ src/
   lib.cyr          — Include chain (stdlib + domain modules) + public API + _sankoch_mtx
   types.cyr        — Enums: formats (incl. FORMAT_LZ4F), errors, limits        [core]
   xxhash32.cyr     — xxHash32 batch (helpers + enum) — kernel-safe              [core]
-  checksum.cyr     — Adler-32 / CRC-32 / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs (alloc-using)
+  checksum.cyr     — Adler-32 / CRC-32 / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs (alloc-using); CRC-32 = slice-by-8 + an x86_64 PCLMULQDQ fold (asm bytes from docs/sources/crc32-pclmul/)
   bitreader.cyr    — LSB-first bit-stream reader (DEFLATE)
   bitwriter.cyr    — LSB-first bit-stream writer (DEFLATE)
   huffman.cyr      — Huffman build/decode, fixed trees, optimal trees
@@ -93,9 +94,10 @@ scripts/
   profile-link-gate.sh — per-profile registration + link + run + alloc_reset + AGNOS gate (CI/release); --list-profiles
   brotli-smoke.sh / brotli-craft.py / brotli-manifest.py / brotli_ref_decoder.py — Brotli reference tooling (tests/data/brotli/)
   brotli-encode-smoke.sh — Brotli encoder interop vs reference `brotli -d`, sizes vs `brotli -q N`
+  crc32-clmul-asm.sh — the PCLMULQDQ fold's bytes from GNU as; --check: src/ matches + native math proof
 tests/tcyr/        — codec×direction suites + cross-cutting suites (checksum, detect_error, ratio_cap, stream, git_object) + _harness.tcyr (shared); counts in state.md
 tests/bcyr/        — benchmarks (sankoch.bcyr)
-fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd, zip, brotli, brotli_enc — auto-discovered via fuzz/*.fcyr, all wired into CI)
+fuzz/              — fuzz harnesses (lz4, deflate, xz, bzip2, zstd, zip, brotli, brotli_enc, crc32 — auto-discovered via fuzz/*.fcyr, all wired into CI)
 dist/
   sankoch.cyr      — full distlib bundle; ships as lib/sankoch.cyr in Cyrius stdlib
   sankoch-core.cyr — kernel-safe profile; consumed as a DIRECT dep (not folded into
@@ -130,6 +132,7 @@ Per-file line counts and the current `[core]` total are in [`docs/development/st
 - Do not depend on sigil for Adler-32 / CRC-32 / xxHash32 — they're inline (30-line primitives that live inside the compression format specs anyway)
 - Do not skip spec verification — every DEFLATE test must round-trip against known-good zlib output
 - Do not hand-edit `dist/*.cyr` — regenerate with `cyrius distlib [<profile>]`
+- Do not hand-edit the machine code between the `BEGIN` / `END crc32_fold.S` markers in `src/checksum.cyr` — edit `docs/sources/crc32-pclmul/crc32_fold.S`, regenerate with `scripts/crc32-clmul-asm.sh`, and pass its `--check` (`docs/architecture/006-crc32-pclmul-asm.md`)
 - Do not declare `_brotli_dict_bin` / `_brotli_dict_bin_len` in source — cyrius generates both from `cyrius.cyml [embed]` (`docs/sources/brotli/dictionary.bin`), and refuses an `[embed]` name another declaration owns. The dictionary changes only by replacing that file
 - Do not add Cyrius stdlib includes in individual `src/*.cyr` — `src/lib.cyr` owns the whole include chain
 - Do not hardcode toolchain versions in CI YAML — read `cyrius.cyml` (`cyrius = "X.Y.Z"` pin is the only source of truth)

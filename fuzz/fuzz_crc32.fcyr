@@ -1,0 +1,128 @@
+# sankoch — CRC-32 PCLMULQDQ fold differential fuzz harness (2.8.5)
+#
+# The x86_64 carry-less-multiply fold (_crc32_clmul, hand-transcribed machine code) must agree with
+# the portable slice-by-8 table on every input: fold(x) == table(x). 6,000 cases, about 1 s:
+#   1. 3,000 random buffers: length 0..4,096 (four in five) or up to 1 MiB, any byte offset (the fold
+#      loads unaligned), any 32-bit starting register, and seven byte distributions (uniform, zeros,
+#      0xFF, small alphabets, runs, ascending, a repeated short period);
+#   2. 2,000 of them again through crc32_init / crc32_update in random chunk sizes, which hands the
+#      fold mid-stream registers and every chunk-length residue mod 16 and mod 64, against one batch
+#      table pass;
+#   3. 1,000 single-byte flips of a 4 KiB buffer, each of which must change the CRC on both paths
+#      identically (no flip may cancel in one path and not the other).
+# The fold is forced on only when CPUID reports PCLMULQDQ; elsewhere the harness compares the table
+# with itself and says so. Ends `return assert_summary();`, so a mismatch fails CI.
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+include "src/lib.cyr"
+include "lib/assert.cyr"
+
+var _fuzz_state = 0x5EED2085;
+
+fn _fz_next() {
+    _fuzz_state = _fuzz_state * 6364136223846793005 + 1442695040888963407;
+    return (_fuzz_state >> 33) & 255;
+}
+
+fn _fz_rand(n) {
+    var v = _fz_next() | (_fz_next() << 8) | (_fz_next() << 16) | (_fz_next() << 24);
+    return v % n;
+}
+
+fn _fz_reg() {
+    return _fz_next() | (_fz_next() << 8) | (_fz_next() << 16) | (_fz_next() << 24);
+}
+
+var _FZ_MAX = 1048576;
+var _fz_cpu = 0;
+
+fn _fz_fill(buf, n, kind) {
+    var i = 0;
+    var k = 2 + _fz_rand(14);
+    var period = 1 + _fz_rand(40);
+    while (i < n) {
+        var b = _fz_next();
+        if (kind == 1) { b = 0; }
+        if (kind == 2) { b = 255; }
+        if (kind == 3) { b = 97 + _fz_rand(k); }
+        if (kind == 4) {
+            if (i > 0 && _fz_rand(50) != 0) { b = load8(buf + i - 1); }
+        }
+        if (kind == 5) { b = i & 255; }
+        if (kind == 6 && i >= period) { b = load8(buf + i - period); }
+        store8(buf + i, b);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# _crc32_fold with the fold forced on (when the CPU has it).
+fn _fz_hw(reg, p, n) {
+    _crc32_hw = _fz_cpu;
+    var r = _crc32_fold(reg, p, n);
+    _crc32_hw = 0 - 1;
+    return r;
+}
+
+fn main() {
+    alloc_init();
+    crc32_init_table();
+    var r = alloc(16);
+    store64(r, 0);
+    _crc32_cpuid1(r);
+    _fz_cpu = (load64(r) >> 1) & 1;
+    if (_fz_cpu == 0) { println("fuzz_crc32: no PCLMULQDQ on this CPU; comparing the table with itself"); }
+    var buf = alloc(_FZ_MAX + 64);
+    var bad_batch = 0;
+    var bad_inc = 0;
+    var bad_flip = 0;
+    var t = 0;
+    while (t < 3000) {
+        var n = _fz_rand(4097);
+        if (_fz_rand(5) == 0) { n = _fz_rand(_FZ_MAX + 1); }
+        var off = _fz_rand(64);
+        _fz_fill(buf + off, n, _fz_rand(7));
+        var reg = _fz_reg();
+        var want = _crc32_fold_table(reg, buf + off, n);
+        if (_fz_hw(reg, buf + off, n) != want) { bad_batch = bad_batch + 1; }
+        if (t < 2000) {
+            var whole = (_crc32_fold_table(4294967295, buf + off, n) ^ 4294967295) & 4294967295;
+            _crc32_hw = _fz_cpu;
+            var st = crc32_init();
+            var p = 0;
+            var maxc = 1 + _fz_rand(5000);
+            while (p < n) {
+                var c = 1 + _fz_rand(maxc);
+                if (c > n - p) { c = n - p; }
+                crc32_update(st, buf + off + p, c);
+                p = p + c;
+            }
+            if (crc32_final(st) != whole) { bad_inc = bad_inc + 1; }
+            _crc32_hw = 0 - 1;
+        }
+        t = t + 1;
+    }
+    var f = 0;
+    _fz_fill(buf, 4096, 0);
+    var base_t = _crc32_fold_table(4294967295, buf, 4096);
+    while (f < 1000) {
+        var at = _fz_rand(4096);
+        var bit = 1 << _fz_rand(8);
+        store8(buf + at, load8(buf + at) ^ bit);
+        var a = _crc32_fold_table(4294967295, buf, 4096);
+        var b = _fz_hw(4294967295, buf, 4096);
+        if (a != b || a == base_t) { bad_flip = bad_flip + 1; }
+        store8(buf + at, load8(buf + at) ^ bit);
+        f = f + 1;
+    }
+    assert_eq(bad_batch, 0, "fuzz_crc32: fold == slice-by-8 on 3,000 random buffers / offsets / registers");
+    assert_eq(bad_inc, 0, "fuzz_crc32: crc32_update in random chunks == one batch (2,000)");
+    assert_eq(bad_flip, 0, "fuzz_crc32: every single-bit flip changes the CRC identically on both paths (1,000)");
+    fmt_int(6000);
+    sys_write(1, " cases\n", 7);
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(60, exit_code);

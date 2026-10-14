@@ -246,6 +246,11 @@ Incremental Adler-32, CRC-32, and xxHash32 checksum APIs
 (`<name>_init` / `_update` / `_final`) are exposed for callers who
 want to feed their own data streams.
 
+CRC-32 (gzip, ZIP) folds 64 bytes at a time with `PCLMULQDQ` on x86_64 CPUs that have it (v2.8.5),
+15–21× faster than the slice-by-8 table, which every other target and CPU keeps. The result is
+bit-identical: the fold's remainder is finished on the table, and the fold is enabled per process
+only after CPUID and a known-answer check agree.
+
 ## Build
 
 ```sh
@@ -277,7 +282,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | types.cyr      | Enums: formats, errors, limits, magic bytes                                            | core    |
 | xxhash32.cyr   | xxHash32 batch (helpers + enum)                                                        | core    |
 | lz4_decode.cyr | LZ4 block + frame decompress + LZ4F enum                                               | core    |
-| checksum.cyr   | Adler-32, CRC-32 (slice-by-8), CRC-64/XZ, CRC-32/BZIP2, xxHash32 batch + incremental  | full    |
+| checksum.cyr   | Adler-32, CRC-32 (slice-by-8; a PCLMULQDQ fold on x86_64, v2.8.5), CRC-64/XZ, CRC-32/BZIP2, xxHash32 batch + incremental | full    |
 | bitreader.cyr  | LSB-first bit-stream reader                                                            | full    |
 | bitwriter.cyr  | LSB-first bit-stream writer                                                            | full    |
 | huffman.cyr    | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes                | full    |

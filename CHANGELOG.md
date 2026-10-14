@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.5] — 2026-10-13
+
+**CRC-32 folds with PCLMULQDQ on x86_64** — the roadmap's SIMD CRC-32 item. Where the CPU has the
+instruction, CRC-32 runs 15–21× faster (256 KiB: 358 → 16.7 µs, about 15.7 GB/s), which every gzip
+and ZIP member, read or written, goes through. The result is bit-identical to the slice-by-8 table
+by construction and by test; everywhere else (aarch64, `cx`, a CPU without PCLMULQDQ) the table runs
+as before. No API change; the 47 SIZE lines are identical.
+
+### Added
+
+- **The fold** — `src/checksum.cyr` ([ADR 0003](docs/adr/0003-crc32-pclmulqdq-fold.md), [architecture
+  006](docs/architecture/006-crc32-pclmul-asm.md)):
+  - `_crc32_fold` (shared by `crc32`, `crc32_update`, gzip, zip) now dispatches: runs of ≥ 64 bytes on
+    a PCLMULQDQ CPU go to `_crc32_fold_hw`, the rest to `_crc32_fold_table` (the 2.3.4 slice-by-8 code,
+    unchanged).
+  - `_crc32_clmul`: the Intel (Gopal et al., 2009) carry-less-multiply fold — four 128-bit lanes over
+    64-byte blocks, merged, then 16-byte blocks — as 67 x86_64 instructions in an `asm { }` block (Cyrius
+    has no SSE mnemonics). Constants as in Linux `crc32-pclmul_asm.S`. It touches only xmm0..xmm5
+    (Win64-safe) and loads with `movdqu` (no alignment needed).
+  - **No Barrett reduction**: the fold leaves a 128-bit remainder R with `CRC_reg(data) == CRC_0(R ||
+    tail)`, and the table finishes R and the tail. The step whose published variants disagree with the
+    paper is not there to get wrong.
+  - **Gate**: CPUID leaf 1 ECX bit 1, then a known-answer check (fold == table on a 1,077-byte pattern
+    that runs every stage) once per process; either failing keeps slice-by-8. `_crc32_hw` (-1 unprobed,
+    0 table, 1 fold) is also the test switch. The folding constants are written by
+    `crc32_init_table()`.
+  - The threshold is the fold's own 64-byte minimum: it already beats the table there (44 vs 95 ns).
+- **Machine-code provenance**: `docs/sources/crc32-pclmul/crc32_fold.S` (Intel syntax, GNU as) is the
+  source of the bytes; `scripts/crc32-clmul-asm.sh` prints them as Cyrius lines, and `--check` requires
+  the bytes between the `BEGIN` / `END crc32_fold.S` markers in `src/checksum.cyr` to equal a fresh
+  assembly, then links the `.S` into `docs/sources/crc32-pclmul/check.c` and compares fold + table
+  finish against a bitwise CRC-32 on 20,000 random buffers (64 B .. 70 KB, random registers): 0
+  mismatches. Local only (binutils, gcc, a PCLMULQDQ CPU).
+- **Bench**: `crc32 256K text (slice-by-8)` (the fold forced off) beside the existing CRC rows, and a
+  `crc32 path:` line saying which path ran.
+
+### Not done (decided)
+
+- **aarch64 keeps slice-by-8.** The PMULL / CRC32 extensions are optional in ARMv8.0, and userland's
+  supported feature check (AT_HWCAP) reads `/proc/self/auxv`, which `src/` may not open (CI security
+  scan) and AGNOS does not have. Verified under `qemu-aarch64`: the aarch64 build keeps the fold off
+  and computes the zlib reference values; `fuzz_crc32` runs clean there.
+
+### Tests
+
+- **`checksum.tcyr`** (+3 functions, 209 → 214): the probe turns the fold on exactly when CPUID has
+  PCLMULQDQ; zlib reference vectors (1 MiB of zeros, 10^6 `a`, two patterns, computed by Python
+  `zlib.crc32`) with the fold forced on and off, after the constants were wiped and re-made by
+  `crc32_init_table()`; fold == table for every length 0..1,100 at all 16 alignments plus 2,000 runs up
+  to 300 KB from random 32-bit registers (19,616 comparisons); `crc32_update` in random chunks equals
+  one batch. The fold is forced on only when CPUID says so.
+- **New `fuzz/fuzz_crc32.fcyr`** (9th harness): 6,000 cases — 3,000 random buffers (seven byte
+  distributions, any offset, up to 1 MiB, random registers), 2,000 random chunkings through
+  `crc32_update`, 1,000 single-bit flips that must change the CRC identically on both paths. About 5 s;
+  ends `return assert_summary();`. It found a real fragility before release: the constants were only
+  written by the probe, so a fold forced on before any probe folded with zero keys. They now come from
+  `crc32_init_table()`, and a `checksum.tcyr` cell pins it.
+- **Mutation-checked**: 7 planted bugs, all fail the suite — a wrong K1, K3 / K4 swapped, a corrupted
+  fold instruction (pclmulqdq imm 0x11 → 0x10 in the one-lane loop), that corruption with the known-answer
+  check removed, the tail split off by 8, the finish started from the running register, and the
+  threshold at 63 (the suite crashes: the kernel needs 64). The corrupted-instruction mutant also trips
+  the in-process known-answer check, which turns the fold off; `fuzz_crc32` fails on it too. Writing
+  them showed the first known-answer length (1,029 bytes) never entered the one-lane loop; it is now
+  1,077.
+- **Totals: 4,500,683 assertions across 30 suites, 0 failed** (was 4,500,678); 9 fuzz harnesses clean;
+  the 12-profile link gate (9 bundles carry the fold), the core tripwire, the aarch64 cross-build
+  (including `fuzz_crc32`), lint / fmt / vet all green.
+
+### Changed
+
+- **`dist/` regenerated**: all 12 bundles read `# Version: 2.8.5`; the nine that carry `checksum.cyr`
+  (full, zlib, gzip, xz, bzip2, zip, zipall, tar, woff) take the fold.
+- **Docs**: [ADR 0003](docs/adr/0003-crc32-pclmulqdq-fold.md), [architecture 006](docs/architecture/006-crc32-pclmul-asm.md),
+  `docs/sources/crc32-pclmul/`, [`docs/benchmarks/2026-10-13-2.8.5-crc32-pclmul.md`](docs/benchmarks/2026-10-13-2.8.5-crc32-pclmul.md);
+  `checksum.cyr`'s header no longer calls the fold deferred.
+
 ## [2.8.4] — 2026-10-13
 
 **The Brotli encoder (RFC 7932)** — the encode half of the codec 2.8.0 started, completing Brotli as

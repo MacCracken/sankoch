@@ -266,6 +266,144 @@ fn test_crc64_incremental() {
 }
 
 # ================================================================
+# CRC-32 PCLMULQDQ fold (2.8.5): every result must equal the slice-by-8 table's. The fold is
+# forced on only when CPUID reports PCLMULQDQ (_cs_cpu), so a CPU without it never runs it.
+# ================================================================
+
+var _cs_cpu = 0;       # CPUID.1:ECX bit 1 (0 off x86_64)
+var _cs_rng = 0x2085;
+
+fn _cs_rand(n) {
+    _cs_rng = _cs_rng * 6364136223846793005 + 1442695040888963407;
+    return (_cs_rng >> 33) % n;
+}
+
+# _crc32_fold of buf[0..n) from register reg with the fold forced on (1) or off (0).
+fn _cs_fold(mode, reg, buf, n) {
+    _crc32_hw = mode;
+    var r = _crc32_fold(reg, buf, n);
+    _crc32_hw = 0 - 1;
+    return r;
+}
+
+fn test_crc32_clmul_probe() {
+    crc32_init_table();
+    var r = alloc(16);
+    store64(r, 0);
+    _crc32_cpuid1(r);
+    _cs_cpu = (load64(r) >> 1) & 1;
+    _crc32_hw = 0 - 1;
+    _crc32_hw_probe();
+    assert_eq(_crc32_hw, _cs_cpu, "crc32 clmul: on exactly when CPUID has PCLMULQDQ (known-answer passed)");
+    _crc32_hw = 0 - 1;
+    if (_cs_cpu == 0) { println("  note: no PCLMULQDQ here; the fold cells compare the table with itself"); }
+    return 0;
+}
+
+fn test_crc32_clmul_vectors() {
+    # The folding constants come from crc32_init_table, not from the probe: wiped, then re-made by
+    # an init, a forced fold must be right without any probe having run (found by fuzz_crc32).
+    var z = 0;
+    while (z < 4) {
+        store64(&_crc32_k + z * 8, 0);
+        z = z + 1;
+    }
+    crc32_init_table();
+    var n = 1048576;
+    var b = alloc(n);
+    var bad = 0;
+    var mode = 0;
+    while (mode <= _cs_cpu) {
+        # References from Python zlib.crc32, independent of both paths.
+        var i = 0;
+        while (i < n) {
+            store8(b + i, 0);
+            i = i + 1;
+        }
+        if ((_cs_fold(mode, 4294967295, b, n) ^ 4294967295) != 0xa738ea1c) { bad = bad + 1; }
+        i = 0;
+        while (i < 1000000) {
+            store8(b + i, 97);
+            i = i + 1;
+        }
+        if ((_cs_fold(mode, 4294967295, b, 1000000) ^ 4294967295) != 0xdc25bfbc) { bad = bad + 1; }
+        i = 0;
+        while (i < 100003) {
+            store8(b + i, (i * 131 + 7) & 255);
+            i = i + 1;
+        }
+        if ((_cs_fold(mode, 4294967295, b, 100003) ^ 4294967295) != 0xcdb01cbf) { bad = bad + 1; }
+        i = 0;
+        while (i < 65536) {
+            store8(b + i, (i * i + (i >> 3)) & 255);
+            i = i + 1;
+        }
+        if ((_cs_fold(mode, 4294967295, b, 65536) ^ 4294967295) != 0xff7c387e) { bad = bad + 1; }
+        mode = mode + 1;
+    }
+    assert_eq(bad, 0, "crc32 clmul: zlib vectors (1 MiB zeros, 10^6 'a', two patterns) with the fold on and off");
+    return 0;
+}
+
+fn test_crc32_clmul_differential() {
+    crc32_init_table();
+    var cap = 300000 + 64;
+    var b = alloc(cap);
+    var i = 0;
+    while (i < cap) {
+        store8(b + i, _cs_rand(256));
+        i = i + 1;
+    }
+    var bad = 0;
+    var runs = 0;
+    # Every length 0..1,100 at every alignment 0..15: each fold-loop exit and tail length.
+    var off = 0;
+    while (off < 16) {
+        var len = 0;
+        while (len <= 1100) {
+            var reg = 4294967295;
+            if ((len & 3) == 1) { reg = (_cs_rand(65536) << 16) | _cs_rand(65536); }
+            if (_cs_fold(_cs_cpu, reg, b + off, len) != _crc32_fold_table(reg, b + off, len)) { bad = bad + 1; }
+            runs = runs + 1;
+            len = len + 1;
+        }
+        off = off + 1;
+    }
+    # 2,000 longer runs from random registers.
+    var t = 0;
+    while (t < 2000) {
+        var l2 = _cs_rand(300001);
+        var o2 = _cs_rand(64);
+        var r2 = (_cs_rand(65536) << 16) | _cs_rand(65536);
+        if (_cs_fold(_cs_cpu, r2, b + o2, l2) != _crc32_fold_table(r2, b + o2, l2)) { bad = bad + 1; }
+        runs = runs + 1;
+        t = t + 1;
+    }
+    assert_eq(bad, 0, "crc32 clmul: fold == slice-by-8 (lengths 0..1100 x 16 alignments, 2000 runs to 300 KB)");
+    assert_eq(runs, 19616, "crc32 clmul: differential runs");
+    # The incremental API in random chunks (the fold runs from a mid-stream register) equals one batch.
+    var whole = (_crc32_fold_table(4294967295, b, 300000) ^ 4294967295) & 4294967295;
+    var ok = 1;
+    var k = 0;
+    while (k < 40) {
+        _crc32_hw = _cs_cpu;
+        var st = crc32_init();
+        var p = 0;
+        while (p < 300000) {
+            var c = 1 + _cs_rand(9000);
+            if (c > 300000 - p) { c = 300000 - p; }
+            crc32_update(st, b + p, c);
+            p = p + c;
+        }
+        if (crc32_final(st) != whole) { ok = 0; }
+        _crc32_hw = 0 - 1;
+        k = k + 1;
+    }
+    assert(ok == 1, "crc32 clmul: crc32_update in random chunks == one batch");
+    return 0;
+}
+
+# ================================================================
 # main
 # ================================================================
 
@@ -285,6 +423,9 @@ fn main() {
     test_adler32_incremental();
     test_crc32_incremental();
     test_crc64_incremental();
+    test_crc32_clmul_probe();
+    test_crc32_clmul_vectors();
+    test_crc32_clmul_differential();
     return assert_summary();
 }
 

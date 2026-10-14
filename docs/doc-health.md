@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — sankoch
 
-> **Last refresh**: 2026-10-13 (**2.8.4 — the Brotli encoder + cyrius pin 6.7.10.** Touched: CHANGELOG, VERSION, cyrius.cyml (pin, `[lib]` lists `brotli_enc.cyr`), CLAUDE.md (goal, quick start, architecture tree, the reference-CLI principle, a Brotli-encoder key constraint), README (format row, Brotli paragraph, encode API, architecture row, profiles), state, roadmap (status, Next → 2.8.5, the 2.8.4 section removed, encoder ratio steps in the Backlog, closeout scope, toolchain notes rewritten — the 2.8.3 blocker is fixed in cyrius 6.7.6, File Summary re-counted), guides/cyrius-usage (encode smoke), ADR README + **NEW 0002**, architecture README + **NEW 005**, **NEW** `docs/benchmarks/2026-10-13-2.8.4-brotli-encoder.md`. Previous: 2026-10-08, the 2.8.3 cut; earlier narratives are in git history.)
+> **Last refresh**: 2026-10-13 (**2.8.5 — the PCLMULQDQ CRC-32 fold.** Touched: CHANGELOG, VERSION, CLAUDE.md (architecture tree, quick start, a rule against hand-editing the fold's bytes), README (checksum row + a CRC-32 paragraph), state, roadmap (status, Next → 2.8.6, the 2.8.5 section removed, closeout scope, an aarch64 CRC item in the Backlog, File Summary re-counted), guides/cyrius-usage (the asm check script), sources/compression.md (CRC-32 row), ADR README + **NEW 0003**, architecture README + **NEW 006**, **NEW** `docs/sources/crc32-pclmul/` (README, `crc32_fold.S`, `check.c`), **NEW** `docs/benchmarks/2026-10-13-2.8.5-crc32-pclmul.md`. Previous: 2026-10-13, the 2.8.4 cut; earlier narratives are in git history.)
 >
 > **Scope**: this repo only (`sankoch`) — the entire `docs/` tree plus root-level files (README, CHANGELOG, CLAUDE.md, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, LICENSE, VERSION, cyrius.cyml, .gitignore). Per-stdlib-dep docs live in their own repos.
 >
@@ -51,14 +51,14 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-10-13 | ✅ Fresh | **2.8.4**: Brotli is a full codec (format row, paragraph with the measured ratio against `brotli -q N`, encode API + bound + memory, `brotli_enc.cyr` row, encode full-bundle only). **2.8.3**: the `brotli_dict.cyr` row says the bytes are an `[embed]`. **2.8.0**: Brotli decode row + API section, the 12-profile list, one bundle per program. |
-| `CHANGELOG.md` | 2026-10-13 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.8.4] — 2026-10-13`. |
-| `CLAUDE.md` | 2026-10-13 | ✅ Fresh | **2.8.4**: Brotli de/compression in the goal; `brotli_enc.cyr`, its smoke driver / script and fuzz harness in the tree; every encoder quality must decode via `brotli -d`; the encoder's bound + ring constraint (architecture 005). **2.8.3**: `brotli_dict.cyr` is geometry + check (the bytes are `[embed]`); the generator / NUL-gate scripts, their rules and CI bullets replaced by the `[embed]` constraint and "No Python in CI". **2.8.0**: Goal + Brotli decode; reset registration; one bundle per program. |
+| `README.md` | 2026-10-13 | ✅ Fresh | **2.8.5**: checksum row + a paragraph on the PCLMULQDQ CRC-32 fold. **2.8.4**: Brotli is a full codec (format row, paragraph with the measured ratio against `brotli -q N`, encode API + bound + memory, `brotli_enc.cyr` row, encode full-bundle only). **2.8.3**: the `brotli_dict.cyr` row says the bytes are an `[embed]`. **2.8.0**: Brotli decode row + API section, the 12-profile list, one bundle per program. |
+| `CHANGELOG.md` | 2026-10-13 | ✅ Fresh | **Source of truth per CLAUDE.md.** Through `[2.8.5] — 2026-10-13`. |
+| `CLAUDE.md` | 2026-10-13 | ✅ Fresh | **2.8.5**: the fold in the architecture tree, its check script in quick start, the rule against hand-editing its bytes. **2.8.4**: Brotli de/compression in the goal; `brotli_enc.cyr`, its smoke driver / script and fuzz harness in the tree; every encoder quality must decode via `brotli -d`; the encoder's bound + ring constraint (architecture 005). **2.8.3**: `brotli_dict.cyr` is geometry + check (the bytes are `[embed]`); the generator / NUL-gate scripts, their rules and CI bullets replaced by the `[embed]` constraint and "No Python in CI". **2.8.0**: Goal + Brotli decode; reset registration; one bundle per program. |
 | `CONTRIBUTING.md` | 2026-05-23 | ✅ Fresh | Standards link fixed (same path correction). |
 | `SECURITY.md` | 2026-09-16 | ✅ Fresh | **2.8.0**: 2.8.x supported; 2026-09-16 review added to audit history. |
 | `CODE_OF_CONDUCT.md` | 2026-05-01 | 🔵 Evergreen | Standard text; touch only when the project's CoC policy changes. |
 | `LICENSE` | 2026-05-01 | 🔵 Evergreen | GPL-3.0-only. |
-| `VERSION` | 2026-10-13 | ✅ Fresh | `2.8.4`. Single source of truth per the standards. |
+| `VERSION` | 2026-10-13 | ✅ Fresh | `2.8.5`. Single source of truth per the standards. |
 | `cyrius.cyml` | 2026-10-13 | ✅ Fresh | Toolchain pin `6.7.10` (2.8.4); `[lib]` lists `src/brotli_enc.cyr` (no profile does); `[embed] _brotli_dict_bin` + `embed` on `[lib]` / `[lib.brotli]` / `[lib.woff]`; every alloc-bearing profile ends `runtime.cyr, reset_<name>.cyr`. |
 | `.gitignore` | 2026-09-16 | ✅ Fresh | `/dist/` contents ignored with all 12 committed bundles re-included (+ brotli, woff). |
 
@@ -68,8 +68,8 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `roadmap.md` | 2026-10-13 | ✅ Fresh | **2.8.4 cut**: status v2.8.4; Next = 2.8.5 (SIMD CRC-32); the shipped 2.8.4 section removed; the Brotli encoder's ratio steps (priced/optimal parse, block splitting, static dictionary) in the Backlog with measured evidence; its surface in the closeout scope; the raw-include header item removed (fixed); *Toolchain notes* rewritten (blocker fixed in cyrius 6.7.6; the pin-move recipe); File Summary / tests / fuzz / distlib re-counted. **2.8.3 cut**: status v2.8.3; ladder renumbered (2.8.4 Brotli encoder → 2.8.5 SIMD CRC-32 → 2.8.6 GPU texture → P(-1) closeout); 2.8.3 findings (fuzz exit codes, backtrack coverage, `while (1)` sweep, stray test headers) in the closeout scope; new *Next minor (2.9.0)*; *Toolchain notes for the next pin move* (the `[embed]` owner-check blocker) replace the 6.6.6 / 6.6.19 sections; File Summary / distlib re-counted. |
-| `state.md` | 2026-10-13 | ✅ Fresh | **Current at v2.8.4** (pin 6.7.10, floor 6.7.6; source 20,374 / 34 files, 12 bundles (full 20,265), 30 suites / 4,500,678, fuzz 14,722 across 8 files; the 2.8.4 recent-releases row; the stdlib line says cyrius 6.7.10 carries 2.8.3). |
+| `roadmap.md` | 2026-10-13 | ✅ Fresh | **2.8.5 cut**: status v2.8.5; Next = 2.8.6; the 2.8.5 section removed; the fold's review points in the closeout scope; a faster aarch64 CRC-32 in the Backlog; File Summary / tests / fuzz / distlib re-counted. **2.8.4 cut**: status v2.8.4; Next = 2.8.5 (SIMD CRC-32); the shipped 2.8.4 section removed; the Brotli encoder's ratio steps (priced/optimal parse, block splitting, static dictionary) in the Backlog with measured evidence; its surface in the closeout scope; the raw-include header item removed (fixed); *Toolchain notes* rewritten (blocker fixed in cyrius 6.7.6; the pin-move recipe); File Summary / tests / fuzz / distlib re-counted. **2.8.3 cut**: status v2.8.3; ladder renumbered (2.8.4 Brotli encoder → 2.8.5 SIMD CRC-32 → 2.8.6 GPU texture → P(-1) closeout); 2.8.3 findings (fuzz exit codes, backtrack coverage, `while (1)` sweep, stray test headers) in the closeout scope; new *Next minor (2.9.0)*; *Toolchain notes for the next pin move* (the `[embed]` owner-check blocker) replace the 6.6.6 / 6.6.19 sections; File Summary / distlib re-counted. |
+| `state.md` | 2026-10-13 | ✅ Fresh | **Current at v2.8.5** (pin 6.7.10; source 20,539 / 34 files, 12 bundles (full 20,430), 30 suites / 4,500,683, fuzz 20,722 across 9 files; the 2.8.5 recent-releases row). |
 | `issues/archived/2026-08-23-bote-rfc7692-needs-public-sync-flush.md` | 2026-08-23 | 📦 Archive | Resolved by 2.7.9 (`deflate_enc_flush` + `deflate_enc_reset_context` + `deflate_dec_produced`). The resolution log records the ratio finding the fix surfaced — always-dynamic blocks made the newly-exposed flush +64 % over reference zlib until the chooser landed — and repeats the filer's own caveat that cyrius's `ws_server` handshake gap still blocks bote. |
 | `issues/archived/2026-09-15-profile-bundles-call-sankoch-reset-tables-outside-their-closure.md` | 2026-09-16 | 📦 Archive | Resolved by 2.8.0 (per-profile reset dispatch + link gate); Resolution section records what the filing missed. |
 | `proposals/archived/2026-09-15-brotli-decoder-for-woff2.md` | 2026-09-16 | 📦 Archive | Shipped in 2.8.0; What-shipped section maps needs 1–5 + deviations (`[lib.woff]`, full-bundle placement, trailing policy; encode → 2.8.1). |
@@ -83,7 +83,7 @@ Also created: this file (`docs/doc-health.md`).
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `getting-started.md` | 2026-10-08 | ✅ Fresh | **2.8.3**: the platform line says what CI covers (Linux x86_64 + aarch64 cross-build) and that the library compiles for PE / Mach-O; it had said macOS / Windows were not supported. NEW 2026-05-23. |
-| `cyrius-usage.md` | 2026-10-13 | ✅ Fresh | **2.8.4**: `brotli-encode-smoke.sh` in *Quality gates* (local only); the brotli profile line says encode is full-bundle only. **2.8.3**: the two Python gate commands removed from *Quality gates*. **2.8.0**: brotli/woff profiles, `--list-profiles`, one bundle per program, link / NUL / dictionary gates; stale 6.4.68 pin and pre-6.5.35 fmt semantics replaced (per-file `--check`, exit code only). |
+| `cyrius-usage.md` | 2026-10-13 | ✅ Fresh | **2.8.5**: `crc32-clmul-asm.sh --check` in *Quality gates* (local only). **2.8.4**: `brotli-encode-smoke.sh` in *Quality gates* (local only); the brotli profile line says encode is full-bundle only. **2.8.3**: the two Python gate commands removed from *Quality gates*. **2.8.0**: brotli/woff profiles, `--list-profiles`, one bundle per program, link / NUL / dictionary gates; stale 6.4.68 pin and pre-6.5.35 fmt semantics replaced (per-file `--check`, exit code only). |
 
 ---
 
@@ -91,12 +91,13 @@ Also created: this file (`docs/doc-health.md`).
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-10-13 | ✅ Fresh | **2.8.4**: indexes 0002. **NEW 2026-05-23.** Conventions + index + candidate-ADR list (inline-checksum decision, streaming-decoder bridge decision) for future writes. |
+| `README.md` | 2026-10-13 | ✅ Fresh | **2.8.5**: indexes 0003. **2.8.4**: indexes 0002. **NEW 2026-05-23.** Conventions + index + candidate-ADR list (inline-checksum decision, streaming-decoder bridge decision) for future writes. |
 | `template.md` | 2026-05-23 | ✅ Fresh | **NEW 2026-05-23.** Standard 5-section ADR template. |
+| `0003-crc32-pclmulqdq-fold.md` | 2026-10-13 | ✅ Fresh | **NEW 2.8.5.** CRC-32 folds with PCLMULQDQ on x86_64 only (aarch64 keeps slice-by-8: no file-free feature check), finishes on the table instead of a Barrett reduction, CPUID + known-answer gate, bytes from GNU as; the measured threshold. |
 | `0002-brotli-encoder-placement-and-quality.md` | 2026-10-13 | ✅ Fresh | **NEW 2.8.4.** The encoder as `src/brotli_enc.cyr` in `[lib]` only (the decode profiles stay decode-only), sharing the decoder's tables; quality 0..11 on the `brotli -q` scale, default 6; context modeling chosen by exact cost (the measured overfit it avoids; BrotliPopulationCost measured and not adopted). |
 | `0001-brotli-decoder-placement.md` | 2026-10-08 | ✅ Fresh | **Amended 2.8.3**: the dictionary is an `[embed]` (accessor `_brotli_dict_bin`). **NEW 2.8.0 — the first ADR.** Brotli decode in `[lib]` + `[lib.brotli]` + `[lib.woff]`, dictionary as a generated literal, trailing bytes rejected, measured DCE cost. |
 
-Two filed ADRs (`0001`, 2.8.0; `0002`, 2.8.4). Older load-bearing decisions stay codified in `CLAUDE.md` and the audit history.
+Three filed ADRs (`0001`, 2.8.0; `0002`, 2.8.4; `0003`, 2.8.5). Older load-bearing decisions stay codified in `CLAUDE.md` and the audit history.
 
 ---
 
@@ -104,10 +105,11 @@ Two filed ADRs (`0001`, 2.8.0; `0002`, 2.8.4). Older load-bearing decisions stay
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-10-13 | ✅ Fresh | **2.8.4**: indexes 005. **NEW 2026-05-23.** Conventions + a list of candidate invariants for future notes (include-order, `[lib.core]` profile contract, mutex contract, `var buf[N]` byte sizing, bit-accumulator overpull). **2026-07-21**: now indexes the first filed note (001). |
+| `README.md` | 2026-10-13 | ✅ Fresh | **2.8.5**: indexes 006. **2.8.4**: indexes 005. **NEW 2026-05-23.** Conventions + a list of candidate invariants for future notes (include-order, `[lib.core]` profile contract, mutex contract, `var buf[N]` byte sizing, bit-accumulator overpull). **2026-07-21**: now indexes the first filed note (001). |
 | `001-zstd-optimal-chain-cutoff.md` | 2026-10-08 | 🔵 Dated artifact | **2.8.3**: the two knobs are `const`. **NEW 2026-07-21 (2.7.5) — the first filed architecture note.** Why the L9 DP optimal parser's hash-chain walk (`_zo_getmatches`) needs a saturation cutoff: bail after `_zo_chain_cut` (128) consecutive non-improving candidates, but only once `best >= _zo_chain_gate` (32) — the length gate separates saturated duplicates (records) from useful depth (text / object code, which a gate-less cutoff regresses 4.5 %/10–30×). |
 | `002-lazy-globals-and-alloc-reset.md` | 2026-09-16 | ✅ Fresh | 2.7.10 note; **2.8.0** updated where the guard lives (every target, unlocked builders, stranded canary, failed arm) and points the registration rule at 003. |
 | `003-per-profile-reset-dispatch.md` | 2026-09-16 | ✅ Fresh | **NEW 2.8.0.** Per-bundle `_sankoch_reset_tables`, the four-place registration rule, one bundle per program, why not `#ifdef`. |
+| `006-crc32-pclmul-asm.md` | 2026-10-13 | ✅ Fresh | **NEW 2.8.5.** The PCLMULQDQ fold is machine code: bytes only from `crc32_fold.S` via the script, the registers it may touch, the `len >= 64` guard and finish-from-0 contract, constants from `crc32_init_table`, the four check layers. |
 | `005-brotli-encoder-invariants.md` | 2026-10-13 | ✅ Fresh | **NEW 2.8.4.** The Brotli encoder's four invariants: compressed only when no larger than stored (the bound), the ring mirrored and restored with a stored block (with its mutation-verified test), the window limit (a farther distance is a dictionary reference), the decoder's tables; memory by quality. |
 | `004-string-literal-nul-rule.md` | 2026-10-08 | 📦 Retired | **Retired 2.8.3** (pin past cyrius 6.6.15's interning fix; gate script and CI step deleted; the dictionary is an `[embed]`). Kept as the record; never renumber. NEW 2.8.0. |
 
@@ -157,6 +159,7 @@ surface, [`2026-07-20-zip-container.md`](audit/2026-07-20-zip-container.md)).
 | `2026-07-18-2.5.6-zstd-competitiveness.md` | 2026-07-18 | 🔵 Dated artifact (2.5.6 zstd ratios + level knob; now *beats* `zstd -1` on source/binary/repetitive, +7.5% on UTF-8 text) |
 | `2026-07-18-2.5.7-parse-quality.md` | 2026-07-18 | 🔵 Dated artifact (2.5.7 repcode + adaptive FSE sequence tables; now *beats* `zstd -3` — the default — by 4–11% on real code/text/binary) |
 | `2026-08-23-2.7.9-sync-flush.md` | 2026-08-23 | 🔵 Dated artifact (2.7.9 — RFC 7692 sync-flush framing vs reference zlib at three message sizes, before/after the fixed-vs-dynamic chooser: +64 % → +0.1 %; the 43-line batch SIZE control [3 improved, 40 unchanged] and the ~3 % small-block throughput cost accepted to buy it) |
+| `2026-10-13-2.8.5-crc32-pclmul.md` | 2026-10-13 | 🔵 Dated artifact (2.8.5 — CRC-32 slice-by-8 vs the PCLMULQDQ fold on one machine, back to back: 15.7–21.5× on the CRC rows, the 64..4,096-byte crossover that set the threshold, gzip decode 1.12×; SIZE unchanged; aarch64 under qemu) |
 | `2026-10-13-2.8.4-brotli-encoder.md` | 2026-10-13 | 🔵 Dated artifact (2.8.4 — the Brotli encoder's first baseline: bench rows, ratio vs `brotli -q N -w 24` on eight fixtures at six qualities, the q0–q9 ladder, and the measurements behind the lazy step, the four-entry cache floor, exact-cost context modeling and ShouldCompress; the 47 SIZE lines unchanged across the 6.7.10 pin move) |
 | `2026-07-19-2.5.8-priced-parse.md` | 2026-07-19 | 🔵 Dated artifact (2.5.8 priced parse; corpus −9.9%, no regression on any of 11 fixtures, beats `zstd -3` on *every* fixture; includes the measured side-by-side that deferred the optimal-parse DP) |
 | `2026-07-19-2.5.9-p1-baseline.md` | 2026-07-19 | 🔵 Dated artifact (2.5.9 P(-1) benchmark baseline; all gates green; documents the ~900× xz-encode-throughput gap vs reference `xz -6`) |
@@ -173,7 +176,8 @@ Pattern: every P(-1) closeout captures a new bench reference. The wire-format ga
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `compression.md` | 2026-09-16 | 🔵 Evergreen | RFC + spec citations; **2.8.0** + RFC 7932, google/brotli v1.2.0, zlib `enough.c`. Brotli source data (dictionary, tables, extractor) lives in `sources/brotli/`. |
+| `compression.md` | 2026-10-13 | 🔵 Evergreen | RFC + spec citations; **2.8.5**: the CRC-32 row cites Gopal et al. (Intel, 2009) and points at `sources/crc32-pclmul/`. **2.8.0** + RFC 7932, google/brotli v1.2.0, zlib `enough.c`. Brotli source data (dictionary, tables, extractor) lives in `sources/brotli/`. |
+| `crc32-pclmul/` (README, `crc32_fold.S`, `check.c`) | 2026-10-13 | ✅ Fresh | **NEW 2.8.5.** The assembler source of the PCLMULQDQ fold's bytes and its native proof; the constants' provenance (Linux `crc32-pclmul_asm.S`). Changes only with the fold, through `scripts/crc32-clmul-asm.sh`. |
 
 ---
 

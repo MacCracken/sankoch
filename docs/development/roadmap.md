@@ -1,10 +1,11 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.8.4**); open issue queue **0**. 2.8.0 shipped the Brotli decoder
+> **Status**: Stable (**v2.8.5**); open issue queue **0**. 2.8.0 shipped the Brotli decoder
 > (rekha's WOFF2) and the per-profile arena-reset fix that made every codec profile link again.
 > 2.8.1–2.8.3 were toolchain releases (cyrius 6.6.18, the `loop` rename, cyrius 6.7.5 with the
-> dictionary as an `[embed]`). **2.8.4 shipped the Brotli encoder** on cyrius **6.7.10**.
-> Next: **2.8.x**: SIMD CRC-32 (2.8.5), then GPU texture, then the P(-1) closeout.
+> dictionary as an `[embed]`). **2.8.4 shipped the Brotli encoder** on cyrius **6.7.10**, and **2.8.5 the
+> PCLMULQDQ CRC-32 fold** (x86_64).
+> Next: **2.8.x**: GPU texture (2.8.6), then the P(-1) closeout.
 > ⚠ The **DEFLATE match-finder** backlog item is no longer speculative: sit has
 > measured it as its single worst benchmark row; see Backlog. Before the next pin move, read
 > [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-13
@@ -41,7 +42,7 @@ The **2.8.x line** (see **▶ Scheduled** below):
 - **2.8.0** shipped the Brotli decoder;
 - **2.8.1–2.8.3** shipped toolchain moves (no feature; see CHANGELOG);
 - **2.8.4** shipped the Brotli encoder (with the cyrius 6.7.10 pin);
-- **2.8.5** = SIMD CRC-32 (`PCLMULQDQ`);
+- **2.8.5** shipped the SIMD CRC-32 (`PCLMULQDQ` fold, x86_64);
 - **2.8.6** = GPU texture compression;
 - then a **P(-1) hardening pass** closes out the line.
 
@@ -55,9 +56,9 @@ match-finder, the Brotli encoder's ratio steps) stay parked.
 
 ---
 
-## ▶ Next — 2.8.5
+## ▶ Next — 2.8.6
 
-Nothing preempts 2.8.5. Two findings are carried into the **2.8.x-closeout P(-1) pass** (below):
+Nothing preempts 2.8.6. Two findings are carried into the **2.8.x-closeout P(-1) pass** (below):
 
 ⚠ **Kraft completeness in `_huff_build`.** It is a latent correctness gap, not a fixed bug:
 `_huff_build` never verifies **Kraft completeness**, so an incomplete Huffman table is buildable and
@@ -96,28 +97,6 @@ opened **straight into the feature**: no P(-1) pass *leads* it (deliberate). Ins
 2.7.x encoder surface is audited together with the 2.8.x additions in the **2.8.x-closeout P(-1)
 pass** (below), before the next minor opens. That surface is BT4 `son[]`, the 4 MiB frame-global chain,
 the DP-optimal arrays, and the window/cutoff math.
-
-### 2.8.5 — SIMD CRC-32 via `PCLMULQDQ`
-
-A carryless-multiply (fold-based) CRC-32 on x86_64, beyond the portable
-**slice-by-8** table fold 2.3.4 already banked (~2×, wire-identical, x86_64 +
-aarch64). PCLMULQDQ was off the critical path *because* slice-by-8 covered the
-goal, so this is a further optimisation, not a correctness need — its bar is that
-it must not regress and must be provably bit-exact.
-
-Approach (mirrors the prior arcs' "verify each bite" cadence):
-1. **x86_64 fold** — the 4-way PCLMULQDQ fold from the Intel whitepaper (folding
-   constants per the CRC-32 polynomial), behind a runtime/compile-time gate; keep
-   slice-by-8 as the unconditional fallback so no target loses a working path.
-2. **aarch64** — either a PMULL (crypto-extension) parallel fold or an explicit
-   **fall back to slice-by-8** (no regression on the aarch64 gate — never a scalar
-   byte loop).
-3. **Wire-identical proof** — every gated CRC-32 output must equal the slice-by-8
-   table result **byte-for-byte** across the test corpus, plus a differential fuzz
-   (`fold(x) == table(x)` on random buffers). Hand-assembled CRC-folding carries a
-   silent-corruption risk; this gate is the whole point. `PCLMULQDQ`-off restores
-   the table path.
-- Ref: Intel, "Fast CRC Computation … Using PCLMULQDQ" (whitepaper, 2009).
 
 ### 2.8.6 — GPU texture compression (BC1–BC7 / ASTC)
 
@@ -160,8 +139,10 @@ Scope — the surface accrued since the last audit (2.6.4, ZIP), audited togethe
     positions and grow-only bucket table, the compare-and-rewind that makes `brotli_compress_bound`
     hold, and the mirrored distance ring
     ([architecture 005](../architecture/005-brotli-encoder-invariants.md));
-  - **the hand-assembled `PCLMULQDQ` CRC fold (2.8.5)**: its silent-corruption risk is the whole reason
-    it needs the wire-identical gate and an audit;
+  - **the `PCLMULQDQ` CRC-32 fold (2.8.5)**: 67 instructions of machine code in an `asm` block. Review
+    the register contract (xmm0..5, no rbx / r12..15, no `ret`), the `len >= 64` guard (below it the
+    kernel over-reads: mutation-verified), the known-answer probe's coverage, and that
+    `scripts/crc32-clmul-asm.sh --check` still matches ([architecture 006](../architecture/006-crc32-pclmul-asm.md));
   - **the GPU texture codec's block encoder (2.8.6)**.
 - **The carried findings** from ▶ Next: `_huff_build` Kraft completeness, the `_dyn_header_bits`
   bound, and the coverage review as a matrix.
@@ -241,9 +222,15 @@ into a fresh ladder** when a consumer surfaces.
   must be gated on a byte-identical-output test across a real corpus before a
   benchmark number is quoted.**
 
-  Open-ended and large. Pairs naturally with the 2.8.5 SIMD work already
-  scheduled, but note that CRC-32 via `PCLMULQDQ` does **not** touch this — the
-  cost here is match finding in `lz77.cyr`, not checksumming.
+  Open-ended and large. The 2.8.5 PCLMULQDQ CRC-32 does **not** touch this —
+  sit's cost is match finding in `lz77.cyr`, and zlib checks with Adler-32, not
+  CRC-32.
+
+- **A faster CRC-32 on aarch64.** 2.8.5 left aarch64 on slice-by-8 (ADR 0003): PMULL and the CRC32
+  instructions are optional in ARMv8.0, and the supported feature check (AT_HWCAP) reads
+  `/proc/self/auxv`, which `src/` may not open. Options when a consumer needs it: Linux's userland
+  emulation of `mrs ID_AA64ISAR0_EL1` (not on macOS / AGNOS), or a caller-supplied capability flag.
+  `qemu-aarch64` is available locally to verify either.
 
 - **Brotli encoder ratio steps** (2.8.4 left them out by design: none is a correctness need). Measured
   against `brotli -q N -w 24` 1.2.0 ([`docs/benchmarks/2026-10-13-2.8.4-brotli-encoder.md`](../benchmarks/2026-10-13-2.8.4-brotli-encoder.md)),
@@ -320,7 +307,8 @@ a new codec).
 ## File Summary (at 2.3.0)
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md and state.md cross-links.
-> The figures are refreshed every release. Current as of **2.8.4**, re-counted with `wc -l`.
+> The figures are refreshed every release. Current as of **2.8.5**, re-counted with `wc -l`.
+> 2.8.5 grew `checksum.cyr` 567 → 732 (the PCLMULQDQ fold).
 > 2.8.4 added `brotli_enc.cyr` (1,865) and grew `lib.cyr` 252 → 258.
 > 2.8.3 moved the dictionary literal out of `brotli_dict.cyr` into `cyrius.cyml [embed]` and made
 > `zstd.cyr`'s backtrack a `loop` (82 → 83 and 3,114 → 3,113 lines; the total is unchanged).
@@ -333,7 +321,7 @@ a new codec).
 |------|-------|------|---------|
 | types.cyr        |   44 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2, FORMAT_ZSTD, FORMAT_BROTLI), errors (incl. ERR_OOM, ERR_RATIO_LIMIT, ERR_OUTPUT_LIMIT), limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
-| checksum.cyr     |  567 | Adler-32 / CRC-32 (slice-by-8) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs; unlocked table builders carry the arena guard (2.8.0) | full |
+| checksum.cyr     |  732 | Adler-32 / CRC-32 (slice-by-8, + the x86_64 PCLMULQDQ fold 2.8.5) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs; unlocked table builders carry the arena guard (2.8.0) | full |
 | bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
 | bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
 | huffman.cyr      |  709 | Huffman build/decode, fixed + optimal trees, encoder pre-reversed codes; `huff_build_*` guard the arena (2.8.0) | full |
@@ -356,44 +344,45 @@ a new codec).
 | runtime.cyr      |  275 | Lock + alloc seam + arena guard: canary, stranded-canary predicate, failed-arm handling (2.8.0); the reset registration rule | full |
 | lib.cyr          |  258 | Include chain + public API + format dispatch + the full bundle's `_sankoch_reset_tables` | full |
 | reset_<profile>.cyr ×10 | 179 | Per-profile `_sankoch_reset_tables` dispatchers (brotli 15, bzip2 16, gzip 18, tar 21, woff 20, xz 17, zip 18, zipall 21, zlib 18, zstd 15) | one each |
-| **Total**        | **20374** | | |
+| **Total**        | **20539** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 319 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: 30 runnable suites in `tests/tcyr/` producing **4,500,678 assertions** (0 failed), including
-`brotli_decompress.tcyr` (4,555), `brotli_compress.tcyr` (77), `zstd_compress.tcyr` (173) and
-`arena_reset.tcyr` (119). Most of the total comes from per-byte
+Tests: 30 runnable suites in `tests/tcyr/` producing **4,500,683 assertions** (0 failed), including
+`brotli_decompress.tcyr` (4,555), `brotli_compress.tcyr` (77), `checksum.tcyr` (214),
+`zstd_compress.tcyr` (173) and `arena_reset.tcyr` (119). Most of the total comes from per-byte
 round-trip loops on the streaming suites. A single 200 KB round-trip contributes 200,000 assertions
 through one `while (i < N) assert(byte_eq)` loop, so the headline number measures coverage *density*,
 not coverage *breadth*. See
 [`../guides/cyrius-usage.md`](../guides/cyrius-usage.md#what-assertions-means-here-and-why-the-number-is-so-large)
 for the full explanation.
 
-Fuzz: 8 files (`fuzz_lz4`, `fuzz_deflate`, `fuzz_xz`, `fuzz_bzip2`, `fuzz_zstd`, `fuzz_zip`,
-`fuzz_brotli`, `fuzz_brotli_enc`). 2.8.0 added `fuzz_brotli`: 13 seeds + 5,000 mutated / random /
+Fuzz: 9 files (`fuzz_lz4`, `fuzz_deflate`, `fuzz_xz`, `fuzz_bzip2`, `fuzz_zstd`, `fuzz_zip`,
+`fuzz_brotli`, `fuzz_brotli_enc`, `fuzz_crc32`). 2.8.0 added `fuzz_brotli`: 13 seeds + 5,000 mutated / random /
 truncated / spliced inputs, with src and dst placed against PROT_NONE guard pages. 2.8.4 added
-`fuzz_brotli_enc`: 2,000 encodes at random qualities, guard-paged, each decoded exactly. Per-file breakdown in
+`fuzz_brotli_enc`: 2,000 encodes at random qualities, guard-paged, each decoded exactly. 2.8.5 added
+`fuzz_crc32`: 6,000 PCLMULQDQ-fold-vs-table cases (buffers, offsets, registers, chunkings, bit flips). Per-file breakdown in
 [`state.md` § Fuzz totals](state.md#fuzz-totals).
 
 Distlib: **12 bundles**, one per profile in `cyrius.cyml`:
 
 | Bundle | Lines |
 |---|---:|
-| `sankoch.cyr` (full) | 20,265 |
+| `sankoch.cyr` (full) | 20,430 |
 | `sankoch-core.cyr` (kernel-safe) | 333 |
-| `sankoch-zlib.cyr` | 5,711 |
-| `sankoch-gzip.cyr` | 5,819 |
-| `sankoch-xz.cyr` | 3,362 |
-| `sankoch-bzip2.cyr` | 2,370 |
+| `sankoch-zlib.cyr` | 5,876 |
+| `sankoch-gzip.cyr` | 5,984 |
+| `sankoch-xz.cyr` | 3,527 |
+| `sankoch-bzip2.cyr` | 2,535 |
 | `sankoch-zstd.cyr` | 3,468 |
-| `sankoch-tar.cyr` | 13,141 |
-| `sankoch-zip.cyr` (methods 0/8) | 6,556 |
-| `sankoch-zipall.cyr` (every method) | 13,317 |
+| `sankoch-tar.cyr` | 13,306 |
+| `sankoch-zip.cyr` (methods 0/8) | 6,721 |
+| `sankoch-zipall.cyr` (every method) | 13,482 |
 | `sankoch-brotli.cyr` (Brotli decode) | 1,909 |
-| `sankoch-woff.cyr` (zlib closure + Brotli) | 7,270 |
+| `sankoch-woff.cyr` (zlib closure + Brotli) | 7,435 |
 
 Per-bundle roles are in [`state.md` § Dist bundles](state.md#dist-bundles).
 
@@ -420,7 +409,7 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.10 at 2.8.4).
 
 ---
 
-*Last Updated: 2026-10-13 (**2.8.4 cut**: the Brotli encoder + cyrius 6.7.10; the 2.8.4 section moved to CHANGELOG, Next is 2.8.5; the encoder's ratio steps added to the Backlog and its surface to the closeout scope; the raw-include header item removed (fixed); the toolchain blocker note replaced (fixed in cyrius 6.7.6); File Summary, test, fuzz and distlib figures re-counted. Previous: 2026-10-08, the 2.8.3 cut.)*
+*Last Updated: 2026-10-13 (**2.8.5 cut**: the PCLMULQDQ CRC-32 fold; the 2.8.5 section moved to CHANGELOG, Next is 2.8.6; the fold's review points in the closeout scope; a faster aarch64 CRC-32 added to the Backlog; File Summary, test, fuzz and distlib figures re-counted. Previous: 2026-10-13, the 2.8.4 cut.)*
 
 ---
 

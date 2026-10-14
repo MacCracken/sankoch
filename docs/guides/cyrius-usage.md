@@ -142,6 +142,7 @@ done
 cyrius vet  src/lib.cyr         # audit include dependencies
 bash scripts/brotli-smoke.sh          # local only: differential vs brotli -d 1.2.0 (needs the CLI)
 bash scripts/brotli-encode-smoke.sh   # local only: every encoder quality decoded by brotli -d (--sizes vs -q N)
+bash scripts/crc32-clmul-asm.sh --check   # local only: PCLMULQDQ fold bytes == its .S, + native math proof
 ```
 
 Sankoch is stdlib-only, so there is no `cyrius.lock` and no
@@ -150,7 +151,7 @@ by the toolchain version (the `cyrius = "X.Y.Z"` pin in `cyrius.cyml`). Add
 `cyrius.lock` / `cyrius deps --verify` only if a git-sourced dep is
 ever added under `[deps.*]`.
 
-All of these except the two `brotli-*smoke.sh` scripts run in CI. `cyrius fmt --check <file>` reports drift **only through
+All of these except the two `brotli-*smoke.sh` scripts and `crc32-clmul-asm.sh` run in CI. `cyrius fmt --check <file>` reports drift **only through
 its exit code** (Cyrius 6.5.35+), and it exits 0 on drift when given more than one file, so check one
 file per call and read `$?`. Bare `cyrius fmt <file>` rewrites the file in place.
 

@@ -386,6 +386,18 @@ fn main() {
     fill_text(csrc256, 262144);
     bench_checksum("adler32 256K text", csrc256, 262144, 200);
     bench_checksum("crc32   256K text", csrc256, 262144, 200);
+    # 2.8.5: the same 256K with the PCLMULQDQ fold forced off (the slice-by-8 table), so the row
+    # above reads against it. _crc32_hw is the test switch (-1 re-probes); off x86_64, or on a CPU
+    # without PCLMULQDQ, both rows are the table.
+    _crc32_hw = 0;
+    var ct0 = time_ns();
+    var ci = 0;
+    while (ci < 200) { crc32(csrc256, 262144); ci = ci + 1; }
+    var ct_ns = (time_ns() - ct0) / 200;
+    _crc32_hw = 0 - 1;
+    crc32(csrc256, 262144);
+    _print("  crc32   256K text (slice-by-8)  len=262144  ns/op="); _print_int(ct_ns); _nl();
+    _print("  crc32 path: "); if (_crc32_hw == 1) { _print("PCLMULQDQ fold"); } else { _print("slice-by-8"); } _nl();
     println("");
 
     # ---- LZ4 ----

@@ -48,7 +48,7 @@ Every algorithm in sankoch traces to a published specification or paper.
 | Algorithm | Spec | Used By | Notes |
 |-----------|------|---------|-------|
 | Adler-32 | RFC 1950, Section 2.2 | zlib.cyr | Two running sums mod 65521; deferred-modulo inner loop with 16-byte unroll (batch) |
-| CRC-32   | RFC 1952, Section 8  | gzip.cyr | Polynomial 0xEDB88320 (reflected); 8-byte unrolled table lookup |
+| CRC-32   | RFC 1952, Section 8; Gopal et al., "Fast CRC Computation for Generic Polynomials Using PCLMULQDQ Instruction" (Intel, 2009) | gzip.cyr, zip.cyr | Polynomial 0xEDB88320 (reflected); slice-by-8 table; on x86_64 with PCLMULQDQ (2.8.5) a 4-lane carry-less-multiply fold, constants as in Linux `crc32-pclmul_asm.S`, source in [`crc32-pclmul/`](crc32-pclmul/README.md) |
 | xxHash32 | xxHash spec (Cyan4973) | lz4.cyr (frame format), tests | 4-parallel-stripe accumulator for len ≥ 16; short path for len < 16. PRIME4 in the 4-byte tail — omitting it is a spec-divergent bug we shipped pre-v1.6.1 and have regression-tested against `xxh32sum` since |
 
 All three are also exposed as incremental APIs (`<name>_init` /
