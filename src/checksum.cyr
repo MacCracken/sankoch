@@ -202,8 +202,11 @@ fn crc32_init_table(): i64 {
     store64(&_crc32_k + 16, 0x1751997d0);
     store64(&_crc32_k + 24, 0x0ccaa009e);
     if (crc32_table != 0) { return 0; }
-    crc32_table = _sankoch_alloc(16384);   # 8 × 256 × 8
-    if (crc32_table == 0) { return 0 - ERR_OOM; }
+    # Built in a local and published last (2.8.6): this entry runs without the lock, and a second
+    # thread's first call used to see the pointer while the slices were still being filled and
+    # return to compute with a half-built table. Two first callers may both build; one table leaks.
+    var t = _sankoch_alloc(16384);   # 8 × 256 × 8
+    if (t == 0) { return 0 - ERR_OOM; }
     # Slice 0: standard reflected CRC-32 table.
     var i = 0;
     while (i < 256) {
@@ -218,7 +221,7 @@ fn crc32_init_table(): i64 {
             }
             j = j + 1;
         }
-        store64(crc32_table + i * 8, c);
+        store64(t + i * 8, c);
         i = i + 1;
     }
     # Slices 1..7: table[k][n] = (table[k-1][n] >> 8) ^ table[0][table[k-1][n] & 0xFF].
@@ -226,13 +229,15 @@ fn crc32_init_table(): i64 {
     while (k < 8) {
         var n = 0;
         while (n < 256) {
-            var prev = load64(crc32_table + ((k - 1) * 256 + n) * 8);
-            var v = (prev >> 8) ^ load64(crc32_table + (prev & 255) * 8);
-            store64(crc32_table + (k * 256 + n) * 8, v);
+            var prev = load64(t + ((k - 1) * 256 + n) * 8);
+            var v = (prev >> 8) ^ load64(t + (prev & 255) * 8);
+            store64(t + (k * 256 + n) * 8, v);
             n = n + 1;
         }
         k = k + 1;
     }
+    atomic_fence();   # the slices are visible before the pointer that publishes them
+    crc32_table = t;
     return 0;
 }
 
@@ -242,6 +247,7 @@ fn crc32_init_table(): i64 {
 fn _crc32_cpuid1(out): i64 {
     #ifdef CYRIUS_ARCH_X86
     asm {
+        0x57;                                            # push rdi (callee-saved on Win64; 2.8.6)
         param_load(rdi, 0);
         0x53;                                            # push rbx
         0xb8; 0x01; 0x00; 0x00; 0x00;                    # mov eax, 1
@@ -249,6 +255,7 @@ fn _crc32_cpuid1(out): i64 {
         0x0f; 0xa2;                                      # cpuid
         0x48; 0x89; 0x0f;                                # mov [rdi], rcx
         0x5b;                                            # pop rbx
+        0x5f;                                            # pop rdi
     }
     #endif
     return 0;
@@ -258,10 +265,13 @@ fn _crc32_cpuid1(out): i64 {
 # scripts/crc32-clmul-asm.sh, whose --check verifies these bytes and the math): folds
 # data[0 .. len - len % 16) (len >= 64) into a 128-bit remainder at out, with the running
 # register crc folded into the first 4 bytes, so that CRC_crc(data) == CRC_0(out || tail).
-# Touches xmm0..xmm5 only (Win64 keeps xmm6..15 callee-saved).
+# Touches xmm0..xmm5 only (Win64 keeps xmm6..15 callee-saved); rdi and rsi, which Win64 also keeps
+# callee-saved, are pushed around the block (2.8.6), outside the transcribed bytes.
 fn _crc32_clmul(crc, data, len, keys, out): i64 {
     #ifdef CYRIUS_ARCH_X86
     asm {
+        0x56;                                            # push rsi
+        0x57;                                            # push rdi
         param_load(rdi, 0);
         param_load(rsi, 1);
         param_load(rdx, 2);
@@ -336,6 +346,8 @@ fn _crc32_clmul(crc, data, len, keys, out): i64 {
         0xeb; 0xd4;                                      # jmp 103 <crc32_fold+0x103>
         0xf3; 0x41; 0x0f; 0x7f; 0x00;                    # movdqu XMMWORD PTR [r8],xmm0
         # END crc32_fold.S
+        0x5f;                                            # pop rdi
+        0x5e;                                            # pop rsi
     }
     #endif
     return 0;
@@ -379,10 +391,14 @@ fn _crc32_hw_probe(): i64 {
 # for long runs where the CPU has it, else slice-by-8. Shared by batch + stream (crc32,
 # crc32_update, gzip, zip). Assumes crc32_init_table() has populated crc32_table.
 fn _crc32_fold(crc, data, len): i64 {
+    # x86 only (2.8.6): elsewhere _crc32_clmul is empty, so _crc32_hw forced to 1 (the test switch)
+    # used to finish the CRC from an unwritten remainder, silently wrong.
+    #ifdef CYRIUS_ARCH_X86
     if (len >= _CRC32_CLMUL_MIN) {
         if (_crc32_hw < 0) { _crc32_hw_probe(); }
         if (_crc32_hw == 1) { return _crc32_fold_hw(crc, data, len); }
     }
+    #endif
     return _crc32_fold_table(crc, data, len);
 }
 

@@ -227,9 +227,10 @@ fn main() {
     }
     println("fuzz_bzip2: 100 ratio-cap tests passed");
 
-    return 0;
+    return assert_summary();   # 2.8.6: a failed check fails CI (was return 0)
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);
 

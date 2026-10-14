@@ -1072,8 +1072,17 @@ fn _ze_frame_header(content_size) {
     if (content_size >= 4294967296) { fcs_flag = 3; }
     elif (content_size >= 65792) { fcs_flag = 2; }
     elif (content_size >= 256) { fcs_flag = 1; }
-    var fhd = (fcs_flag << 6) | (1 << 5);   # single_segment=1
+    # Single segment (Window_Size = the content size) only while the content fits the match window
+    # (2.8.6). Past it, a Window_Descriptor declares the window itself: every offset this encoder
+    # emits, repcodes included (they reuse earlier offsets), is below _ze_wsize. Every frame was
+    # single-segment before 2.8.6, so one over 128 MiB declared a window that reference `zstd -d`
+    # refuses by default (windowLogMax 27), and a streaming decoder had to reserve the whole content.
+    # Past the window the content is > 256 KiB, so fcs_flag is 2 or 3 and the size field stays.
+    var single = 1;
+    if (content_size > _ze_wsize) { single = 0; }
+    var fhd = (fcs_flag << 6) | (single << 5);
     _ze_put(fhd);
+    if (single == 0) { _ze_put((_z_flog2(_ze_wsize) - 10) << 3); }   # exponent, mantissa 0
     if (fcs_flag == 0) { _ze_put(content_size & 255); }
     elif (fcs_flag == 1) { _ze_put_le(content_size - 256, 2); }
     elif (fcs_flag == 2) { _ze_put_le(content_size, 4); }
@@ -1470,9 +1479,8 @@ var _ze_prev = 0;   # chain: prev occurrence, indexed by pos & _ze_wmask
 # _ze_maxwin); _ze_prev is sized to _ze_maxwin*8 bytes (a one-time, encode-only,
 # grow-persistent alloc). 512 KiB is the conservative default from the ratio/memory
 # sweep (docs/benchmarks/2026-07-21-*.md): it already beats `zstd -19` on record data
-# (the win is repcode-dominated — cross-block repcodes have UNLIMITED reach regardless
-# of this window, since single_segment makes any distance decodable — so the window
-# mainly closes non-repcode long-range literal matches). Larger windows (1–4 MiB) buy
+# (the win is repcode-dominated; a repcode reuses an earlier offset, so it too stays
+# inside this window, which since 2.8.6 is what a frame larger than it declares). Larger windows (1–4 MiB) buy
 # marginal, non-monotonic gains on very-large record data at linear memory cost; raise
 # _ze_maxwin (a one-line change) if a record-heavy multi-MB consumer surfaces. Must stay
 # a power of two; the effective window floor (below) is strictly > BLKMAX so a block's
@@ -1593,7 +1601,7 @@ fn _ze_find(src, pos, n, chain_max) {
     var lim = n - pos;
     while (cand >= 0 && depth < chain_max) {
         var off = pos - cand;
-        if (off <= 0 || off >= _ze_wsize) { cand = 0 - 1; }   # 2.7.4 window bound (dormant until Bite 2)
+        if (off <= 0 || off >= _ze_wsize) { cand = 0 - 1; }   # 2.7.4 window bound
         else {
             # Quick reject: a candidate can only beat best_len if it matches at
             # index best_len — skip the full scan otherwise (keeps the chain cheap).
@@ -1837,30 +1845,8 @@ fn _ze_lz_parse(g, bstart, bend) {
     return nseq;
 }
 
-# Self-check: reconstruct src[0..n) from the parsed sequences + literals into
-# `out`. Returns the reconstructed length (must == n). No zstd framing — this
-# validates the match finder / sequence logic in isolation.
-fn _ze_lz_reconstruct(out) {
-    var op = 0;
-    var lp = 0;
-    var i = 0;
-    while (i < _zs_nseq) {
-        var ll = load64(_zs_ll + i * 8);
-        var k = 0;
-        while (k < ll) { store8(out + op, load8(_zs_lit + lp)); op = op + 1; lp = lp + 1; k = k + 1; }
-        var ml = load64(_zs_ml + i * 8);
-        var off = load64(_zs_off + i * 8);
-        var mbase = op - off;
-        var m = 0;
-        while (m < ml) { store8(out + op, load8(out + mbase + m)); op = op + 1; m = m + 1; }
-        i = i + 1;
-    }
-    while (lp < _zs_litlen) { store8(out + op, load8(_zs_lit + lp)); op = op + 1; lp = lp + 1; }
-    return op;
-}
-
-# ---- PROBE: optimal parser (DP over stretches) ---------------------------
-# Adversarial-verification probe. Mirrors zstd_opt.c ZSTD_compressBlock_opt_generic:
+# ---- Optimal parser (DP over stretches): levels 7-9 since 2.7.3 -------------
+# It began as an adversarial-verification probe. Mirrors zstd_opt.c ZSTD_compressBlock_opt_generic:
 # a shortest-path over positions inside one match series, each node holding a
 # "stretch" (a match then N literals) plus its own recent-offset triple.
 var _zo_price = 0; var _zo_off = 0; var _zo_mlen = 0; var _zo_litlen = 0;
@@ -1896,15 +1882,27 @@ var _ze_use_opt = 0;
 const _zo_predef = 0;
 const _zo_globalrep = 0;
 
+# The DP parser's arrays. 2.8.6: through the allocation seam, each checked, and the ready flag set
+# only once all 15 exist (the M-8 shape). Before, they came from raw alloc() unchecked with the flag
+# set regardless: a level 7-9 compress under real memory pressure stored through NULL, and every
+# later one did too, since the flag stayed set; fault injection could not reach them.
 fn _zo_alloc() {
     if (_zo_alloced == 1) { return 0; }
-    _zo_price = alloc(4200 * 8); _zo_off = alloc(4200 * 8);
-    _zo_mlen = alloc(4200 * 8); _zo_litlen = alloc(4200 * 8);
-    _zo_rep0 = alloc(4200 * 8); _zo_rep1 = alloc(4200 * 8); _zo_rep2 = alloc(4200 * 8);
-    _zo_bof = alloc(4200 * 8);
-    _zo_mt_len = alloc(80 * 8); _zo_mt_ofb = alloc(80 * 8); _zo_mt_boff = alloc(80 * 8);
-    _zo_litfreq = alloc(256 * 8); _zo_llfreq = alloc(40 * 8);
-    _zo_mlfreq = alloc(56 * 8); _zo_offreq = alloc(36 * 8);
+    _zo_price = _sankoch_alloc(4200 * 8); _zo_off = _sankoch_alloc(4200 * 8);
+    _zo_mlen = _sankoch_alloc(4200 * 8); _zo_litlen = _sankoch_alloc(4200 * 8);
+    _zo_rep0 = _sankoch_alloc(4200 * 8); _zo_rep1 = _sankoch_alloc(4200 * 8);
+    _zo_rep2 = _sankoch_alloc(4200 * 8); _zo_bof = _sankoch_alloc(4200 * 8);
+    _zo_mt_len = _sankoch_alloc(80 * 8); _zo_mt_ofb = _sankoch_alloc(80 * 8);
+    _zo_mt_boff = _sankoch_alloc(80 * 8);
+    _zo_litfreq = _sankoch_alloc(256 * 8); _zo_llfreq = _sankoch_alloc(40 * 8);
+    _zo_mlfreq = _sankoch_alloc(56 * 8); _zo_offreq = _sankoch_alloc(36 * 8);
+    if (_zo_price == 0 || _zo_off == 0 || _zo_mlen == 0 || _zo_litlen == 0 || _zo_rep0 == 0
+      || _zo_rep1 == 0 || _zo_rep2 == 0 || _zo_bof == 0 || _zo_mt_len == 0 || _zo_mt_ofb == 0
+      || _zo_mt_boff == 0 || _zo_litfreq == 0 || _zo_llfreq == 0 || _zo_mlfreq == 0
+      || _zo_offreq == 0) {
+        _ze_oom = 1;
+        return 0 - 1;
+    }
     _zo_alloced = 1;
     return 0;
 }
@@ -2027,16 +2025,6 @@ fn _zo_newrep(r0, r1, r2, offbase, ll0) {
     return 0;
 }
 
-# Resolve offbase -> byte offset against (r0,r1,r2) and ll0.
-fn _zo_boff(r0, r1, r2, offbase, ll0) {
-    if (offbase > 3) { return offbase - 3; }
-    var rc = offbase - 1 + ll0;
-    if (rc == 0) { return r0; }
-    if (rc == 1) { return r1; }
-    if (rc == 2) { return r2; }
-    return r0 - 1;
-}
-
 # Byte offset -> Offset_Value against (r0,r1,r2) and ll0 (mirrors _ze_offval's choice).
 fn _zo_ofbase_of(r0, r1, r2, off, ll0) {
     if (ll0 == 0) {
@@ -2090,7 +2078,7 @@ fn _zo_getmatches(src, pos, n, r0, r1, r2, ll0, chain_max) {
     var fail = 0;
     while (cand >= 0 && depth < chain_max && nm < 70) {
         var off = pos - cand;
-        if (off <= 0 || off >= _ze_wsize) { cand = 0 - 1; }   # 2.7.4 window bound (dormant until Bite 3)
+        if (off <= 0 || off >= _ze_wsize) { cand = 0 - 1; }   # 2.7.4 window bound
         else {
             var improved = 0;
             if (best < lim && load8(src + cand + best) == load8(src + pos + best)) {
@@ -2128,8 +2116,8 @@ fn _zo_getmatches(src, pos, n, r0, r1, r2, ll0, chain_max) {
 # parse. literal_length stays block-local; the match OFFSET (_zs_off) is a global
 # distance; matches clamp to `bend`. The DP arrays stay ip-relative (small window).
 fn _zo_lz_parse(src, bstart, bend) {
-    _ze_lz_alloc();
-    _zo_alloc();
+    # No sequences on OOM: the block falls back, and _ze_oom fails the call with ERR_OOM (2.8.6).
+    if (_ze_lz_alloc() < 0 || _zo_alloc() < 0) { return 0; }
     _zo_ins = bstart;
     _zo_init_freqs(src + bstart, bend - bstart);   # block-local literal histogram
     _zo_setbase();
@@ -2646,6 +2634,10 @@ fn _ze_emit_fse_weights(maxsym, maxbits) {
     _ze_put(0);                                # header byte placeholder
     _ze_fse_write_ncount(_ze_wnorm, alpha, 6);
     var ct = _ze_fse_ctable(_ze_wnorm, alpha, 6, 3);
+    if (ct == 0) {                             # 2.8.6: pooled table buffers unavailable (OOM)
+        _ze_oom = 1;
+        return 0 - 1;
+    }
     _ze_fse_encode_weights(ct, _ze_wt, maxsym, 6);
     var fse_size = _ze_op - treestart - 1;
     if (_ze_err != 0 || fse_size < 1 || fse_size >= 128) { return 0 - 1; }
@@ -2680,16 +2672,21 @@ fn _ze_seq_plan_alloc() {
     _ze_pnorm = _sankoch_alloc(3 * 8); _ze_palpha = _sankoch_alloc(3 * 8); _ze_prle = _sankoch_alloc(3 * 8);
     _ze_phist = _sankoch_alloc(64 * 8);
     # a norm array per stream (up to 64 symbols each) + a small NCount-sizing scratch
-    store64(_ze_pnorm + 0, _sankoch_alloc(64 * 8));
-    store64(_ze_pnorm + 8, _sankoch_alloc(64 * 8));
-    store64(_ze_pnorm + 16, _sankoch_alloc(64 * 8));
+    var n0 = _sankoch_alloc(64 * 8);
+    var n1 = _sankoch_alloc(64 * 8);
+    var n2 = _sankoch_alloc(64 * 8);
     _ze_ncbuf = _sankoch_alloc(512);
+    # 2.8.6: every pointer is checked BEFORE anything is stored through one. The three norm
+    # arrays used to be stored into _ze_pnorm before its NULL check, so a failed _ze_pnorm
+    # allocation wrote to address 0 (SIGSEGV; found by tests/tcyr/oom_matrix.tcyr).
     if (_ze_pmode == 0 || _ze_pct == 0 || _ze_plog == 0 || _ze_pnorm == 0 || _ze_palpha == 0
-      || _ze_prle == 0 || _ze_phist == 0 || _ze_ncbuf == 0
-      || load64(_ze_pnorm + 0) == 0 || load64(_ze_pnorm + 8) == 0 || load64(_ze_pnorm + 16) == 0) {
+      || _ze_prle == 0 || _ze_phist == 0 || _ze_ncbuf == 0 || n0 == 0 || n1 == 0 || n2 == 0) {
         _ze_oom = 1;
         return 0 - 1;
     }
+    store64(_ze_pnorm + 0, n0);
+    store64(_ze_pnorm + 8, n1);
+    store64(_ze_pnorm + 16, n2);
     _ze_plan_ready = 1;
     return 0;
 }
@@ -2780,11 +2777,19 @@ fn _ze_seq_plan(which, codes, ns, predef_dist, predef_ct, predef_log, maxlog) {
 # + interleaved FSE bitstream) via _ze_put into the current (temp) output. Chooses
 # Predefined / RLE / FSE_Compressed per stream (2.5.7).
 fn _ze_encode_sequences() {
-    if (_ze_ct_ll == 0) {
+    # 2.8.6: each predefined table is built (and checked) on its own. The guard used to key on
+    # _ze_ct_ll alone, so an OOM building _ze_ct_of / _ze_ct_ml after _ze_ct_ll succeeded left
+    # them 0 for good, and every later block encoded through a NULL table (M-8 class;
+    # tests/tcyr/oom_matrix.tcyr).
+    if (_ze_ct_ll == 0 || _ze_ct_of == 0 || _ze_ct_ml == 0) {
         _z_init_tables();
-        _ze_ct_ll = _ze_fse_ctable(&_z_ll_dist, 36, 6, 0 - 1);
-        _ze_ct_of = _ze_fse_ctable(&_z_of_dist, 29, 5, 0 - 1);
-        _ze_ct_ml = _ze_fse_ctable(&_z_ml_dist, 53, 6, 0 - 1);
+        if (_ze_ct_ll == 0) { _ze_ct_ll = _ze_fse_ctable(&_z_ll_dist, 36, 6, 0 - 1); }
+        if (_ze_ct_of == 0) { _ze_ct_of = _ze_fse_ctable(&_z_of_dist, 29, 5, 0 - 1); }
+        if (_ze_ct_ml == 0) { _ze_ct_ml = _ze_fse_ctable(&_z_ml_dist, 53, 6, 0 - 1); }
+        if (_ze_ct_ll == 0 || _ze_ct_of == 0 || _ze_ct_ml == 0) {
+            _ze_oom = 1;
+            return 0 - 1;
+        }
     }
     var ns = _zs_nseq;
     if (ns < 128) { _ze_put(ns); }
@@ -2811,6 +2816,11 @@ fn _ze_encode_sequences() {
     var mll = _ze_seq_plan(0, _zs_llc, ns, &_z_ll_dist, _ze_ct_ll, 6, 9);
     var mof = _ze_seq_plan(1, _zs_ofc, ns, &_z_of_dist, _ze_ct_of, 5, 8);
     var mml = _ze_seq_plan(2, _zs_mlc, ns, &_z_ml_dist, _ze_ct_ml, 6, 9);
+    # 2.8.6: an adaptive / RLE table is 0 when its pooled buffers could not be allocated.
+    if (load64(_ze_pct + 0) == 0 || load64(_ze_pct + 8) == 0 || load64(_ze_pct + 16) == 0) {
+        _ze_oom = 1;
+        return 0 - 1;
+    }
     _ze_put((mll << 6) | (mof << 4) | (mml << 2));
     if (mll == 1) { _ze_put(load64(_ze_prle + 0)); }
     elif (mll == 2) { _ze_fse_write_ncount(load64(_ze_pnorm + 0), load64(_ze_palpha + 0), load64(_ze_plog + 0)); }

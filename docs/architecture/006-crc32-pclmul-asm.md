@@ -22,8 +22,10 @@ The script needs binutils (and gcc + a PCLMULQDQ CPU for the native half); it is
 
 - **Registers**: rax/rcx/rdx/rsi/rdi/r8 and xmm0..xmm5 only. A function containing `asm` never gets
   Cyrius's register allocator, but its *callers* may keep locals in rbx and r12..r14, and r15 is parked
-  on Mach-O and AGNOS. Win64 makes xmm6..15 callee-saved. The CPUID helper pushes and pops rbx because
-  `cpuid` writes it.
+  on Mach-O and AGNOS. Win64 makes xmm6..15 callee-saved, and rdi and rsi too: both asm blocks push
+  and pop rdi (and the fold rsi) around themselves, outside the `BEGIN` / `END` markers (2.8.6; until
+  then a Windows callback into Cyrius code that reached the fold returned with them clobbered). The
+  CPUID helper also pushes and pops rbx because `cpuid` writes it.
 - **No `ret`**: the block falls through to the function's own epilogue. The `.S` ends without one;
   the native check appends it.
 - **Arguments** arrive through `param_load(reg, idx)` (the parameter's real prologue slot), never

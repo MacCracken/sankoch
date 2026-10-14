@@ -908,6 +908,80 @@ fn test_zip_allocator_threading() {
     return 0;
 }
 
+# 2.8.6: a member streamed AFTER another member. zip_enc_begin used to park the local-header offset
+# in the writer's allocator slot (+64, since 2.7.7), so every later allocation through the writer
+# (name copies, record-table growth) called through that offset: a SIGSEGV for a small offset, an
+# indirect call into the program image for one of 4 MiB or more. Every streaming test streamed the
+# FIRST member, whose offset is 0, the process allocator's id. Both writers, both methods.
+fn test_zip_stream_after_member() {
+    var src = alloc(4096);
+    _zt_fill(src, 4096, 97);
+    var round = 0;
+    while (round < 4) {
+        var a = 0;
+        if (round >= 2) { a = arena_allocator(1 << 20); }
+        var method = ZIP_STORE;
+        if ((round & 1) == 1) { method = ZIP_DEFLATE; }
+        var cap = zip_bound(40, 640, 8192);
+        var dst = alloc(cap);
+        var w = zip_writer_init_a(a, dst, cap);
+        assert(w != 0, "stream-after: writer");
+        assert(zip_add(w, "first.bin", src, 777, ZIP_STORE) == 0, "stream-after: first member");
+        assert(zip_enc_begin(w, "streamed.bin", method, 0, 0) == 0, "stream-after: begin second");
+        assert(zip_enc_write(w, src, 4096) == 0, "stream-after: write");
+        assert(zip_enc_end(w) == 0, "stream-after: end");
+        assert_eq(load64(w + 64), a, "stream-after: the writer still has its allocator");
+        # Enough members after it to grow the record table through the allocator.
+        var k = 0;
+        var nm[16];
+        while (k < 38) {
+            store8(&nm, 109); store8(&nm + 1, 48 + k / 10); store8(&nm + 2, 48 + k % 10); store8(&nm + 3, 0);
+            if (zip_add(w, &nm, src + k, 64, ZIP_STORE) != 0) { break; }
+            k = k + 1;
+        }
+        assert_eq(k, 38, "stream-after: 38 more members");
+        var total = zip_writer_finish(w);
+        assert(total > 0, "stream-after: finish");
+        var z = zip_open(dst, total);
+        assert(z != 0, "stream-after: reopen");
+        if (z == 0) { return 0; }
+        assert_eq(zip_count(z), 40, "stream-after: 40 members");
+        var out = alloc(4096);
+        var si = zip_find(z, "streamed.bin");
+        assert_eq(zip_extract(z, si, out, 4096), 4096, "stream-after: streamed member extracts");
+        assert_eq(crc32(out, 4096), crc32(src, 4096), "stream-after: streamed member intact");
+        if (a != 0) { reset_via(a); }
+        round = round + 1;
+    }
+    return 0;
+}
+
+# 2.8.6: zip_enc_end after deflate_enc_finish failed (here: no room for the compressed member) left
+# the finished encoder in the writer, so a second zip_enc_end finished it again and released the
+# lock a second time, out from under whoever held it then.
+fn test_zip_stream_end_unlocks_once() {
+    var src = alloc(4096);
+    _zt_fill(src, 4096, 97);
+    var i = 0;
+    while (i < 4096) { store8(src + i, (i * 2654435761) >> 13); i = i + 1; }
+    var small = alloc(200);
+    var w1 = zip_writer_init(small, 200);
+    assert(zip_enc_begin(w1, "big.bin", ZIP_DEFLATE, 0, 0) == 0, "unlock-once: begin");
+    zip_enc_write(w1, src, 4096);
+    assert(zip_enc_end(w1) < 0, "unlock-once: the member does not fit");
+    assert_eq(load64(&_sankoch_mtx), 0, "unlock-once: the failed end released the lock");
+    var big = alloc(65536);
+    var w2 = zip_writer_init(big, 65536);
+    assert(zip_enc_begin(w2, "held.bin", ZIP_DEFLATE, 0, 0) == 0, "unlock-once: a second writer streams");
+    assert(load64(&_sankoch_mtx) != 0, "unlock-once: and holds the lock");
+    assert(zip_enc_end(w1) < 0, "unlock-once: ending the failed writer again still fails");
+    assert(load64(&_sankoch_mtx) != 0, "unlock-once: without releasing the other writer's lock");
+    assert(zip_enc_write(w2, src, 1000) == 0, "unlock-once: the second writer continues");
+    assert(zip_enc_end(w2) == 0, "unlock-once: and ends");
+    assert_eq(load64(&_sankoch_mtx), 0, "unlock-once: lock free again");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_zip_bound();
@@ -938,9 +1012,12 @@ fn main() {
     test_zip_stream_no_deadlock();
     test_zip_add_while_streaming();
     test_zip_long_name_refused();
+    test_zip_stream_after_member();
+    test_zip_stream_end_unlocks_once();
     test_zip_zip64_overflow_bounds();
     return assert_summary();
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

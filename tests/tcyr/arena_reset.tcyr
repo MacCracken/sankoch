@@ -467,8 +467,7 @@ fn test_reset_tables_zeroes_every_memoized_pointer() {
       | _deflate_len_lookup_built | _deflate_len_lookup | _deflate_dist_lookup_built
       | _deflate_dist_lookup | _dh_ws | _ddec_cl_lens | _ddec_all_lens | _ddec_cl_order
       | _dyn_sym_buf | _dyn_lit_freq | _dyn_dist_freq | _dyn_opt_lit_lens
-      | _dyn_opt_dist_lens | _dyn_opt_lit_codes | _dyn_opt_dist_codes | _dyn_lit_fast_tmp
-      | _dyn_dist_fast_tmp, 0, "reset: deflate tables");
+      | _dyn_opt_dist_lens | _dyn_opt_lit_codes | _dyn_opt_dist_codes, 0, "reset: deflate tables");
     assert_eq(_xz_probs | _xze_tmp | _xze_prices | _xze_dp_ready | _bz_tables_ready
       | _bze_ready, 0, "reset: xz / bzip2 flags");
     assert_eq(_z_lit | _z_huff_sym | _z_huff_nb | _z_pool_tab | _z_pool_next
@@ -672,6 +671,77 @@ fn test_failed_canary_arm_still_detects_a_reset() {
     return 0;
 }
 
+# 2.8.6: the API lock is a BSS cell, and the arena guard runs under it. Before, the lock was an
+# arena pointer created on first use and zeroed by a guard that detected a reset, so threads
+# arriving together after a detected reset each created a mutex and entered the critical section
+# together: measured on 2.8.5 with this cell, a hang or a SIGSEGV within 60 rounds (3 of 3 runs).
+var _lk_go = 0;
+var _lk_src[32];
+var _lk_cbuf[32];
+var _lk_dbuf[32];
+var _lk_res[32];
+
+fn _lk_worker(id): i64 {
+    while (atomic_load(&_lk_go) == 0) { }
+    var s = load64(&_lk_src + id * 8);
+    var c = load64(&_lk_cbuf + id * 8);
+    var d = load64(&_lk_dbuf + id * 8);
+    var cl = zlib_compress(s, 6000, c, 16384);
+    var dl = zlib_decompress(c, cl, d, 6000);
+    var ok = 1;
+    if (dl != 6000) { ok = 0; }
+    var i = 0;
+    while (ok == 1 && i < 6000) {
+        if (load8(d + i) != load8(s + i)) { ok = 0; }
+        i = i + 1;
+    }
+    store64(&_lk_res + id * 8, ok);
+    return 0;
+}
+
+fn test_lock_is_bss_and_survives_a_detected_reset_under_threads() {
+    var m = &_sankoch_mtx;
+    assert(m < _heap_base || m >= _heap_end, "lock: the mutex cell is not arena memory");
+    assert_eq(load64(m), 0, "lock: unlocked between calls");
+    var t = 0;
+    while (t < 4) {
+        var s = alloc(6000);
+        var i = 0;
+        while (i < 6000) { store8(s + i, ((i * (t + 3)) ^ (i >> 5)) & 255); i = i + 1; }
+        store64(&_lk_src + t * 8, s);
+        store64(&_lk_cbuf + t * 8, alloc(16384));
+        store64(&_lk_dbuf + t * 8, alloc(6000));
+        t = t + 1;
+    }
+    var hs[32];
+    var bad = 0;
+    var round = 0;
+    while (round < 60) {
+        _sankoch_canary = 0;        # the next guard sees a reset and drops every table
+        _sankoch_canary_lost = 1;
+        atomic_store(&_lk_go, 0);
+        t = 0;
+        while (t < 4) {
+            store64(&_lk_res + t * 8, 0 - 1);
+            store64(&hs + t * 8, thread_create(&_lk_worker, t));
+            t = t + 1;
+        }
+        atomic_store(&_lk_go, 1);
+        t = 0;
+        while (t < 4) { thread_join(load64(&hs + t * 8)); t = t + 1; }
+        t = 0;
+        while (t < 4) {
+            if (load64(&_lk_res + t * 8) != 1) { bad = bad + 1; }
+            t = t + 1;
+        }
+        round = round + 1;
+    }
+    assert_eq(bad, 0, "lock: 60 rounds x 4 threads after a detected reset, every round-trip exact");
+    assert_eq(load64(m), 0, "lock: released after the threads");
+    assert_eq(_sankoch_canary_lost, 0, "lock: the canary re-armed");
+    return 0;
+}
+
 fn main(): i64 {
     test_crc32_table_does_not_write_through_a_stale_pointer();
     test_crc32_still_correct_after_a_reset();
@@ -690,8 +760,10 @@ fn main(): i64 {
     test_failed_canary_arm_still_detects_a_reset();
     test_stranded_canary_does_not_misfire_in_steady_state();
     test_canary_outside_the_first_chunk_still_detects_a_reset();
+    test_lock_is_bss_and_survives_a_detected_reset_under_threads();
     return assert_summary();
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

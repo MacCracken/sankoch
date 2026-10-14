@@ -20,9 +20,9 @@ fn crc32_init_table(): i64 {
 
 `_sankoch_reset_tables()` lists them: the CRC-32 slice table, the Huffman
 literal/distance/code-length tables, the fixed-tree caches, the LZ77 and LZ4
-hash tables, the zstd encoder's context pools — around twenty pointers. And
-`_sankoch_mtx`, the library-wide mutex, is allocated the same way by
-`mutex_new()`.
+hash tables, the zstd encoder's context pools — around twenty pointers. Until
+2.8.6, `_sankoch_mtx`, the library-wide mutex, was allocated the same way by
+`mutex_new()`; it is a BSS cell now (below).
 
 All of them live in the bump arena. `alloc_reset()` rewinds that arena to its
 first chunk. **It does not, and cannot, tell sankoch.** So after a reset every
@@ -43,7 +43,7 @@ Against 2.7.9, at this library's own boundary:
 - A `zlib_compress` / `zlib_decompress` round-trip after a reset returned
   `clen = -2`, `dlen = -1`, and kept failing on every subsequent call.
 
-The mutex is the worst of the three: `mutex_lock()` on re-owned memory.
+The mutex was the worst of the three: `mutex_lock()` on re-owned memory.
 
 chitra found this downstream and filed it as "calling `alloc_reset()` between
 decodes breaks the next PNG decode". The decode error was the benign symptom.
@@ -80,15 +80,23 @@ and it is the same bargain every guard value in systems software makes.
 
 2.7.10 put it in two places. 2.8.0 widened both and added a third kind of site:
 
-- **`_sankoch_lock()`, before `_sankoch_mtx` is touched, on every target.** Every
-  public API entry goes through the lock, and the mutex pointer can itself be
-  dangling, so the guard cannot run after it. Before 2.8.0 it sat after the
-  AGNOS early return, which made the reset dead code on AGNOS.
+- **`_sankoch_lock()`, on every target.** Every public API entry goes through the
+  lock. Before 2.8.0 the guard sat after the AGNOS early return, which made the
+  reset dead code on AGNOS. Until 2.8.6 it also had to run *before* taking the
+  mutex, because the mutex was itself an arena pointer the guard might drop; that
+  made the lock lazily created and droppable, so threads arriving together after a
+  detected reset each created one and entered together (audit C-02). Since 2.8.6
+  the mutex is an 8-byte BSS cell (zero is unlocked on every `lib/sync.cyr`
+  backend) and the guard runs **under** it, so a detected reset drops tables no
+  other call is using.
 - **Every memoizing public entry reachable without the lock.** That is
   `crc32_init_table()` (chitra re-inits per PNG decode) and, since 2.8.0,
   `crc64_init_table` / `crc64_init`, `crc32_bzip2_init_table`, `lz77_init` and
   the `huff_build_*` family. Before 2.8.0 those overwrote up to 524,288 caller
-  bytes after a reset.
+  bytes after a reset. Since 2.8.6 `lz77_init`, the `huff_build_*` family and
+  `huff_compute_lengths` take the lock (which runs the guard) around an `_inner`
+  body the codecs call; the checksum table builders, also called under the lock,
+  keep their own guard and publish a finished table last.
 - **The stranded-canary predicate (2.8.0).** `alloc_reset()` zeroes only the
   first chunk. A canary placed in a later chunk (because the caller filled the
   first one before sankoch's first call) is treated as reset once the bump

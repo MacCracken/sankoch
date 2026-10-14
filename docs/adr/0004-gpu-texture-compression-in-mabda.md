@@ -61,6 +61,6 @@ lossless primitives a texture pipeline leans on.**
 
 ## References
 
-- sankoch roadmap: *Backlog*, "Primitives for mabda's texture work".
+- sankoch roadmap: 2.9.10, "Primitives for mabda's texture work" (in the Backlog until 2.8.6 pinned it).
 - mabda: `src/asset_load.cyr` (`_ktx2_parse`'s supercompression gate), `src/asset_format.cyr`.
 - Khronos KTX 2.0 specification (`supercompressionScheme`).

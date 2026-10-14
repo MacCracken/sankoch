@@ -680,8 +680,319 @@ fn test_dec_stream_dynamic_hlit_overflow() {
 # main
 # ================================================================
 
+# ================================================================
+# 2.8.6: Kraft validation. Each stream below was crafted bit by bit with chosen dynamic-Huffman code
+# lengths and judged by reference zlib (raw inflate); sankoch must give the same verdict, batch and
+# streaming. Before 2.8.6 the five "lax" shapes decoded: over-subscribed sets were refused by
+# _huff_build but every caller ignored the result (stale tables stayed live), and incomplete sets
+# were built. A lone 1-bit code (one EOB, one distance) and an all-zero unused distance tree are
+# legal (RFC 1951 §3.2.7; zlib inflate_table).
+# ================================================================
+
+var _kv_buf = 0;
+
+fn _kv_hexv(c) {
+    if (c <= 57) { return c - 48; }
+    return (c | 32) - 87;
+}
+
+fn _kv_load(hex) {
+    var n = strlen(hex) / 2;
+    var i = 0;
+    while (i < n) {
+        store8(_kv_buf + i, (_kv_hexv(load8(hex + 2 * i)) << 4) | _kv_hexv(load8(hex + 2 * i + 1)));
+        i = i + 1;
+    }
+    return n;
+}
+
+# want_ok 1: decodes to `want` (len wl); 0: ERR_INVALID_HUFFMAN, batch and streaming.
+fn _kv_case(hex, want_ok, want, wl, label) {
+    var n = _kv_load(hex);
+    var dst = alloc(256);
+    var r = deflate_decompress(_kv_buf, n, dst, 256);
+    var ctx = deflate_dec_init(dst + 128, 128);
+    var w = deflate_dec_write(ctx, _kv_buf, n);
+    var f = deflate_dec_finish(ctx);
+    if (want_ok == 1) {
+        var same = 1;
+        var i = 0;
+        while (i < wl) {
+            if (load8(dst + i) != load8(want + i) || load8(dst + 128 + i) != load8(want + i)) { same = 0; }
+            i = i + 1;
+        }
+        assert(r == wl && f == wl && same == 1, label);
+    } else {
+        assert(r == 0 - ERR_INVALID_HUFFMAN && w == 0 - ERR_INVALID_HUFFMAN && f == 0 - ERR_INVALID_HUFFMAN, label);
+    }
+    return 0;
+}
+
+fn test_deflate_kraft_validation() {
+    _kv_buf = alloc(256);
+    var hx = alloc(512);
+    _put_str(hx, "05e0010400000080200000000000000000680000000000000000000000000000", 64);
+    _put_str(hx + 64, "0000000000000000007032", 22);
+    store8(hx + 86, 0);
+    _kv_case(hx, 1, "ABA", 3, "kraft: valid basic (zlib: accepts)");
+    _put_str(hx, "05e0010400000000100000000000000000180000000000000000000000000000", 64);
+    _put_str(hx + 64, "0000000000000000000c", 20);
+    store8(hx + 84, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: oversub litlen (zlib: rejects)");
+    _put_str(hx, "05e0010400000080200000000000000000080000000000000000000000000000", 64);
+    _put_str(hx + 64, "0000000000000000003802", 22);
+    store8(hx + 86, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: incomplete litlen (zlib: rejects)");
+    _put_str(hx, "05e0010400000000100000000000000000000000000000000000000000000000", 64);
+    _put_str(hx + 64, "0000000000000000000c", 20);
+    store8(hx + 84, 0);
+    _kv_case(hx, 1, "x", 0, "kraft: single eob len1 (zlib: accepts)");
+    _put_str(hx, "0de2010400000080200000000000000000080000000000000000000000000000", 64);
+    _put_str(hx + 64, "000000000000000000f84a", 22);
+    store8(hx + 86, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: oversub dist (zlib: rejects)");
+    _put_str(hx, "0de1010400000080200000000000000000080000000000000000000000000000", 64);
+    _put_str(hx + 64, "000000000000000000f816", 22);
+    store8(hx + 86, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: incomplete dist (zlib: rejects)");
+    _put_str(hx, "05e0010400000000100000000000000000080000000000000000000000000000", 64);
+    _put_str(hx + 64, "00000000000000000024", 20);
+    store8(hx + 84, 0);
+    _kv_case(hx, 1, "A", 1, "kraft: dist all zero unused (zlib: accepts)");
+    _put_str(hx, "05e0010c00000080106cdbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddb", 64);
+    _put_str(hx + 64, "b6cdb66ddbb66ddbb66ddbb66ddbb66d", 32);
+    _put_str(hx + 96, "dbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddbb66ddbb6", 64);
+    _put_str(hx + 160, "6ddbb66ddbb66ddbb66ddbb66ddbb66d", 32);
+    _put_str(hx + 192, "dbb66ddbb66ddbb66d11", 20);
+    store8(hx + 212, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: incomplete cl (zlib: rejects)");
+    _put_str(hx, "05e0010400000040100000000000000000080000000000000000000000000000", 64);
+    _put_str(hx + 64, "00000000000000000028", 20);
+    store8(hx + 84, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: oversub cl (zlib: rejects)");
+    _put_str(hx, "04e0010400000080200000000000000000680000000000000000000000000000", 64);
+    _put_str(hx + 64, "00000000000000000070ba003c800000", 32);
+    _put_str(hx + 96, "0000000200000000000000000300000000000000000000000000000000000000", 64);
+    _put_str(hx + 160, "0000008003", 10);
+    store8(hx + 170, 0);
+    _kv_case(hx, 0, "x", 0, "kraft: stale after valid (zlib: rejects)");
+    # A public builder call with a length past 15 is refused, not indexed past next_code.
+    var lens = alloc(32 * 8);
+    var i = 0;
+    while (i < 32) {
+        store64(lens + i * 8, 5);
+        i = i + 1;
+    }
+    store64(lens + 3 * 8, 16);
+    assert(huff_build_dist(lens, 32) == 0 - ERR_INVALID_HUFFMAN, "kraft: a code length of 16 is refused");
+    store64(lens + 3 * 8, 5);
+    assert(huff_build_dist(lens, 32) == 0, "kraft: 32 codes of length 5 (the fixed distance tree) build");
+    return 0;
+}
+
+# 2.8.6: the public Huffman builders (closeout review). They take the lock now, keep the fixed-tree
+# cache honest, and fail cleanly on OOM.
+var _hb_stop = 0;
+var _hb_builds = 0;
+
+fn _hb_builder(arg): i64 {
+    var lens[2304];
+    var i = 0;
+    while (i < 288) { store64(&lens + i * 8, 8 + (i & 1)); i = i + 1; }
+    while (atomic_load(&_hb_stop) == 0) {
+        huff_build_litlen(&lens, 288);
+        _hb_builds = _hb_builds + 1;
+    }
+    return 0;
+}
+
+fn _hb_same(a, b, n) {
+    var i = 0;
+    while (i < n) {
+        if (load8(a + i) != load8(b + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn test_public_huffman_builders() {
+    var n = 20000;
+    var src = alloc(n);
+    var i = 0;
+    while (i < n) { store8(src + i, ((i * 31) ^ (i >> 3) ^ (i >> 9)) & 127); i = i + 1; }
+    var c = alloc(65536);
+    var d = alloc(n);
+    var cl = deflate_compress_level(src, n, c, 65536, 9);
+
+    # Another thread rebuilding the shared literal/length table through the public builder while
+    # this one inflates: measured on 2.8.5, 289 of 300 decodes wrong.
+    var t = thread_create(&_hb_builder, 0);
+    var bad = 0;
+    var round = 0;
+    while (round < 100) {
+        var dl = deflate_decompress(c, cl, d, n);
+        if (dl != n || _hb_same(d, src, n) == 0) { bad = bad + 1; }
+        round = round + 1;
+    }
+    atomic_store(&_hb_stop, 1);
+    thread_join(t);
+    assert_eq(bad, 0, "huff builders: 100 inflates exact while another thread calls huff_build_litlen");
+    assert(_hb_builds > 0, "huff builders: the other thread did build");
+
+    # A public distance build overwrites the cached fixed distance table, so the next fixed block
+    # must rebuild it (2.8.5: decoding a fixed stream after huff_build_dist([1,1]) failed with -3).
+    var f = alloc(4096);
+    i = 0;
+    while (i < 4096) { store8(f + i, 65 + (i % 5)); i = i + 1; }
+    var fl = deflate_compress_level(f, 4096, c, 65536, 1);
+    var out = alloc(4096);
+    assert_eq(deflate_decompress(c, fl, out, 4096), 4096, "huff builders: fixed stream decodes");
+    var two = alloc(16);
+    store64(two, 1);
+    store64(two + 8, 1);
+    assert_eq(huff_build_dist(two, 2), 0, "huff builders: a two-code distance tree builds");
+    assert_eq(deflate_decompress(c, fl, out, 4096), 4096, "huff builders: the fixed stream still decodes after it");
+    store64(two, 2);
+    store64(two + 8, 0);
+    assert(huff_build_dist(two, 2) < 0, "huff builders: an incomplete distance tree is refused");
+    assert_eq(deflate_decompress(c, fl, out, 4096), 4096, "huff builders: and the fixed stream still decodes");
+
+    # From cold tables, every allocation huff_build_fixed makes can fail: ERR_OOM, then a clean
+    # retry (2.8.5: SIGSEGV for a failure at the 2nd..4th allocation).
+    var k = 0;
+    var oom_ok = 1;
+    while (k < 12) {
+        _sankoch_reset_tables();
+        _sankoch_alloc_set_fail_at(k);
+        var r = huff_build_fixed();
+        _sankoch_alloc_set_fail_at(0 - 1);
+        if (r != 0 && r != 0 - ERR_OOM) { oom_ok = 0; }
+        if (huff_build_fixed() != 0) { oom_ok = 0; }
+        if (deflate_decompress(c, fl, out, 4096) != 4096) { oom_ok = 0; }
+        k = k + 1;
+    }
+    assert_eq(oom_ok, 1, "huff builders: huff_build_fixed fails cleanly at every allocation and recovers");
+    return 0;
+}
+
+# 2.8.6: codes longer than the 9-bit fast table. The slow path used to compare every symbol at every
+# bit length (15 x 257 checks per symbol here); a valid stream whose literal took a 15-bit code
+# decoded ~1,000x slower than zlib while holding the lock. It is a canonical count/offset decode
+# now. Two hand-built streams decode to the same N 'A's: one with 'A' and end-of-block on 15-bit
+# codes (fourteen fillers take lengths 1..14, so the code is complete), one on 1-bit codes. Both
+# must decode exactly, batch and streaming, and the long-code one may cost at most 40x the short.
+fn _lc_now() {
+    var ts[16];
+    var nr = 228;                                    # clock_gettime: x86_64 228, aarch64 113
+    if (SYS_LSEEK != 8) { nr = 113; }
+    syscall(nr, 3, &ts);                             # CLOCK_THREAD_CPUTIME_ID
+    return load64(&ts) * 1000000000 + load64(&ts + 8);
+}
+
+# Write the dynamic block. long == 1: 'A' and EOB on 15-bit codes; else on 1-bit codes.
+fn _lc_stream(buf, cap, n, long) {
+    var lit[2304];                                   # 288 lengths
+    var i = 0;
+    while (i < 288) { store64(&lit + i * 8, 0); i = i + 1; }
+    if (long == 1) {
+        i = 0;
+        while (i < 14) { store64(&lit + i * 8, i + 1); i = i + 1; }
+        store64(&lit + 65 * 8, 15);
+        store64(&lit + 256 * 8, 15);
+    } else {
+        store64(&lit + 65 * 8, 1);
+        store64(&lit + 256 * 8, 1);
+    }
+    var litc[2304];
+    huff_build_enc_codes(&lit, 257, &litc);
+    var cl[152];                                     # 19 code-length-code lengths: 1..15 on 4 bits,
+    i = 0;                                           # 0 and 18 on 5, 16 and 17 unused (complete)
+    while (i < 19) { store64(&cl + i * 8, 4); i = i + 1; }
+    store64(&cl, 5);
+    store64(&cl + 16 * 8, 0);
+    store64(&cl + 17 * 8, 0);
+    store64(&cl + 18 * 8, 5);
+    var clc[152];
+    huff_build_enc_codes(&cl, 19, &clc);
+    var bw = bw_init(buf, cap);
+    bw_write(bw, 1, 1);                              # BFINAL
+    bw_write(bw, 2, 2);                              # dynamic
+    bw_write(bw, 0, 5);                              # HLIT 257
+    bw_write(bw, 0, 5);                              # HDIST 1
+    bw_write(bw, 15, 4);                             # HCLEN 19
+    var order = "\x10\x11\x12\x00\x08\x07\x09\x06\x0a\x05\x0b\x04\x0c\x03\x0d\x02\x0e\x01\x0f";
+    i = 0;
+    while (i < 19) { bw_write(bw, load64(&cl + load8(order + i) * 8), 3); i = i + 1; }
+    # 257 literal/length lengths, then one distance length (1): zero runs as code 18 (11..138).
+    i = 0;
+    while (i < 258) {
+        var v = 1;
+        if (i < 257) { v = load64(&lit + i * 8); }
+        if (v == 0) {
+            var run = 0;
+            while (i + run < 257 && load64(&lit + (i + run) * 8) == 0 && run < 138) { run = run + 1; }
+            if (run >= 11) {
+                bw_write(bw, load64(&clc + 18 * 8), 5);
+                bw_write(bw, run - 11, 7);
+                i = i + run;
+                continue;
+            }
+        }
+        bw_write(bw, load64(&clc + v * 8), load64(&cl + v * 8));
+        i = i + 1;
+    }
+    var k = 0;
+    while (k < n) { bw_write(bw, load64(&litc + 65 * 8), load64(&lit + 65 * 8)); k = k + 1; }
+    bw_write(bw, load64(&litc + 256 * 8), load64(&lit + 256 * 8));
+    return bw_finish(bw);
+}
+
+fn test_long_codes_decode_in_bounded_work() {
+    var n = 50000;
+    var cap = n * 2 + 1024;
+    var sl = alloc(cap);
+    var ss = alloc(cap);
+    var ll = _lc_stream(sl, cap, n, 1);
+    var ls = _lc_stream(ss, cap, n, 0);
+    var out = alloc(n + 64);
+    var ok = 1;
+    if (deflate_decompress(sl, ll, out, n + 64) != n) { ok = 0; }
+    var i = 0;
+    while (ok == 1 && i < n) { if (load8(out + i) != 65) { ok = 0; } i = i + 1; }
+    assert_eq(ok, 1, "long codes: 50,000 15-bit literals decode (batch)");
+    var ctx = deflate_dec_init(out, n + 64);
+    var q = 0;
+    while (q < ll) {
+        var c = 7;
+        if (c > ll - q) { c = ll - q; }
+        if (deflate_dec_write(ctx, sl + q, c) < 0) { break; }
+        q = q + c;
+    }
+    assert_eq(deflate_dec_finish(ctx), n, "long codes: 50,000 15-bit literals decode (streaming)");
+    assert_eq(deflate_decompress(ss, ls, out, n + 64), n, "long codes: the 1-bit twin decodes");
+    var best_l = 0;
+    var best_s = 0;
+    var r = 0;
+    while (r < 3) {
+        var t = _lc_now();
+        deflate_decompress(sl, ll, out, n + 64);
+        t = _lc_now() - t;
+        if (best_l == 0 || t < best_l) { best_l = t; }
+        t = _lc_now();
+        deflate_decompress(ss, ls, out, n + 64);
+        t = _lc_now() - t;
+        if (best_s == 0 || t < best_s) { best_s = t; }
+        r = r + 1;
+    }
+    assert(best_l < best_s * 40, "long codes: 15-bit codes cost under 40x 1-bit codes");
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_deflate_kraft_validation();
+    test_public_huffman_builders();
+    test_long_codes_decode_in_bounded_work();
     test_deflate_dec_empty();
     test_deflate_dec_hello();
     test_deflate_dec_stored();
@@ -720,4 +1031,5 @@ fn main() {
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

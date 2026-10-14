@@ -37,8 +37,9 @@ improvement (real-source −4.9 % vs level 6). A **cross-block match window**
 (v2.7.4) lets a block's sequences reference matches in prior blocks — so on
 record data (CSV / logs) sankoch's zstd now **beats `zstd -19`** (L9 −44.7 %),
 with single-block output byte-identical and every stream decodable by
-reference `zstd -d` (single-segment frames). The decoder is hardened against
-hostile input (v2.5.6, fuzzed).
+reference `zstd -d` (single-segment frames up to the 512 KiB match window; a
+larger frame declares the window, so `zstd -d` needs no `--long` at any size,
+v2.8.6). The decoder is hardened against hostile input (v2.5.6, fuzzed).
 
 bzip2 is a **full codec** — decode (`bzip2_decompress` / `FORMAT_BZIP2`,
 v2.4.2+) and encode (`bzip2_compress` / `compress(FORMAT_BZIP2, …)`,
@@ -55,7 +56,10 @@ binary-tree match finder** (v2.7.1) over a **256 KB window** (v2.7.2);
 within **~0.2 % of `xz -6`** on inputs that fit the window (was +7 %); a
 speed gap to xz's optimized C persists. `--check=sha256` streams are
 rejected (no SHA-256 primitive — fails closed rather than accept an
-unverified payload).
+unverified payload). Since v2.8.6 the decoder checks the container and the
+LZMA2 framing as liblzma does (the Index against the blocks, size fields,
+padding, the declared dictionary, how each LZMA chunk ends), so it accepts
+and rejects what `xz -d` does.
 
 Brotli is a **full codec** — decode (`brotli_decompress` / `FORMAT_BROTLI`, v2.8.0+) and encode
 (`brotli_compress` / `compress(FORMAT_BROTLI, …)`, v2.8.4+). The decoder implements all of RFC 7932:
@@ -193,6 +197,19 @@ DEFLATE, zlib (incl. FDICT preset-dict, v2.3.6+), gzip (incl.
 concatenated members, v2.3.5+), and LZ4F. xz and bzip2 are batch-only
 (no streaming path).
 
+⚠ A streaming context holds the library lock from `*_init` to `*_finish`
+(the codecs share their tables), so on one thread you finish one context
+before starting another, and across threads every other sankoch call waits
+for it. A context finishes once: since v2.8.6 a second `*_finish`, or a
+write after it, is refused with `-ERR_INVALID_INPUT` rather than releasing
+the lock again.
+
+LZ4F decode (batch and streaming) checks a frame as `lz4 -d` does since
+v2.8.6 (header checksum, reserved bits, block maximum, content size, a
+required end mark and declared content checksum) and decodes linked-block
+frames (the LZ4F library default). One call decodes one frame; bytes after
+it are not read, and concatenated or skippable frames are not decoded yet.
+
 ### DEFLATE sync flush — RFC 7692 `permessage-deflate` (v2.7.9+)
 
 ```cyr
@@ -221,6 +238,15 @@ On the receive side the stream deliberately never ends, so
 API lock — cannot be the length oracle. `deflate_dec_produced` is.
 ⚠ You do still call `deflate_dec_finish` to release the lock when done
 with a ctx, and must ignore its `-ERR_CORRUPT_DATA` return.
+
+⚠ **One direction at a time.** Each open context holds the library lock
+(above), so a long-lived encoder and decoder for the two directions of one
+connection cannot both be open on one thread (the second init waits for
+the first's finish), and across threads one open context stalls every other
+sankoch call: a process serves one compressed connection at a time. The
+decoder's output also only grows, so `dst` must hold the connection's whole
+inbound history, up to the 16 MiB default ceiling. Per-context state that
+lifts all three is on the roadmap (v2.9.5).
 
 ⚠ A sync flush forces a block boundary matches cannot cross, so it costs
 ratio on small messages. That is inherent to RFC 7692. Use level 6: since
@@ -301,7 +327,7 @@ Current test / assertion / line totals live in [`docs/development/state.md`](doc
 | zip.cyr        | PKZIP `.zip` container — in-memory reader + writer, methods 0/8, Zip64, streaming, Unix metadata | full    |
 | zip_methods.cyr | ZIP methods 12/93/95 (bzip2/zstd/xz), kept out of the lean `[lib.zip]` profile        | full    |
 | stream.cyr     | Streaming dispatch (compress + buffered/incremental decompress)                        | full    |
-| runtime.cyr    | Shared runtime seam — `_sankoch_mtx` two-tier lock (agnos no-op) + `_sankoch_alloc` arena + `alloc_reset()` detection | full    |
+| runtime.cyr    | Shared runtime seam — `_sankoch_mtx` lock (a BSS cell since v2.8.6; agnos no-op) + `_sankoch_alloc` arena + `alloc_reset()` detection | full    |
 | lib.cyr        | Include chain + public API + format dispatch + the full bundle's reset dispatcher       | full    |
 | reset_&lt;profile&gt;.cyr | One per alloc-bearing profile: that bundle's `_sankoch_reset_tables` over exactly its modules | one each |
 

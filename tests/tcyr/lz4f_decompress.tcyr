@@ -210,11 +210,206 @@ fn test_ldec_bad_content_checksum() {
 }
 
 # ================================================================
+# 2.8.6: frame checks as `lz4 -d` makes them, batch and streaming
+# ================================================================
+
+var _lk_f = 0;      # the frame under test
+var _lk_out = 0;
+var _lk_want = 0;   # the 70,000-byte input of the reference vector
+
+fn _lk_hexv(c) {
+    if (c >= 97) { return c - 87; }
+    return c - 48;
+}
+
+# The 300-byte LCG period the reference vector repeats (s = s * 1103515245 + 12345 mod 2^31,
+# byte = bits 16..23), tiled to 70,000 bytes.
+fn _lk_input() {
+    var s = 0x2545F491;
+    var i = 0;
+    while (i < 300) {
+        s = (s * 1103515245 + 12345) & 0x7FFFFFFF;
+        store8(_lk_want + i, (s >> 16) & 255);
+        i = i + 1;
+    }
+    while (i < 70000) {
+        store8(_lk_want + i, load8(_lk_want + i - 300));
+        i = i + 1;
+    }
+    return 0;
+}
+
+# `lz4 -B4 -BD --content-size -BX` (lz4 1.10.0) of _lk_input(): FLG 0x5C (linked blocks, block
+# checksums, content size 70,000, content checksum), BD 0x40, a 567-byte first block and a 27-byte
+# second block whose matches reach into the first. 633 bytes.
+fn _lk_vector() {
+    var hx = alloc(1280);
+    _put_str(hx + 0, "04224d185c407011010000000000e337020000ffff1e736ee1c44fe35b59d6f3", 64);
+    _put_str(hx + 64, "8ecec80c77bcd951f7c540363b98fedeeda2ef341c9592cbec9a9876fd552ea7", 64);
+    _put_str(hx + 128, "9c9c0a88acf737db52d7a1926397602d8f33c4d84acb25407ed66739f2254f11", 64);
+    _put_str(hx + 192, "789e89b1d9b6757981abb5d9eb8777b0cad58365fc2004c6302f16a351031329", 64);
+    _put_str(hx + 256, "b98d9d00172f6b241cf9d584e8a01d5c383d83534ccc0754995ffc2c332551e8", 64);
+    _put_str(hx + 320, "f91e9fec7e9cf2d4ba79570b751a2a2c6f261c1b500606e2521d714db0c4e146", 64);
+    _put_str(hx + 384, "ce0ce6ee2533e07ff4e295e4a82c74150847a6342008da69f320cd7ee0199c39", 64);
+    _put_str(hx + 448, "d00ec97d252d0f1f62eee6899a10d4119a587a17d6095ae114226936da5a58bc", 64);
+    _put_str(hx + 512, "98dca21296c256ac9c53a27263fd2318be11ee3b88415e414cd99cedb7c0efc4", 64);
+    _put_str(hx + 576, "be2ec9238f2a8d1d39cb21161a2b38210c295c194fe7be8134ffbe1c8f83384c", 64);
+    _put_str(hx + 640, "dabb2c01ffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 704, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 768, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 832, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 896, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 960, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 1024, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 1088, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 64);
+    _put_str(hx + 1152, "ffffffbb505ffc2c3325d7c011641b0000000f78ffffffffffffffffffffffff", 64);
+    _put_str(hx + 1216, "ffffffffffff69502004c6302fbbe76b480000000056b4e232", 50);
+    var i = 0;
+    while (i < 633) {
+        store8(_lk_f + i, (_lk_hexv(load8(hx + 2 * i)) << 4) | _lk_hexv(load8(hx + 2 * i + 1)));
+        i = i + 1;
+    }
+    return 633;
+}
+
+# Rewrite the header checksum after a descriptor edit: byte 2 of xxHash32 over FLG .. dict id.
+fn _lk_fix_hc(dlen) {
+    store8(_lk_f + 4 + dlen, (xxhash32(_lk_f + 4, dlen) >> 8) & 255);
+    return 0;
+}
+
+# Streaming decode of _lk_f[0..n) in `chunk`-byte writes; the finish verdict (bytes or error).
+fn _lk_stream(n, chunk, cap) {
+    var ctx = lz4f_dec_init(_lk_out, cap);
+    if (ctx == 0) { return 0 - 999; }
+    var p = 0;
+    while (p < n) {
+        var c = chunk;
+        if (c > n - p) { c = n - p; }
+        if (lz4f_dec_write(ctx, _lk_f + p, c) < 0) { break; }
+        p = p + c;
+    }
+    return lz4f_dec_finish(ctx);
+}
+
+fn _lk_same(n) {
+    if (n != 70000) { return 0; }
+    var i = 0;
+    while (i < 70000) {
+        if (load8(_lk_out + i) != load8(_lk_want + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# Both paths (batch, then streaming in 1-, 7- and whole-frame writes) must reach `want`.
+fn _lk_expect(n, want, label) {
+    var r = lz4f_decompress(_lk_f, n, _lk_out, 80000);
+    if (want == 70000) { assert_eq(_lk_same(r), 1, label); } else { assert_eq(r, want, label); }
+    var chunks = 0;
+    while (chunks < 3) {
+        var ch = n;
+        if (chunks == 0) { ch = 1; }
+        if (chunks == 1) { ch = 7; }
+        var s = _lk_stream(n, ch, 80000);
+        if (want == 70000) { assert_eq(_lk_same(s), 1, label); } else { assert_eq(s, want, label); }
+        chunks = chunks + 1;
+    }
+    return 0;
+}
+
+fn test_lz4f_frame_conformance() {
+    _lk_f = alloc(70000);
+    _lk_out = alloc(80000);
+    _lk_want = alloc(70000);
+    _lk_input();
+    var n = _lk_vector();
+    var dl = 10;   # descriptor: FLG, BD, 8-byte content size
+    _lk_expect(n, 70000, "lz4f: linked-block lz4 CLI vector decodes");
+
+    # Header checksum.
+    store8(_lk_f + 14, load8(_lk_f + 14) ^ 1);
+    _lk_expect(n, 0 - ERR_CHECKSUM_MISMATCH, "lz4f: header checksum checked");
+    _lk_vector();
+
+    # FLG reserved bit 1, then BD reserved bits (each with a correct header checksum).
+    store8(_lk_f + 4, 0x5E);
+    _lk_fix_hc(dl);
+    _lk_expect(n, 0 - ERR_CORRUPT_DATA, "lz4f: FLG reserved bit rejected");
+    _lk_vector();
+    store8(_lk_f + 5, 0x41);
+    _lk_fix_hc(dl);
+    _lk_expect(n, 0 - ERR_CORRUPT_DATA, "lz4f: BD reserved bit 0 rejected");
+    store8(_lk_f + 5, 0xC0);
+    _lk_fix_hc(dl);
+    _lk_expect(n, 0 - ERR_CORRUPT_DATA, "lz4f: BD reserved bit 7 rejected");
+    _lk_vector();
+
+    # Content size must equal the output.
+    store8(_lk_f + 6, 0x71);
+    _lk_fix_hc(dl);
+    _lk_expect(n, 0 - ERR_CORRUPT_DATA, "lz4f: content size 70,001 rejected for 70,000 bytes");
+    _lk_vector();
+
+    # Marked independent, the second block's matches into the first are out of range.
+    store8(_lk_f + 4, 0x7C);
+    _lk_fix_hc(dl);
+    _lk_expect(n, 0 - ERR_MATCH_OUT_OF_RANGE, "lz4f: same blocks marked independent rejected");
+    _lk_vector();
+
+    # Truncation: no content checksum, no end mark, mid-block, header only.
+    _lk_expect(n - 4, 0 - ERR_CORRUPT_DATA, "lz4f: frame without its content checksum rejected");
+    _lk_expect(n - 8, 0 - ERR_CORRUPT_DATA, "lz4f: frame without its end mark rejected");
+    _lk_expect(n - 20, 0 - ERR_CORRUPT_DATA, "lz4f: frame cut inside a block rejected");
+    _lk_expect(15, 0 - ERR_CORRUPT_DATA, "lz4f: header alone rejected");
+
+    # A block that decodes past the 64 KiB block maximum: 'a', a 65,531-byte match at offset 1,
+    # then 4 or 5 closing literals (65,536 decodes, 65,537 does not). FLG 0x60: independent, no checksums.
+    var k = 0;
+    while (k < 2) {
+        var f = _lk_f;
+        store32(f, LZ4F_MAGIC);
+        store8(f + 4, 0x60);
+        store8(f + 5, 0x40);
+        _lk_fix_hc(2);
+        var b = f + 11;
+        var p = 0;
+        store8(b + p, 0x1F); p = p + 1;     # 1 literal, match length 15 + 4 + extension
+        store8(b + p, 97); p = p + 1;
+        store8(b + p, 1); store8(b + p + 1, 0); p = p + 2;
+        var ext = 65531 - 19;
+        while (ext >= 255) { store8(b + p, 255); p = p + 1; ext = ext - 255; }
+        store8(b + p, ext); p = p + 1;
+        var tail = 4 + k;
+        store8(b + p, tail << 4); p = p + 1;
+        var t = 0;
+        while (t < tail) { store8(b + p, 98); p = p + 1; t = t + 1; }
+        store32(f + 7, p);
+        store32(b + p, 0);
+        var fl = 11 + p + 4;
+        var want = 65536;
+        if (k == 1) { want = 0 - ERR_CORRUPT_DATA; }
+        assert_eq(lz4f_decompress(f, fl, _lk_out, 80000), want, "lz4f: block maximum (batch)");
+        assert_eq(_lk_stream(fl, 7, 80000), want, "lz4f: block maximum (streaming)");
+        if (k == 0) {
+            # No content checksum or size to catch it: only the end mark tells this cut frame apart.
+            assert_eq(lz4f_decompress(f, fl - 4, _lk_out, 80000), 0 - ERR_CORRUPT_DATA,
+              "lz4f: checksum-less frame without its end mark rejected (batch)");
+            assert_eq(_lk_stream(fl - 4, 7, 80000), 0 - ERR_CORRUPT_DATA,
+              "lz4f: checksum-less frame without its end mark rejected (streaming)");
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+# ================================================================
 # main
 # ================================================================
 
 fn main() {
     _test_init();
+    test_lz4f_frame_conformance();
     test_ldec_short_roundtrip();
     test_ldec_byte_at_a_time();
     test_ldec_64kb_single_block();
@@ -228,4 +423,5 @@ fn main() {
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

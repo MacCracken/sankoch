@@ -115,6 +115,94 @@ fn test_xz_encode_public_api() {
 # main
 # ================================================================
 
+# 2.8.6 (closeout review): the encoder's chunking and window invariants had no test. The largest
+# input was 90,000 bytes: nothing crossed the 2,000,000-byte uncompressed or ~60 KB compressed chunk
+# cut, the 256 KiB window, or 2 MiB. Self round-trips catch an over-reaching match only since the
+# decoder enforces the declared dictionary (2.8.6), as liblzma does.
+
+# Round-trip one input, one verdict per check (not one assertion per byte). Returns clen.
+fn _xz_rt_once(src, n, label) {
+    var cap = n + n / 50 + 8192;
+    var comp = alloc(cap);
+    var clen = xz_compress(src, n, comp, cap);
+    assert(clen > 0, label);
+    var out = alloc(n + 16);
+    assert_eq(xz_decompress(comp, clen, out, n + 16), n, label);
+    assert_eq(crc32(out, n), crc32(src, n), label);
+    return clen;
+}
+
+# LZMA2 chunks in the one-block stream at comp: the count, and whether every chunk after the first
+# continues the state (control 0x80..0x9F) rather than resetting it.
+var _xz_chunks_continue = 0;
+fn _xz_chunk_count(comp) {
+    var p = 12 + (load8(comp + 12) + 1) * 4;
+    var n = 0;
+    _xz_chunks_continue = 1;
+    loop {
+        var c = load8(comp + p);
+        if (c == 0) { break; }
+        if (c < 0x80) { return 0 - 1; }   # the encoder writes no uncompressed chunks
+        if (n > 0 && c >= 0xA0) { _xz_chunks_continue = 0; }
+        var packed = ((load8(comp + p + 3) << 8) | load8(comp + p + 4)) + 1;
+        var h = 5;
+        if (c >= 0xC0) { h = 6; }
+        p = p + h + packed;
+        n = n + 1;
+    }
+    return n;
+}
+
+fn test_xz_encode_chunks_and_window() {
+    # 2,200,000 zeros: past the 2,000,000-byte uncompressed chunk cut.
+    var n = 2200000;
+    var z = alloc(n);
+    var i = 0;
+    while (i < n) { store8(z + i, 0); i = i + 1; }
+    var cap = n + 8192;
+    var comp = alloc(cap);
+    var clen = xz_compress(z, n, comp, cap);
+    assert(clen > 0, "xz enc: 2.2 MB of zeros");
+    assert_eq(_xz_chunk_count(comp), 2, "xz enc: 2.2 MB of zeros is two chunks");
+    assert_eq(_xz_chunks_continue, 1, "xz enc: the second chunk continues the state");
+    _xz_rt_once(z, n, "xz enc: 2.2 MB of zeros round-trips");
+
+    # 300,000 pseudo-random bytes: several chunks cut at the compressed soft cap.
+    var r = alloc(300000);
+    var x = 0x2545F491;
+    i = 0;
+    while (i < 300000) {
+        x = (x * 6364136223846793005 + 1442695040888963407);
+        store8(r + i, (x >> 33) & 255);
+        i = i + 1;
+    }
+    clen = xz_compress(r, 300000, comp, cap);
+    assert(clen > 0, "xz enc: 300 KB random");
+    assert(_xz_chunk_count(comp) >= 4, "xz enc: 300 KB random spans at least four chunks");
+    assert_eq(_xz_chunks_continue, 1, "xz enc: every later chunk continues the state");
+    _xz_rt_once(r, 300000, "xz enc: 300 KB random round-trips");
+
+    # The window edge: 262,144 random bytes, then their first 4,096 again, at distance exactly
+    # 262,144 (the window and the declared 256 KiB dictionary). The match must be taken: the
+    # repeat costs far less than 4,096 bytes.
+    var w = alloc(266240);
+    i = 0;
+    while (i < 262144) { store8(w + i, load8(r + i)); i = i + 1; }
+    while (i < 266240) { store8(w + i, load8(w + i - 262144)); i = i + 1; }
+    var cw = _xz_rt_once(w, 266240, "xz enc: a repeat at the window distance round-trips");
+    var cr = _xz_rt_once(w, 262144, "xz enc: the random half alone");
+    assert(cw - cr < 200, "xz enc: the 4,096-byte repeat at distance 262,144 is matched");
+
+    # Just past it: a repeat at distance 264,000 is out of the window, so it must NOT be matched
+    # (it would exceed the declared dictionary, which `xz -d` and, since 2.8.6, sankoch reject).
+    var v = alloc(268096);
+    i = 0;
+    while (i < 264000) { store8(v + i, load8(r + (i % 300000))); i = i + 1; }
+    while (i < 268096) { store8(v + i, load8(v + i - 264000)); i = i + 1; }
+    _xz_rt_once(v, 268096, "xz enc: a repeat beyond the window round-trips");
+    return 0;
+}
+
 fn main() {
     _test_init();
     test_xz_encode_empty();
@@ -125,8 +213,10 @@ fn main() {
     test_xz_encode_pseudorandom();
     test_xz_encode_large();
     test_xz_encode_public_api();
+    test_xz_encode_chunks_and_window();
     return assert_summary();
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

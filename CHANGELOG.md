@@ -7,8 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.6] — 2026-10-13
+
+**The 2.8.x-closeout P(-1) pass** — the hardening release that closes the 2.8.x line: six adversarial
+reviews (the 2.7.x xz and zstd encoders, the Brotli decoder, the runtime seam, the CRC-32 fold, the
+DEFLATE 2.7.9 additions), external research, and reference differentials. **2 HIGH · 10 MEDIUM · 19
+LOW · 12 INFO; both HIGHs, 9 MEDIUMs, 16 LOWs and 4 INFOs fixed here, each of the rest pinned to a
+2.9.x release** ([audit dossier](docs/audit/2026-10-13-2.8.x-closeout.md)). No public signature
+changes; the LZ4F and xz decoders now reject what `lz4 -d` and `xz -d` reject, and accept what they
+accept. The 49 SIZE lines are identical.
+
+### Security
+
+- **HIGH — the zip streaming writer called through a byte offset** (C-01). `zip_enc_begin` kept the
+  member's local-header offset in the writer slot that has held its allocator since 2.7.7, so
+  streaming any member but the first made the next name copy or record-table growth call
+  `alloc_via(offset)`: a SIGSEGV, or for an offset of 4 MiB or more an indirect call through the
+  (non-PIE) program image; arena-backed writers silently lost their arena. The offset has its own
+  slot (`ZIP_W_CTX` 128 → 136).
+- **HIGH — the API lock could be created twice** (C-02). `_sankoch_mtx` was an arena pointer made by
+  `mutex_new()` on first use and zeroed by the arena guard on a detected `alloc_reset()`, so threads
+  arriving together each made a mutex and ran inside the critical section at once (measured: hangs and
+  wrong round-trips). It is now one 8-byte BSS cell, which every `lib/sync.cyr` backend treats as
+  unlocked when zero, and the arena guard runs under it. This also ends a crash when `mutex_new()`
+  hit a real OOM, and a guard nested in a locked call zeroing the held mutex.
+- **The public Huffman / LZ77 builders take the lock** (C-08). `huff_build_litlen` / `_dist` / `_cl` /
+  `_fixed`, `huff_compute_lengths` and `lz77_init` rewrote the shared tables without it, under a
+  locked inflate in another thread (289 of 300 decodes wrong). Each is now lock + `_inner` + unlock;
+  the codecs call the `_inner` builders (18 call sites). The `_inner` builders fail with ERR_OOM
+  where the public ones wrote through NULL (C-24), and a distance build drops the cached fixed tree,
+  which a later fixed block used to decode with (C-23).
+- **A streaming context finishes once** (C-21, C-22). A second `*_finish` released the lock again, out
+  from under whichever context held it; write, flush and reset ran on a finished context without the
+  lock; a gzip decoder finished between members could start the next member and decode unlocked; and
+  `zip_enc_end` after a failed inner finish unlocked twice. Every finish of the deflate, LZ4F and gzip
+  streaming contexts now closes its context on every exit, and a closed context is refused.
+- **DEFLATE decodes long codes in bounded work** (C-07). Codes longer than the 9-bit fast table were
+  matched by comparing every symbol at every length (15 × 286 checks per symbol): a valid 937 KB
+  stream with a 15-bit literal code took 3.4 s against zlib's 3 ms, holding the lock. The slow path is
+  zlib `puff.c`'s canonical count/offset decode now, from tables `_huff_build` writes into the existing
+  `codes` slabs: 0.155 s. Decoded bytes and verdicts are unchanged (103,000-stream zlib differential).
+- **Kraft completeness** (C-04, carried since 2.7.14). `_huff_build` validates a code-length set as
+  zlib's `inflate_table` does (over-subscribed and incomplete sets rejected; a lone 1-bit litlen or
+  distance code and an empty set allowed), empties the table on rejection, and every DEFLATE caller
+  checks the result: five classes of stream that zlib rejects no longer decode. `hdist` 31 / 32 is
+  rejected like zlib (C-31).
+- **OOM paths** (C-05, C-06, C-09): `stream_compress_init` / `stream_decompress_init_inc` no longer
+  return holding the lock when their wrapper allocation fails; the zstd encoder no longer stores
+  through a NULL `_ze_pnorm` or uses NULL predefined FSE tables after a partial failure; and its
+  optimal parser's 15 arrays (levels 7–9) come through the allocation seam, each checked, instead of
+  raw `alloc()` unchecked behind a flag that latched on failure.
+
 ### Changed
 
+- **LZ4F decode is as strict as `lz4 -d`** (`src/lz4_decode.cyr` batch, `src/lz4.cyr` streaming; C-03,
+  C-13, C-14):
+  - a frame cut before its end mark, or before a content checksum it declares, is ERR_CORRUPT_DATA
+    (the batch decoder returned the prefix as a success);
+  - the header checksum is checked (ERR_CHECKSUM_MISMATCH), and BD's reserved bits, the declared
+    content size, and a block decoding past the declared block maximum are rejected;
+  - **linked-block frames decode** (FLG bit 5 clear, the LZ4F library's default; they were rejected):
+    a block may match into the frame decoded so far. `lz4_decompress` is now a wrapper over the shared
+    `_lz4_dec_block` core, unchanged in behaviour. Bytes after the frame are still not read.
+- **xz decode is as strict as liblzma** (`src/xz.cyr`; C-15 to C-18):
+  - the Index must describe the decoded blocks (count, unpadded and uncompressed sizes, as liblzma's
+    `index_hash`), and its padding must be zero;
+  - block-header size fields must match, reserved flag bits are unsupported options, header padding
+    must be zero, the dictionary byte must be ≤ 40, and the header's fields must fit it;
+  - an LZMA chunk must decode to exactly its size (no match past its end), consume exactly its packed
+    bytes, and leave the range decoder at `code == 0`;
+  - an uncompressed chunk that resets the dictionary requires new properties next; and **the LZMA state
+    carries across uncompressed chunks** (it was zeroed, which no reference does: a valid stream was
+    rejected);
+  - a match may not reach past the dictionary the block declares, rounded as liblzma rounds it.
+- **zstd frames larger than the 512 KiB match window declare it** (C-10): a Window_Descriptor instead
+  of a single-segment header (whose window is the whole content). A frame over 128 MiB no longer needs
+  `zstd -d --long`; such frames grow by one byte.
+- **CRC-32** (`src/checksum.cyr`; C-25, C-27, C-32): the fold and the CPUID helper push and pop rdi /
+  rsi (callee-saved on Win64) around their asm, outside the provenance markers; the fold dispatch is
+  compiled for x86 only; `crc32_init_table` builds its table in a local and publishes it last.
+
+### Removed
+
+- Dead code: `_ze_lz_reconstruct` (no callers; it wrote without a bound), the never-read
+  `_dyn_lit_fast_tmp` / `_dyn_dist_fast_tmp` slabs (8 KB), `_zip_led_new` and `_zip_cstr` (superseded
+  by their 2.7.7 `_a` forms), `_zo_boff`.
+- A `while (1)` → `loop { … }` sweep (17 sites in bzip2, deflate, gzip, huffman, lz4, xz, zlib), proven
+  by a digest of every codec's output and verdicts, identical before and after.
+
+### Tests
+
+- **New suite `oom_matrix.tcyr`**: 24 round-trip operations, every allocation each makes from cold
+  tables faulted in turn, then retried without a reset: the retry must succeed (it found C-05 / C-06).
+  A level 9 zstd compress joined it with C-09.
+- **Every suite and harness exits nonzero on failure** (C-19, C-20): five fuzz harnesses returned 0, and
+  exit status keeps 8 bits, so 256 failures read as success; nonzero is clamped to 1 (38 files).
+- New cells (31 suites, 4,500,683 → 4,500,978 assertions): Kraft vectors with zlib's verdicts and the
+  `_dyn_header_bits` bound; the long-code decode bound; the public builders (a thread race, the fixed
+  cache, OOM at every allocation); `test_stream_finishes_once` over eight streaming APIs; the lock
+  under 4 threads after a detected reset; the zip writer streaming after a member and unlocking once;
+  LZ4F frame conformance (a linked-block `lz4` CLI vector and its mutants); 24 xz vectors with
+  `xz -d`'s verdicts, including a 3,000,064-byte state-carry stream; xz encoder streams past 2 MiB,
+  across chunks and at the window edge; the zstd window descriptor.
+- **Mutation-checked**: every new gate was removed or weakened and seen to fail its test.
+
+### Docs
+
+- [`docs/audit/2026-10-13-2.8.x-closeout.md`](docs/audit/2026-10-13-2.8.x-closeout.md) (the dossier),
+  [`docs/benchmarks/2026-10-13-2.8.6-closeout.md`](docs/benchmarks/2026-10-13-2.8.6-closeout.md).
+- **The roadmap is a pinned 2.9.x ladder**: everything that was in the Backlog and every deferred
+  finding has a release.
 - **GPU texture compression moved to mabda** ([ADR 0004](docs/adr/0004-gpu-texture-compression-in-mabda.md)).
   The roadmap's 2.8.6 item (BC1–BC7 / ASTC encode) started with a home decision; the decision is
   mabda, which owns the texture formats, the DDS / KTX2 loaders, the capability masks and compute.
@@ -18,6 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/development/issues/2026-10-13-gpu-texture-compression-encoder.md` plus a backlog line in its
   roadmap. The closeout P(-1) pass becomes 2.8.6 and ▶ Next. Docs only: no source, test or bundle
   change.
+- README: the RFC 7692 limits (one lock from init to finish), LZ4F linked blocks, the stricter LZ4F /
+  xz decoders. Architecture 002, 006, ADR 0003 and the `.S` header: the lock is BSS; Win64's rdi / rsi.
 
 ## [2.8.5] — 2026-10-13
 

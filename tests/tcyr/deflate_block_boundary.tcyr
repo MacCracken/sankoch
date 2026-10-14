@@ -88,3 +88,5 @@ test_three_blocks();
 test_gzip_wrapper_over_block();
 
 var r = assert_summary();
+if (r != 0) { r = 1; }   # exit keeps 8 bits: 256 failures would read as 0
+syscall(60, r);

@@ -1,7 +1,7 @@
 # sankoch — CRC-32 PCLMULQDQ fold differential fuzz harness (2.8.5)
 #
 # The x86_64 carry-less-multiply fold (_crc32_clmul, hand-transcribed machine code) must agree with
-# the portable slice-by-8 table on every input: fold(x) == table(x). 6,000 cases, about 1 s:
+# the portable slice-by-8 table on every input: fold(x) == table(x). 6,000 cases, about 5 s:
 #   1. 3,000 random buffers: length 0..4,096 (four in five) or up to 1 MiB, any byte offset (the fold
 #      loads unaligned), any 32-bit starting register, and seven byte distributions (uniform, zeros,
 #      0xFF, small alphabets, runs, ascending, a repeated short period);
@@ -125,4 +125,5 @@ fn main() {
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

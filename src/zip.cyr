@@ -257,21 +257,6 @@ fn _zip_led_new_a(a, n) {
     return led;
 }
 
-fn _zip_led_new(n) {
-    var cap = 64;
-    while (cap < n * 4) { cap = cap * 2; }
-    var led = _sankoch_alloc(24);
-    if (led == 0) { return 0; }
-    var b = _sankoch_alloc(cap * 8);
-    if (b == 0) { return 0; }
-    var i = 0;
-    while (i < cap) { store64(b + i * 8, 0); i = i + 1; }
-    store64(led + 0, cap);
-    store64(led + 8, 0);
-    store64(led + 16, b);
-    return led;
-}
-
 fn _zip_led_add(led, h) {
     if (h == 0) { h = 1; }
     var cap = load64(led + 0);
@@ -352,15 +337,6 @@ fn _zip_path_hash(path, led) {
 # Copy `n` bytes at src into a fresh NUL-terminated cstr. 0 on allocation failure.
 fn _zip_cstr_a(a, src, n) {
     var b = _sankoch_alloc_via(a, n + 1);
-    if (b == 0) { return 0; }
-    var i = 0;
-    while (i < n) { store8(b + i, load8(src + i)); i = i + 1; }
-    store8(b + n, 0);
-    return b;
-}
-
-fn _zip_cstr(src, n) {
-    var b = _sankoch_alloc(n + 1);
     if (b == 0) { return 0; }
     var i = 0;
     while (i < n) { store8(b + i, load8(src + i)); i = i + 1; }
@@ -1100,20 +1076,22 @@ fn zip_add(w, name, data, len, method) {
 # it takes sizes from the central directory — so this completes the pair.)
 #
 # In-progress state lives at the tail of the writer context, so a writer that never
-# streams pays nothing: +56 name copy, +64 local-header offset, +72 payload offset,
-# +80 method, +88 CRC state, +96 uncompressed running length, +104 inner encoder ctx,
-# +112 mode, +120 mtime.
-# Writer context — 128 bytes, and every slot is spoken for. Written down in 2.7.7 after
+# streams pays nothing: +56 name copy, +72 payload offset, +80 method, +88 CRC state,
+# +96 uncompressed running length, +104 inner encoder ctx, +112 mode, +120 mtime,
+# +128 local-header offset.
+# Writer context — 136 bytes, and every slot is spoken for. Written down in 2.7.7 after
 # adding the allocator at +64 required grepping `w + N` across two files to find the one
-# gap; a wrong guess would have silently aliased the streaming encoder's state.
+# gap; a wrong guess would have silently aliased the streaming encoder's state. That guess
+# was wrong: +64 was also the streamed member's local-header offset, so streaming any member
+# but the first replaced the allocator with a byte offset (2.8.6 moved the offset to +128).
 #
 #   +0   dst              +8   dst_cap          +16  pos            +24  member count
 #   +32  record table     +40  sticky error     +48  record cap     +56  streaming flag
 #   +64  allocator (2.7.7)
 #   --- streamed-member state, live only between zip_enc_begin and zip_enc_end ---
 #   +72  payload offset   +80  method           +88  crc32 state    +96  bytes written
-#   +104 inner encoder    +112 mode             +120 mtime
-var ZIP_W_CTX = 128;
+#   +104 inner encoder    +112 mode             +120 mtime          +128 local-header offset
+var ZIP_W_CTX = 136;
 
 fn _zip_streaming(w) {
     if (load64(w + 56) != 0) { return 1; }
@@ -1184,7 +1162,7 @@ fn zip_enc_begin(w, name, method, mode, mtime) {
         if (inner == 0) { store64(w + 40, 0 - ERR_OOM); return 0 - ERR_OOM; }
     }
     store64(w + 56, namecopy);
-    store64(w + 64, hdr);
+    store64(w + 128, hdr);
     store64(w + 72, body);
     store64(w + 80, method);
     store64(w + 88, st);
@@ -1231,7 +1209,7 @@ fn zip_enc_end(w) {
     if (_zip_streaming(w) == 0) { return 0 - ERR_INVALID_INPUT; }
     var dst = load64(w + 0);
     var cap = load64(w + 8);
-    var hdr = load64(w + 64);
+    var hdr = load64(w + 128);
     var body = load64(w + 72);
     var method = load64(w + 80);
     var ulen = load64(w + 96);
@@ -1240,6 +1218,9 @@ fn zip_enc_end(w) {
     var csize = 0;
     if (method == ZIP_DEFLATE) {
         var fin = deflate_enc_finish(load64(w + 104));
+        # finish released the lock and ended the encoder whatever it returned: forget it, so
+        # no later error path (here or in _zip_abandon) finishes it, and unlocks, a second time.
+        store64(w + 104, 0);
         if (fin < 0) { store64(w + 40, fin); return fin; }
         csize = fin;
     } else {

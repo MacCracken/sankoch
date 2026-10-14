@@ -1,16 +1,16 @@
-# sankoch — .xz container + LZMA2 / LZMA decode (decode-only)
+# sankoch — .xz container + LZMA2 / LZMA de/compress
 #
-# Decompresses the .xz stream format (the common modern source-tarball
-# container). Decode only — no encoder. Added at 2.4.0 to unblock
-# takumi `.tar.xz` extraction.
+# The .xz stream format (the common modern source-tarball container). Decode
+# added at 2.4.0 to unblock takumi `.tar.xz` extraction; the encoder (2.4.1;
+# optimal parse 2.7.0, BT4 2.7.1, 256 KB window 2.7.2) is in the second half.
+# Since 2.8.6 the decoder checks the container and LZMA2 framing as liblzma does.
 #
 # Layout owned here:
 #   - .xz container parse: stream header / block header(s) / index /
 #     stream footer, with CRC-32 / CRC-64 check-field validation
-#     (checksum.cyr supplies both; "none" and SHA-256 checks are parsed
-#     but not verified — SHA-256 is excluded by roadmap.md § 2.4.0
-#     (CRC-32 / CRC-64 only); the per-block header CRC32 still gates
-#     structural integrity).
+#     (checksum.cyr supplies both; "none" carries no check, and SHA-256 is
+#     rejected since 2.5.9 — no SHA-256 primitive here; the per-block header
+#     CRC32 still gates structural integrity).
 #   - LZMA2 chunk framing: control bytes, dict/state/props resets,
 #     uncompressed chunks, LZMA chunks.
 #   - LZMA decode: range (arithmetic) decoder + the literal/match state
@@ -76,7 +76,12 @@ var _xz_dst = 0;
 var _xz_dp = 0;
 var _xz_dst_cap = 0;
 var _xz_dict_start = 0;  # dp at the last dict reset (match floor)
+var _xz_dict_max = 0;    # the block's dictionary size as liblzma sizes it (2.8.6; match distance cap)
 var _xz_ratio_max = 0;   # ratio-cap output ceiling (0 = disabled); 2.5.3
+# The current stream's blocks as its Index must list them (2.8.6): count, the sum of unpadded sizes,
+# the sum of uncompressed sizes, and a CRC-32 register over the (unpadded, uncompressed) pairs. BSS,
+# rebuilt per stream; not arena memory.
+var _xz_ixb: i64[4];
 
 # ============================================================
 # Range decoder (LZMA arithmetic coder)
@@ -261,6 +266,7 @@ fn _xz_decode_literal(): i64 {
 fn _xz_copy_match(len): i64 {
     var dist = _xz_rep0 + 1;
     if (_xz_dp - dist < _xz_dict_start) { return 0 - ERR_MATCH_OUT_OF_RANGE; }
+    if (dist > _xz_dict_max) { return 0 - ERR_MATCH_OUT_OF_RANGE; }   # past the declared dictionary
     if (_xz_dp + len > _xz_dst_cap) { return 0 - ERR_BUFFER_TOO_SMALL; }
     if (_xz_dp + len > DECOMPRESS_MAX_OUTPUT) { return 0 - ERR_OUTPUT_LIMIT; }
     if (_xz_ratio_max != 0 && _xz_dp + len > _xz_ratio_max) { return 0 - ERR_RATIO_LIMIT; }
@@ -395,7 +401,7 @@ fn _xz_set_props(d): i64 {
 fn _xz_lzma2_run(): i64 {
     var have_props = 0;
     var need_dict_reset = 1;
-    while (1) {
+    loop {
         if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
         var ctrl = load8(_xz_in + _xz_in_pos);
         _xz_in_pos = _xz_in_pos + 1;
@@ -403,10 +409,12 @@ fn _xz_lzma2_run(): i64 {
         if (ctrl == 0) { return 0; }   # end of LZMA2 stream
 
         if (ctrl < 3) {
-            # Uncompressed chunk: ctrl 1 = reset dict, 2 = no reset.
+            # Uncompressed chunk: ctrl 1 = reset dict, 2 = no reset. A dictionary reset also means
+            # the next LZMA chunk must carry new properties (ctrl >= 0xC0), as in liblzma.
             if (ctrl == 1) {
                 _xz_dict_start = _xz_dp;
                 need_dict_reset = 0;
+                have_props = 0;
             } else {
                 if (need_dict_reset != 0) { return 0 - ERR_CORRUPT_DATA; }
             }
@@ -422,9 +430,9 @@ fn _xz_lzma2_run(): i64 {
                 _xz_in_pos = _xz_in_pos + 1;
                 i = i + 1;
             }
-            # After raw data the LZMA state is stale; the next LZMA chunk
-            # is required by the format to carry a state reset.
-            _xz_state = 0;
+            # The LZMA state, reps and probabilities carry across raw data: an LZMA chunk with no
+            # reset (ctrl 0x80..0x9F) continues them, as liblzma and xz-embedded decode it. (Before
+            # 2.8.6 the state was zeroed here, which no reference does.)
             continue;
         }
 
@@ -461,13 +469,17 @@ fn _xz_lzma2_run(): i64 {
         # Range-decode `unpacked` bytes from the next `packed` input bytes.
         if (_xz_in_pos + packed > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
         var chunk_start = _xz_in_pos;
+        var chunk_out = _xz_dp;
         _xz_rc_end = chunk_start + packed;
         _xz_rc_init();
         var rr = _xz_lzma_run(unpacked);
         if (rr < 0) { return rr; }
-        # Advance past the whole compressed chunk regardless of exact
-        # range-coder consumption.
-        _xz_in_pos = chunk_start + packed;
+        # 2.8.6, liblzma's chunk-end rules: the chunk decodes to exactly `unpacked` bytes (no match
+        # runs past its end), the range decoder finishes with code == 0, and it has consumed exactly
+        # `packed` bytes. (Every bit decode normalizes afterwards, so the byte liblzma reads with its
+        # final normalize is already in.)
+        if (_xz_dp != chunk_out + unpacked) { return 0 - ERR_CORRUPT_DATA; }
+        if (_xz_rc_code != 0 || _xz_in_pos != _xz_rc_end) { return 0 - ERR_CORRUPT_DATA; }
     }
     return 0;
 }
@@ -532,6 +544,21 @@ fn _xz_verify_check(check_type, at, data, dlen): i64 {
     return 0 - ERR_UNSUPPORTED_FORMAT;
 }
 
+# Fold one block's (unpadded size, uncompressed size) into an Index digest at st (4 i64 slots): the
+# count, both sums, and a CRC-32 register over the pairs as 16 little-endian bytes each. The blocks as
+# decoded and the records the Index lists build one each, and they must agree, as liblzma's
+# index_hash checks; no per-block list is kept.
+fn _xz_ix_add(st, unp, unc): i64 {
+    var pair[16];
+    store64(&pair, unp);
+    store64(&pair + 8, unc);
+    store64(st, load64(st) + 1);
+    store64(st + 8, load64(st + 8) + unp);
+    store64(st + 16, load64(st + 16) + unc);
+    store64(st + 24, _crc32_fold(load64(st + 24), &pair, 16));
+    return 0;
+}
+
 # Parse + decode one .xz block starting at _xz_in_pos. check_type from
 # the stream header. Returns decoded length (cumulative dp advance is the
 # real output); sets _xz_in_pos past the block's check field.
@@ -551,11 +578,15 @@ fn _xz_decode_block(check_type): i64 {
     var flags = load8(_xz_in + _xz_in_pos);
     _xz_in_pos = _xz_in_pos + 1;
     var num_filters = (flags & 3) + 1;
+    if ((flags & 0x3C) != 0) { return 0 - ERR_UNSUPPORTED_FORMAT; }   # reserved flag bits
+    var hdr_end = block_start + header_size - 4;   # the header CRC32 starts here
 
-    # Optional compressed / uncompressed size fields (varints, ignored —
-    # we drive decode off the LZMA2 end marker and the block check).
-    if ((flags & 64) != 0) { _xz_varint(); }
-    if ((flags & 128) != 0) { _xz_varint(); }
+    # Optional compressed / uncompressed size fields. Decode runs off the LZMA2 end marker and the
+    # block check; a size the header declares must then match (2.8.6, as liblzma requires).
+    var hdr_csize = 0 - 1;
+    var hdr_usize = 0 - 1;
+    if ((flags & 64) != 0) { hdr_csize = _xz_varint(); }
+    if ((flags & 128) != 0) { hdr_usize = _xz_varint(); }
     if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
 
     # Filter flags. Only a single LZMA2 filter (ID 0x21) is supported.
@@ -564,12 +595,25 @@ fn _xz_decode_block(check_type): i64 {
     var prop_size = _xz_varint();
     if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
     if (filter_id != 0x21) { return 0 - ERR_UNSUPPORTED_FORMAT; }
-    # LZMA2 properties = 1 byte (dictionary-size code). We retain the full
-    # output as the window, so the dict-size value itself is not needed.
+    # LZMA2 properties = 1 byte (dictionary-size code; codes above 40 are invalid). The whole output
+    # is kept as the window, but a match may not reach past the declared dictionary (2.8.6): liblzma
+    # rejects one, so accepting it would let an encoder that over-reaches pass its own round trip
+    # and fail `xz -d`. Its size here is liblzma's: max(4 KiB, the code's size), rounded up to 16.
     if (prop_size != 1) { return 0 - ERR_CORRUPT_DATA; }
+    if (_xz_in_pos >= hdr_end) { return 0 - ERR_CORRUPT_DATA; }   # fields overrun the header
+    var dcode = load8(_xz_in + _xz_in_pos);
+    if (dcode > 40) { return 0 - ERR_CORRUPT_DATA; }
+    _xz_dict_max = 0xFFFFFFFF;
+    if (dcode < 40) { _xz_dict_max = (2 | (dcode & 1)) << (dcode / 2 + 11); }
+    if (_xz_dict_max < 4096) { _xz_dict_max = 4096; }
+    _xz_dict_max = (_xz_dict_max + 15) & (0 - 16);
     _xz_in_pos = _xz_in_pos + 1;
 
-    # Skip header padding to the stored CRC (already validated).
+    # Header padding up to the stored CRC (already validated) must be zero.
+    while (_xz_in_pos < hdr_end) {
+        if (load8(_xz_in + _xz_in_pos) != 0) { return 0 - ERR_CORRUPT_DATA; }
+        _xz_in_pos = _xz_in_pos + 1;
+    }
     _xz_in_pos = block_start + header_size;
 
     # Decode the LZMA2 payload. _xz_in_end stays the stream end; the
@@ -579,6 +623,9 @@ fn _xz_decode_block(check_type): i64 {
     if (lr < 0) { return lr; }
     var dlen = _xz_dp - dp_before;
     var out_start = _xz_dst + dp_before;
+    var csize = _xz_in_pos - (block_start + header_size);
+    if (hdr_csize >= 0 && hdr_csize != csize) { return 0 - ERR_CORRUPT_DATA; }
+    if (hdr_usize >= 0 && hdr_usize != dlen) { return 0 - ERR_CORRUPT_DATA; }
 
     # Block padding: pad the compressed data (from block_start) to a
     # 4-byte boundary before the check field.
@@ -595,6 +642,7 @@ fn _xz_decode_block(check_type): i64 {
     if (clen < 0) { return clen; }
     if (_xz_in_pos + clen > _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
     _xz_in_pos = _xz_in_pos + clen;
+    _xz_ix_add(&_xz_ixb, header_size + csize + clen, dlen);   # unpadded size: no block padding
     return dlen;
 }
 
@@ -621,22 +669,25 @@ fn _xz_decode_stream(s): i64 {
     var sf_crc = crc32(src + s + 6, 2);
     if (sf_crc != (_xz_le32(s + 8) & 0xFFFFFFFF)) { return 0 - ERR_CHECKSUM_MISMATCH; }
 
-    # Each stream resets the dictionary floor.
+    # Each stream resets the dictionary floor and the Index digest.
     _xz_dict_start = _xz_dp;
+    store64(&_xz_ixb, 0);
+    store64(&_xz_ixb + 8, 0);
+    store64(&_xz_ixb + 16, 0);
+    store64(&_xz_ixb + 24, 0);
 
     # Blocks until the index indicator (0x00).
     _xz_in_pos = s + 12;   # past the 12-byte stream header
-    while (1) {
+    loop {
         if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
         if (load8(src + _xz_in_pos) == 0) { break; }   # index indicator
         var br = _xz_decode_block(check_type);
         if (br < 0) { return br; }
     }
 
-    # Index: indicator(0) + count + records, padded to 4, then CRC32. We
-    # don't re-validate the record sizes (the per-block checks and header
-    # CRCs already gate integrity); we parse the index to locate the
-    # stream footer and validate its CRC32.
+    # Index: indicator(0) + count + records, padded to 4, then CRC32. The records must list the
+    # blocks just decoded (2.8.6; `xz -d` rejects an Index that disagrees): their digest has to
+    # equal _xz_ixb. The padding must be zero.
     var index_start = _xz_in_pos;
     _xz_in_pos = _xz_in_pos + 1;   # indicator
     var num_records = _xz_varint();
@@ -649,16 +700,23 @@ fn _xz_decode_stream(s): i64 {
     if (num_records < 0 || num_records > (_xz_in_end - _xz_in_pos) / 2) {
         return 0 - ERR_CORRUPT_DATA;
     }
+    var ixr[32];
+    store64(&ixr, 0);
+    store64(&ixr + 8, 0);
+    store64(&ixr + 16, 0);
+    store64(&ixr + 24, 0);
     var rec = 0;
     while (rec < num_records) {
-        _xz_varint();   # unpadded size
-        _xz_varint();   # uncompressed size
+        var r_unp = _xz_varint();   # unpadded size
+        var r_unc = _xz_varint();   # uncompressed size
         if (_xz_err != 0) { return 0 - ERR_CORRUPT_DATA; }
+        _xz_ix_add(&ixr, r_unp, r_unc);
         rec = rec + 1;
     }
     var idx_consumed = _xz_in_pos - index_start;
     while ((idx_consumed & 3) != 0) {
         if (_xz_in_pos >= _xz_in_end) { return 0 - ERR_CORRUPT_DATA; }
+        if (load8(src + _xz_in_pos) != 0) { return 0 - ERR_CORRUPT_DATA; }
         _xz_in_pos = _xz_in_pos + 1;
         idx_consumed = idx_consumed + 1;
     }
@@ -667,6 +725,11 @@ fn _xz_decode_stream(s): i64 {
     var idx_crc = crc32(src + index_start, idx_consumed);
     if (idx_crc != (_xz_le32(index_start + idx_consumed) & 0xFFFFFFFF)) {
         return 0 - ERR_CHECKSUM_MISMATCH;
+    }
+    var k = 0;
+    while (k < 4) {
+        if (load64(&ixr + k * 8) != load64(&_xz_ixb + k * 8)) { return 0 - ERR_CORRUPT_DATA; }
+        k = k + 1;
     }
     _xz_in_pos = index_start + index_size;
 
@@ -815,7 +878,7 @@ fn _xze_shift_low(): i64 {
     var carry = _xze_low >> 32;
     if (carry != 0 || _xze_low < 0xFF000000) {
         var temp = _xze_cache;
-        while (1) {
+        loop {
             _xze_emit((temp + carry) & 255);
             temp = 0xFF;
             _xze_cache_size = _xze_cache_size - 1;
@@ -938,7 +1001,7 @@ var _xzc_cap = 0;
 var _xzc_overflow = 0;
 
 # Encoder defaults — lc=3, lp=0, pb=2 (the LZMA / xz default), dict code
-# 8 → 65536 (>= the lz77 32 KB match window), check = CRC-64 (xz default).
+# 12 → 262144 (= the 256 KB match window, 2.7.2), check = CRC-64 (xz default).
 enum XzEnc {
     XZE_LC = 3;
     XZE_LP = 0;
@@ -1416,7 +1479,7 @@ fn _xzbt_hash4(src, pos): i64 {
 
 # BT4 match finder: search the binary tree for matches at `pos` (record (len,dist)
 # pairs into _xze_ml/_xze_md — increasing length, smallest distance, dist in
-# (0,32768]) AND relink `pos` into the tree, in one pass. This is the full
+# (0,XZE_WINDOW]) AND relink `pos` into the tree, in one pass. This is the full
 # search+insert used by the DP for every position; the greedy skip range uses the
 # lighter _xzbt_skip. `lenLimit` (byte compares + tree structure) is capped at
 # XZE_MF_NICE; `max_avail`/`recLimit` caps recording alone. Every position is
@@ -1476,7 +1539,7 @@ fn _xze_get_matches(src, src_len, pos, max_avail): i64 {
     while (1 == 1) {
         var delta = pos - cur;
         # cur<0 = EMPTY; delta<=0 defensive (invariant cur<pos); delta>WINDOW is the
-        # strict 65536-slot prune (distance 32768 stays legal); depth==0 safety cap.
+        # strict prune (distance XZE_WINDOW stays legal); depth==0 safety cap.
         # On ANY exit close BOTH collectors so no pointer dangles into a dead slot.
         if (cur < 0 || delta <= 0 || delta > XZE_WINDOW || depth == 0) {
             store64(_xzbt_son + ptr0 * 8, 0 - 1);
@@ -1999,7 +2062,7 @@ fn _xz_compress_inner(src, src_len, dst, dst_cap): i64 {
     if (_xzbt_ready == 0) {
         # BT4 tables (2.7.1). Separate completion flag from _xze_dp_ready so a
         # partial OOM here lets a retry re-enter cleanly (M-8). Sizes in BYTES:
-        # son 65536*2*8=1048576, head4 65536*8=524288, head3 32768*8=262144.
+        # son BT_SON_SLOTS*2*8 = 8 MiB, head4 BT_H4_SIZE*8, head3 BT_H3_SIZE*8.
         _xzbt_son = _sankoch_alloc(BT_SON_SLOTS * 2 * 8);
         if (_xzbt_son == 0) { return 0 - ERR_OOM; }
         _xzbt_head4 = _sankoch_alloc(BT_H4_SIZE * 8);

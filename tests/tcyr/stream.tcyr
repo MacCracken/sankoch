@@ -254,8 +254,90 @@ fn test_stream_dec_inc_mode_mismatch() {
 # main
 # ================================================================
 
+# 2.8.6: a streaming context finishes once. Every *_finish released the lock on every call, so a
+# second finish (or a write after finish) ran without the lock, and a finish of a dead context
+# released the lock some other context held. Each codec: finish A, open B (which takes the lock),
+# then A's finish and write must be refused and B must still hold the lock.
+var _fo_src = 0;
+var _fo_c = 0;
+var _fo_d = 0;
+
+fn _fo_open(kind, which) {
+    var dst = _fo_c + which * 32768;
+    if (kind == 0) { return deflate_enc_init(6, dst, 32768); }
+    if (kind == 1) { return zlib_enc_init(6, dst, 32768); }
+    if (kind == 2) { return gzip_enc_init(6, dst, 32768); }
+    if (kind == 3) { return lz4f_enc_init(dst, 32768); }
+    if (kind == 4) { return deflate_dec_init(_fo_d + which * 32768, 32768); }
+    if (kind == 5) { return zlib_dec_init(_fo_d + which * 32768, 32768); }
+    if (kind == 6) { return gzip_dec_init(_fo_d + which * 32768, 32768); }
+    return lz4f_dec_init(_fo_d + which * 32768, 32768);
+}
+
+fn _fo_write(kind, ctx, p, n) {
+    if (kind == 0) { return deflate_enc_write(ctx, p, n); }
+    if (kind == 1) { return zlib_enc_write(ctx, p, n); }
+    if (kind == 2) { return gzip_enc_write(ctx, p, n); }
+    if (kind == 3) { return lz4f_enc_write(ctx, p, n); }
+    if (kind == 4) { return deflate_dec_write(ctx, p, n); }
+    if (kind == 5) { return zlib_dec_write(ctx, p, n); }
+    if (kind == 6) { return gzip_dec_write(ctx, p, n); }
+    return lz4f_dec_write(ctx, p, n);
+}
+
+fn _fo_finish(kind, ctx) {
+    if (kind == 0) { return deflate_enc_finish(ctx); }
+    if (kind == 1) { return zlib_enc_finish(ctx); }
+    if (kind == 2) { return gzip_enc_finish(ctx); }
+    if (kind == 3) { return lz4f_enc_finish(ctx); }
+    if (kind == 4) { return deflate_dec_finish(ctx); }
+    if (kind == 5) { return zlib_dec_finish(ctx); }
+    if (kind == 6) { return gzip_dec_finish(ctx); }
+    return lz4f_dec_finish(ctx);
+}
+
+fn test_stream_finishes_once() {
+    _fo_src = alloc(4096);
+    var i = 0;
+    while (i < 4096) { store8(_fo_src + i, 97 + (i % 13)); i = i + 1; }
+    _fo_c = alloc(65536);
+    _fo_d = alloc(65536);
+    var kind = 0;
+    while (kind < 8) {
+        # Decoders need a stream: the matching encoder's output.
+        var inp = _fo_src;
+        var n = 4096;
+        if (kind >= 4) {
+            var e = _fo_open(kind - 4, 0);
+            _fo_write(kind - 4, e, _fo_src, 4096);
+            n = _fo_finish(kind - 4, e);
+            inp = _fo_c;
+        }
+        var a = _fo_open(kind, 0);
+        assert(a != 0, "finish-once: open A");
+        _fo_write(kind, a, inp, n);
+        assert(_fo_finish(kind, a) > 0, "finish-once: A finishes");
+        assert_eq(load64(&_sankoch_mtx), 0, "finish-once: and releases the lock");
+        var b = _fo_open(kind, 1);
+        assert(b != 0, "finish-once: open B");
+        assert(load64(&_sankoch_mtx) != 0, "finish-once: B holds the lock");
+        assert_eq(_fo_finish(kind, a), 0 - ERR_INVALID_INPUT, "finish-once: A's second finish is refused");
+        assert(load64(&_sankoch_mtx) != 0, "finish-once: and B still holds the lock");
+        # The zlib / gzip decoders answer "0 bytes taken" once their stream is done, before reaching
+        # the inner decoder, which is the same no-touch outcome; the rest refuse outright.
+        var wr = _fo_write(kind, a, inp, 16);
+        assert(wr < 0 || ((kind == 5 || kind == 6) && wr == 0), "finish-once: a write to finished A takes nothing");
+        _fo_write(kind, b, inp, n);
+        assert(_fo_finish(kind, b) > 0, "finish-once: B finishes");
+        assert_eq(load64(&_sankoch_mtx), 0, "finish-once: lock free");
+        kind = kind + 1;
+    }
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_stream_finishes_once();
     test_stream_mode_mismatch();
     test_stream_format_dispatch();
     test_stream_compress();
@@ -272,4 +354,5 @@ fn main() {
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

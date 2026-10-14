@@ -376,7 +376,7 @@ fn zlib_dec_write(ctx, input, in_len): i64 {
     }
 
     var cp = 0;
-    while (1) {
+    loop {
         var state = load64(ctx + 8);
 
         if (state == ZDEC_STATE_DONE) { return cp; }

@@ -150,7 +150,7 @@ fn _deflate_init_tables(): i64 {
 #   against the constant. Trips return ERR_OUTPUT_LIMIT.
 # Returns: new dp, or negative error.
 fn _deflate_decode_block(br, dst, dp, dst_cap, ratio_max, out_max): i64 {
-    while (1) {
+    loop {
         var sym = huff_decode_litlen(br);
         if (sym < 0) { return sym; }
 
@@ -224,8 +224,11 @@ fn _deflate_read_dynamic(br): i64 {
 
     var hdist = br_read(br, 5);
     if (hdist < 0) { return hdist; }
-    # Distance count = encoded + 1, so 1..32 — all 5-bit encodings valid.
+    # Distance count = encoded + 1, so 1..32. RFC 1951 defines only 30 distance codes, and zlib
+    # rejects 31 or 32 ("too many length or distance symbols"); so does sankoch since 2.8.6, which
+    # before accepted the header and failed only if code 30 or 31 was used.
     hdist = hdist + 1;
+    if (hdist > 30) { return 0 - ERR_CORRUPT_DATA; }
 
     var hclen = br_read(br, 4);
     if (hclen < 0) { return hclen; }
@@ -271,8 +274,9 @@ fn _deflate_read_dynamic(br): i64 {
         i = i + 1;
     }
 
-    # Build code-length Huffman table
-    huff_build_cl(&cl_lens, 19);
+    # Build code-length Huffman table (2.8.6: an invalid length set is an error, not ignored)
+    var hb = _huff_build_cl_inner(&cl_lens, 19);
+    if (hb < 0) { return hb; }
 
     # Decode literal/length + distance code lengths
     var total = hlit + hdist;
@@ -333,8 +337,10 @@ fn _deflate_read_dynamic(br): i64 {
     }
 
     # Split into literal/length and distance tables, build both
-    huff_build_litlen(&all_lens, hlit);
-    huff_build_dist(&all_lens + hlit * 8, hdist);
+    hb = _huff_build_litlen_inner(&all_lens, hlit);
+    if (hb < 0) { return hb; }
+    hb = _huff_build_dist_inner(&all_lens + hlit * 8, hdist);
+    if (hb < 0) { return hb; }
 
     return 0;
 }
@@ -370,7 +376,7 @@ fn _deflate_decompress_inner(src, src_len, dst, dst_cap, ratio_max, out_max): i6
     # 2.3.7: pre-build all decode tables so the in-loop lazy-init calls
     # (huff_build_*, huff_build_fixed, _ddec_alloc_dyn_ws) never alloc.
     if (_huff_alloc_tables() < 0) { return 0 - ERR_OOM; }
-    if (huff_build_fixed() < 0) { return 0 - ERR_OOM; }
+    if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
     if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
 
     var br = br_init(src, src_len);
@@ -425,7 +431,7 @@ fn _deflate_decompress_inner(src, src_len, dst, dst_cap, ratio_max, out_max): i6
 
         } elif (btype == 1) {
             # Fixed Huffman codes
-            huff_build_fixed();
+            if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
             dp = _deflate_decode_block(br, dst, dp, dst_cap, ratio_max, out_max);
             if (dp < 0) { return dp; }
 
@@ -475,7 +481,7 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ra
 
     _deflate_init_tables();
     if (_huff_alloc_tables() < 0) { return 0 - ERR_OOM; }
-    if (huff_build_fixed() < 0) { return 0 - ERR_OOM; }
+    if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
     if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
     var br = br_init(src, src_len);
     if (br == 0) { return 0 - ERR_OOM; }
@@ -526,7 +532,7 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ra
             store64(br + 8, bpos);
 
         } elif (btype == 1) {
-            huff_build_fixed();
+            if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
             dp = _deflate_decode_block(br, dst, dp, dst_cap, block_ratio, block_out);
             if (dp < 0) { return dp; }
 
@@ -630,6 +636,7 @@ enum DeflateDec {
     DDEC_STATE_STORED_NLEN = 2;    # need NLEN (16) + XOR validate
     DDEC_STATE_STORED_DATA = 3;    # raw byte copy from chunk to dst
     DDEC_STATE_DONE = 4;           # BFINAL=1 block completed
+    DDEC_STATE_CLOSED = 15;        # 2.8.6: deflate_dec_finish ran and released the lock
     # Bite-2: fixed-Huffman block decode states.
     DDEC_STATE_DECODE_SYM = 5;     # decode next litlen symbol
     DDEC_STATE_LEN_EXTRA = 6;      # consuming length extra bits
@@ -774,10 +781,9 @@ fn _ddec_decode_huff(ctx, fast, lengths, codes, num_symbols): i64 {
         # nothing and NO amount of further input can change that — no
         # DEFLATE code is longer than 15 bits. Reporting such a failure
         # as NEED_MORE is what let corrupt input wedge the decoder: the
-        # caller refilled, got the same verdict, and looped. Note this
-        # is reachable on VALID tables too, because _huff_build does not
-        # verify Kraft completeness, so an incomplete table can be built
-        # and then fail to match.
+        # caller refilled, got the same verdict, and looped. (Before 2.8.6
+        # _huff_build accepted incomplete tables, which reached this too;
+        # it rejects them at build time now, as zlib does.)
         if (bits >= HUFF_MAX_BITS) { return sym; }
         # Bridge exhausted before a match? Treat as need-more (atomic
         # rollback — caller's ctx.hold/bits remain unchanged, so the
@@ -888,7 +894,7 @@ fn deflate_dec_init(dst, dst_cap): i64 {
     # 2.3.7: pre-build decode tables so the hot dec_write loop never
     # allocs; release the lock + return null on OOM.
     if (_huff_alloc_tables() < 0) { _sankoch_unlock(); return 0; }
-    if (huff_build_fixed() < 0) { _sankoch_unlock(); return 0; }
+    if (_huff_build_fixed_inner() < 0) { _sankoch_unlock(); return 0; }
     if (_ddec_alloc_dyn_ws() < 0) { _sankoch_unlock(); return 0; }
     return ctx;
 }
@@ -971,6 +977,8 @@ fn _deflate_dec_set_out_max(ctx, max_output): i64 {
 # the contiguous dst is safe. Does NOT touch the mutex — the caller
 # still holds it across the whole multi-member decode.
 fn deflate_dec_reset(ctx): i64 {
+    # A finished decoder no longer holds the lock: it may not be reopened (2.8.6).
+    if (_ddec_state(ctx) == DDEC_STATE_CLOSED) { return 0 - ERR_INVALID_INPUT; }
     store64(ctx + 24, DDEC_STATE_HEADER);
     store64(ctx + 32, 0);    # hold
     store64(ctx + 40, 0);    # bits
@@ -1007,6 +1015,8 @@ fn deflate_dec_reset(ctx): i64 {
 # by checking `consumed < in_len`; bite-4's zlib/gzip wrappers rely
 # on this to know where the trailer begins inside the same chunk.
 fn deflate_dec_write(ctx, input, in_len): i64 {
+    # After finish the lock is not held, so nothing may touch the shared tables (2.8.6).
+    if (_ddec_state(ctx) == DDEC_STATE_CLOSED) { return 0 - ERR_INVALID_INPUT; }
     var rc = _deflate_dec_write_inner(ctx, input, in_len);
     # Liveness assertion (2.7.14). Every suspend point in the state
     # machine below drains the chunk to `end` before returning, so a
@@ -1014,7 +1024,7 @@ fn deflate_dec_write(ctx, input, in_len): i64 {
     # the stream is not finished means the decoder made no progress —
     # and would make none on a retry with the same bytes. Callers that
     # loop on this (zlib_dec_write and gzip_dec_write both do, inside
-    # `while (1)`) would spin forever, holding _sankoch_mtx, which turns
+    # `loop { … }`) would spin forever, holding _sankoch_mtx, which turns
     # a decode bug into a process-wide hang. Fail closed instead.
     #
     # This is an assertion, not the fix: with the prefills at
@@ -1041,7 +1051,7 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
     var cp = 0;
     var end = in_len;
 
-    while (1) {
+    loop {
         var state = _ddec_state(ctx);
 
         if (state == DDEC_STATE_DONE) { return cp; }
@@ -1057,7 +1067,7 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
                 _ddec_align(ctx);
                 store64(ctx + 24, DDEC_STATE_STORED_LEN);
             } elif (btype == 1) {
-                huff_build_fixed();
+                if (_huff_build_fixed_inner() < 0) { return _ddec_poison(ctx, 0 - ERR_OOM); }
                 store64(ctx + 24, DDEC_STATE_DECODE_SYM);
             } elif (btype == 2) {
                 _ddec_alloc_dyn_ws();
@@ -1281,6 +1291,9 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
             cp = _ddec_fill(ctx, input, cp, end, 5);
             if (load64(ctx + 40) < 5) { return cp; }
             var hdist_raw = _ddec_consume_bits(ctx, 5) + 1;
+            if (hdist_raw > 30) {   # 2.8.6: as zlib (see the batch decoder)
+                return _ddec_poison(ctx, 0 - ERR_CORRUPT_DATA);
+            }
             store64(ctx + 120, hdist_raw);
             store64(ctx + 24, DDEC_STATE_DYN_HCLEN);
         } elif (state == DDEC_STATE_DYN_HCLEN) {
@@ -1316,7 +1329,8 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
                 cl_pos = cl_pos + 1;
             }
             store64(ctx + 136, cl_pos);
-            huff_build_cl(_ddec_cl_lens, 19);
+            var hbc = _huff_build_cl_inner(_ddec_cl_lens, 19);
+            if (hbc < 0) { return _ddec_poison(ctx, hbc); }
             # Hand off to the all_lens loop. dyn_idx resets to 0 so it
             # can be reused as the all_lens write cursor; dyn_prev = 0
             # is the spec default for the "no prior length" case (so
@@ -1331,9 +1345,11 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
             if (al_pos >= total_codes) {
                 # all_lens fully populated — split into litlen + dist
                 # tables and transition into the symbol-decode loop.
-                huff_build_litlen(_ddec_all_lens, load64(ctx + 112));
-                huff_build_dist(_ddec_all_lens
+                var hbl = _huff_build_litlen_inner(_ddec_all_lens, load64(ctx + 112));
+                if (hbl < 0) { return _ddec_poison(ctx, hbl); }
+                hbl = _huff_build_dist_inner(_ddec_all_lens
                   + load64(ctx + 112) * 8, load64(ctx + 120));
+                if (hbl < 0) { return _ddec_poison(ctx, hbl); }
                 store64(ctx + 24, DDEC_STATE_DECODE_SYM);
             } else {
                 # Code-length codes are at most 7 bits (HCLEN lengths are
@@ -1407,6 +1423,9 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
 # If the stream wasn't completed (BFINAL=1 block not yet reached),
 # returns -ERR_CORRUPT_DATA (caller fed an incomplete stream).
 fn deflate_dec_finish(ctx): i64 {
+    # A context finishes once (2.8.6). Before, a second finish released the lock again, out from
+    # under whichever call held it by then; now it is refused and the lock is left alone.
+    if (_ddec_state(ctx) == DDEC_STATE_CLOSED) { return 0 - ERR_INVALID_INPUT; }
     var rc = 0;
     if (_ddec_err(ctx) < 0) {
         rc = _ddec_err(ctx);
@@ -1415,6 +1434,7 @@ fn deflate_dec_finish(ctx): i64 {
     } else {
         rc = _ddec_dp(ctx);
     }
+    store64(ctx + 24, DDEC_STATE_CLOSED);
     _sankoch_unlock();
     return rc;
 }
@@ -1853,7 +1873,7 @@ fn _deflate_write_dynamic_header(bw, lit_lens, hlit, dist_lens, hdist): i64 {
     # Build code-length Huffman tree. Max code length is 7 bits per
     # RFC 1951 §3.2.7 (header writes each cl_len in a 3-bit field, so any
     # length above 7 would alias to a different value on the decoder side).
-    huff_compute_lengths(cl_freqs, 19, cl_lens_opt, 2, 7);
+    _huff_compute_lengths_inner(cl_freqs, 19, cl_lens_opt, 2, 7);
 
     # Build pre-reversed encoder codes for the code-length alphabet —
     # codes are LSB-first so the symbol-emit loop can call bw_write
@@ -2020,7 +2040,7 @@ fn deflate_compress_level(src, src_len, dst, dst_cap, level): i64 {
 fn _deflate_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
     _deflate_init_tables();
     lz77_set_level(level);
-    if (lz77_init() < 0) { return 0 - ERR_OOM; }
+    if (_lz77_init_inner() < 0) { return 0 - ERR_OOM; }
 
     var bw = bw_init(dst, dst_cap);
     if (bw == 0) { return 0 - ERR_OOM; }
@@ -2174,15 +2194,13 @@ var _dyn_opt_lit_lens = 0;
 var _dyn_opt_dist_lens = 0;
 var _dyn_opt_lit_codes = 0;
 var _dyn_opt_dist_codes = 0;
-var _dyn_lit_fast_tmp = 0;
-var _dyn_dist_fast_tmp = 0;
 
 fn _deflate_alloc_dynamic_ws(): i64 {
     if (_dyn_sym_buf == 0) {
         _dyn_sym_buf = _sankoch_alloc(DYN_SYM_MAX * 8);
         if (_dyn_sym_buf == 0) { return 0 - ERR_OOM; }
     }
-    # This block allocs 8 slabs under one guard (_dyn_lit_freq). On any
+    # This block allocs 6 slabs under one guard (_dyn_lit_freq). On any
     # mid-block OOM, zero the guard so a later retry re-enters and
     # re-allocs the whole set instead of skipping it with null ptrs.
     if (_dyn_lit_freq == 0) {
@@ -2198,10 +2216,6 @@ fn _deflate_alloc_dynamic_ws(): i64 {
         if (_dyn_opt_lit_codes == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
         _dyn_opt_dist_codes = _sankoch_alloc(240);
         if (_dyn_opt_dist_codes == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
-        _dyn_lit_fast_tmp = _sankoch_alloc(4096);
-        if (_dyn_lit_fast_tmp == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
-        _dyn_dist_fast_tmp = _sankoch_alloc(4096);
-        if (_dyn_dist_fast_tmp == 0) { _dyn_lit_freq = 0; return 0 - ERR_OOM; }
     }
     return 0;
 }
@@ -2289,8 +2303,14 @@ var _dyn_cost_bw = 0;
 # every block. Writing it twice costs O(hlit + hdist), not O(symbols).
 #
 # 512 bytes is a hard bound on a header: 14 bits of counts, 19 x 3 bits of
-# CL lengths, then at most hlit + hdist = 316 CL symbols at <= 7 code bits
-# plus <= 7 extra bits each — 2,247 bits, or 281 bytes.
+# CL lengths, then the hlit + hdist <= 316 code lengths. A plain CL symbol
+# codes one length in <= 7 bits; the repeat symbols carry extra bits but
+# cover >= 3 lengths each (16: <= 9 bits for >= 3, 17: <= 10 for >= 3,
+# 18: <= 14 for >= 11), so no length costs more than 7 bits: at most
+# 14 + 57 + 316 x 7 = 2,283 bits, or 286 bytes. (2.8.6 corrected the
+# derivation, which multiplied 7 extra bits into every symbol and so did not
+# support its own figure; deflate_compress.tcyr pins the bound.) bw_write
+# fails closed past 512 anyway, and a negative cost aborts the block.
 fn _dyn_header_bits(lit_lens, hlit, dist_lens, hdist): i64 {
     if (_dyn_cost_buf == 0) {
         _dyn_cost_buf = _sankoch_alloc(512);
@@ -2317,7 +2337,7 @@ fn _dyn_flush_subblock(bw, bfinal): i64 {
     store64(_dyn_lit_freq + 256 * 8, load64(_dyn_lit_freq + 256 * 8) + 1);
 
     # Build optimal trees for this sub-block's freqs
-    huff_compute_lengths(_dyn_lit_freq, 286, _dyn_opt_lit_lens, 257, 15);
+    _huff_compute_lengths_inner(_dyn_lit_freq, 286, _dyn_opt_lit_lens, 257, 15);
     var hlit = 286;
     while (hlit > 257 && load64(_dyn_opt_lit_lens + (hlit - 1) * 8) == 0) {
         hlit = hlit - 1;
@@ -2330,7 +2350,7 @@ fn _dyn_flush_subblock(bw, bfinal): i64 {
         i = i + 1;
     }
     if (has_dist == 0) { store64(_dyn_dist_freq, 1); }
-    huff_compute_lengths(_dyn_dist_freq, 30, _dyn_opt_dist_lens, 1, 15);
+    _huff_compute_lengths_inner(_dyn_dist_freq, 30, _dyn_opt_dist_lens, 1, 15);
 
     var hdist = 30;
     while (hdist > 1 && load64(_dyn_opt_dist_lens + (hdist - 1) * 8) == 0) {
@@ -2436,7 +2456,7 @@ fn _deflate_compress_dynamic_block(bw, src, src_len, sp_start, sp_end, bfinal): 
     if (_huff_ensure_hcl_ws() < 0) { return 0 - ERR_OOM; }
 
     var sp = sp_start;
-    while (1) {
+    loop {
         _dyn_reset();
 
         # Collect symbols into the buffer. Leave 3 slots of slack so one
@@ -2586,7 +2606,7 @@ fn deflate_enc_init_dict(level, dst, dst_cap, dict, dict_len): i64 {
 
     _deflate_init_tables();
     lz77_set_level(level);
-    if (lz77_init() < 0) { _sankoch_unlock(); return 0; }
+    if (_lz77_init_inner() < 0) { _sankoch_unlock(); return 0; }
     # Pre-build the len/dist lookups so the streaming symbol emitters
     # never alloc on the hot path.
     if (_deflate_build_len_lookup() < 0) { _sankoch_unlock(); return 0; }
@@ -2633,6 +2653,7 @@ fn deflate_enc_init_dict(level, dst, dst_cap, dict, dict_len): i64 {
 # Keeps the last DENC_LOOKAHEAD bytes unconsumed so matches can extend
 # into subsequent writes. Returns 0 or negative error (ctx poisoned).
 fn deflate_enc_write(ctx, input, in_len): i64 {
+    if (load64(ctx + 8) == DENC_STATE_DONE) { return 0 - ERR_INVALID_INPUT; }   # finished (2.8.6)
     if (_denc_err(ctx) < 0) { return _denc_err(ctx); }
     if (in_len <= 0) { return 0; }
 
@@ -2790,6 +2811,7 @@ fn _denc_consume(ctx, cptr, end): i64 {
 # the receiver everything written so far, so unlike the steady-state path
 # no lookahead may be held back.
 fn deflate_enc_flush(ctx): i64 {
+    if (load64(ctx + 8) == DENC_STATE_DONE) { return 0 - ERR_INVALID_INPUT; }   # finished (2.8.6)
     if (_denc_err(ctx) < 0) { return _denc_err(ctx); }
     var bw = _denc_bw(ctx);
     var wptr = _denc_wptr(ctx);
@@ -2862,6 +2884,7 @@ fn deflate_enc_flush(ctx): i64 {
 # documented: pending symbols, an open fixed block, or unconsumed input
 # each return -ERR_INVALID_INPUT and leave the ctx untouched.
 fn deflate_enc_reset_context(ctx): i64 {
+    if (load64(ctx + 8) == DENC_STATE_DONE) { return 0 - ERR_INVALID_INPUT; }   # finished (2.8.6)
     if (_denc_err(ctx) < 0) { return _denc_err(ctx); }
     if (_denc_cptr(ctx) != _denc_wptr(ctx)) { return 0 - ERR_INVALID_INPUT; }
     if (_denc_is_dynamic(ctx) == 1) {
@@ -2877,17 +2900,25 @@ fn deflate_enc_reset_context(ctx): i64 {
     # into discarded history.
     store64(ctx + 48, 0);
     store64(ctx + 56, 0);
-    if (lz77_init() < 0) { return 0 - ERR_OOM; }
+    if (_lz77_init_inner() < 0) { return 0 - ERR_OOM; }
     return 0;
 }
 
 # Flush remaining buffered input, emit end-of-stream marker, release
 # _sankoch_mtx, and return total bytes written to dst (or neg error).
+# Every exit of deflate_enc_finish: mark the context finished (DONE, whatever the result) and
+# release the lock, once (2.8.6). Before, the error exits left the state as it was, so a second
+# finish (or zip's abandon path after a failed one) unlocked a second time; and write, flush and
+# reset_context ran on a finished context without the lock.
+fn _denc_close(ctx, rc): i64 {
+    store64(ctx + 8, DENC_STATE_DONE);
+    _sankoch_unlock();
+    return rc;
+}
+
 fn deflate_enc_finish(ctx): i64 {
-    if (_denc_err(ctx) < 0) {
-        _sankoch_unlock();
-        return _denc_err(ctx);
-    }
+    if (load64(ctx + 8) == DENC_STATE_DONE) { return 0 - ERR_INVALID_INPUT; }   # finishes once
+    if (_denc_err(ctx) < 0) { return _denc_close(ctx, _denc_err(ctx)); }
     var bw = _denc_bw(ctx);
     var window = _denc_window(ctx);
     var wptr = _denc_wptr(ctx);
@@ -2896,17 +2927,14 @@ fn deflate_enc_finish(ctx): i64 {
 
     # Consume remaining window bytes (no lookahead reservation).
     var rc = _denc_consume(ctx, cptr, wptr);
-    if (rc < 0) {
-        _sankoch_unlock();
-        return rc;
-    }
+    if (rc < 0) { return _denc_close(ctx, rc); }
 
     if (is_dyn == 1) {
         # Dynamic: last sub-block is BFINAL=1. If the symbol buffer is
         # empty (total_in was a multiple of whatever flushed the last
         # sub-block), emit an empty-body BFINAL=1 sub-block (just EOB).
         rc = _dyn_flush_subblock(bw, 1);
-        if (rc < 0) { _sankoch_unlock(); return rc; }
+        if (rc < 0) { return _denc_close(ctx, rc); }
     } else {
         # Fixed: close the BFINAL=0 block with EOB, then append a
         # trivial BFINAL=1 stored block with LEN=0 as the trailer.
@@ -2914,32 +2942,29 @@ fn deflate_enc_finish(ctx): i64 {
             # No data was ever written; emit a single empty BFINAL=1
             # stored block. bfinal=1, btype=00, pad, LEN=0, NLEN=0xFFFF.
             rc = bw_write(bw, 1, 1);        # BFINAL=1
-            if (rc < 0) { _sankoch_unlock(); return rc; }
+            if (rc < 0) { return _denc_close(ctx, rc); }
             rc = bw_write(bw, 0, 2);        # BTYPE=00 stored
-            if (rc < 0) { _sankoch_unlock(); return rc; }
+            if (rc < 0) { return _denc_close(ctx, rc); }
         } else {
             # Close the open fixed block with EOB.
             rc = _deflate_write_eob(bw);
-            if (rc < 0) { _sankoch_unlock(); return rc; }
+            if (rc < 0) { return _denc_close(ctx, rc); }
 
             # BFINAL=1 stored-LEN=0 trailer.
             rc = bw_write(bw, 1, 1);        # BFINAL=1
-            if (rc < 0) { _sankoch_unlock(); return rc; }
+            if (rc < 0) { return _denc_close(ctx, rc); }
             rc = bw_write(bw, 0, 2);        # BTYPE=00
-            if (rc < 0) { _sankoch_unlock(); return rc; }
+            if (rc < 0) { return _denc_close(ctx, rc); }
         }
         bw_align(bw);                        # pad to byte
         # LEN = 0 (LE u16), NLEN = 0xFFFF (LE u16)
-        rc = bw_write_byte(bw, 0); if (rc < 0) { _sankoch_unlock(); return rc; }
-        rc = bw_write_byte(bw, 0); if (rc < 0) { _sankoch_unlock(); return rc; }
-        rc = bw_write_byte(bw, 255); if (rc < 0) { _sankoch_unlock(); return rc; }
-        rc = bw_write_byte(bw, 255); if (rc < 0) { _sankoch_unlock(); return rc; }
+        rc = bw_write_byte(bw, 0); if (rc < 0) { return _denc_close(ctx, rc); }
+        rc = bw_write_byte(bw, 0); if (rc < 0) { return _denc_close(ctx, rc); }
+        rc = bw_write_byte(bw, 255); if (rc < 0) { return _denc_close(ctx, rc); }
+        rc = bw_write_byte(bw, 255); if (rc < 0) { return _denc_close(ctx, rc); }
     }
 
-    store64(ctx + 8, DENC_STATE_DONE);
-    var total = bw_finish(bw);
-    _sankoch_unlock();
-    return total;
+    return _denc_close(ctx, bw_finish(bw));
 }
 
 # ---------------------------------------------------------------------------
@@ -2965,7 +2990,6 @@ fn _deflate_reset_tables(): i64 {
     _dyn_lit_freq = 0; _dyn_dist_freq = 0;
     _dyn_opt_lit_lens = 0; _dyn_opt_dist_lens = 0;
     _dyn_opt_lit_codes = 0; _dyn_opt_dist_codes = 0;
-    _dyn_lit_fast_tmp = 0; _dyn_dist_fast_tmp = 0;
     # 2.7.9 fixed-vs-dynamic chooser. `_dyn_cost_bw` must be cleared with its
     # buffer: the lazy-init guard keys on `_dyn_cost_buf`, so a reset that
     # zeroed only one of the pair would leave `_dyn_header_bits` writing

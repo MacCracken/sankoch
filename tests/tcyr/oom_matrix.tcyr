@@ -1,0 +1,383 @@
+# sankoch — the partial-OOM retry matrix (2.8.6 closeout)
+#
+# The 2.5.9 M-8 class: a lazy init that fails part-way (a guard pointer set, a sibling still NULL) and
+# then, on the NEXT call with no reset, runs on the half-built state. detect_error.tcyr sweeps the
+# one-shot compressors; 2.7.9 showed (`_deflate_build_enc_fixed`) that siblings hide on paths a sweep
+# does not reach. This suite reaches every function with two or more arena allocations through a
+# public entry: 24 round-trip operations — DEFLATE / zlib / gzip at levels 1, 4, 9 and their batch +
+# streaming decoders, the streaming encoders (plain, preset-dictionary, flushed), LZ4 / LZ4F both
+# ways, zstd / bzip2 / xz / Brotli decode and encode, the tar cursor over a .tar.gz, the ZIP reader
+# and writer, stream.cyr both ways, and the checksum states.
+#
+# For each operation, and each allocation index n up to the number of allocations the operation
+# makes from a cold start (3 for LZ4F decode .. 104 for zstd decode + encode): reset the tables, fail
+# allocation n, run the
+# operation (it must fail cleanly or succeed), clear the fault, then run it AGAIN WITHOUT a reset:
+# it must succeed with the exact output. A latch shows as a crash or a failed retry; a lock leaked
+# on an OOM path shows as a hang. Every operation must also be hit by at least one fault (proving
+# the sweep reached its allocations).
+#
+# Run: cyrius test tests/tcyr/oom_matrix.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+var _om_n = 6000;
+var _om_src = 0;       # input
+var _om_out = 0;       # decode buffer
+var _om_tmp = 0;       # encode buffer
+var _om_s = 0;         # pre-built streams, one slot per format (64 KiB each)
+var _om_sl = 0;        # their lengths (i64 x 16)
+var _om_dict = 0;
+
+enum OmSlot {
+    OM_DEFLATE = 0;
+    OM_ZLIB = 1;
+    OM_GZIP = 2;
+    OM_LZ4F = 3;
+    OM_ZSTD = 4;
+    OM_BZIP2 = 5;
+    OM_XZ = 6;
+    OM_TARGZ = 7;
+    OM_ZIP = 8;
+    OM_BROTLI = 9;
+    OM_LZ4 = 10;
+}
+
+fn _om_slot(k) { return _om_s + k * 65536; }
+fn _om_len(k) { return load64(_om_sl + k * 8); }
+
+# 1 when out[0..n) is the input.
+fn _om_same(p, n) {
+    if (n != _om_n) { return 0; }
+    var i = 0;
+    while (i < n) {
+        if (load8(p + i) != load8(_om_src + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn _om_octal(p, w, v) {
+    var i = w - 1;
+    while (i >= 0) {
+        store8(p + i, 48 + (v & 7));
+        v = v >> 3;
+        i = i - 1;
+    }
+    return 0;
+}
+
+# A one-member v7 tar of the input ("a.txt"), then gzip'd into the TARGZ slot.
+fn _om_build_tar() {
+    var tl = 512 + ((_om_n + 511) / 512) * 512 + 1024;
+    var t = alloc(tl);
+    var i = 0;
+    while (i < tl) {
+        store8(t + i, 0);
+        i = i + 1;
+    }
+    _put_str(t, "a.txt", 5);
+    _om_octal(t + 100, 7, 420);
+    _om_octal(t + 108, 7, 0);
+    _om_octal(t + 116, 7, 0);
+    _om_octal(t + 124, 11, _om_n);
+    _om_octal(t + 136, 11, 0);
+    store8(t + 156, 48);
+    var sum = 0;
+    i = 0;
+    while (i < 512) {
+        var c = load8(t + i);
+        if (i >= 148 && i < 156) { c = 32; }
+        sum = sum + c;
+        i = i + 1;
+    }
+    _om_octal(t + 148, 6, sum);
+    store8(t + 154, 0);
+    store8(t + 155, 32);
+    i = 0;
+    while (i < _om_n) {
+        store8(t + 512 + i, load8(_om_src + i));
+        i = i + 1;
+    }
+    store64(_om_sl + OM_TARGZ * 8, gzip_compress(t, tl, _om_slot(OM_TARGZ), 65536));
+    return 0;
+}
+
+fn _om_setup() {
+    _om_src = alloc(_om_n);
+    var i = 0;
+    while (i < _om_n) {
+        var b = 97 + ((i * 7 + (i >> 5)) % 23);
+        if ((i % 97) < 3) { b = (i * 131) & 255; }
+        store8(_om_src + i, b);
+        i = i + 1;
+    }
+    _om_out = alloc(_om_n * 2 + 65536);
+    _om_tmp = alloc(_om_n * 2 + 65536);
+    _om_s = alloc(16 * 65536);
+    _om_sl = alloc(16 * 8);
+    _om_dict = alloc(64);
+    _put_str(_om_dict, "abcdefghijklmnopqrstuvw abcdefghijklmnop", 40);
+    crc32_init_table();
+    store64(_om_sl + OM_DEFLATE * 8, compress_level(FORMAT_DEFLATE, _om_src, _om_n, _om_slot(OM_DEFLATE), 65536, 6));
+    store64(_om_sl + OM_ZLIB * 8, compress_level(FORMAT_ZLIB, _om_src, _om_n, _om_slot(OM_ZLIB), 65536, 6));
+    store64(_om_sl + OM_GZIP * 8, compress_level(FORMAT_GZIP, _om_src, _om_n, _om_slot(OM_GZIP), 65536, 6));
+    store64(_om_sl + OM_LZ4F * 8, lz4f_compress(_om_src, _om_n, _om_slot(OM_LZ4F), 65536));
+    store64(_om_sl + OM_ZSTD * 8, zstd_compress_level(_om_src, _om_n, _om_slot(OM_ZSTD), 65536, 9));
+    store64(_om_sl + OM_BZIP2 * 8, bzip2_compress(_om_src, _om_n, _om_slot(OM_BZIP2), 65536));
+    store64(_om_sl + OM_XZ * 8, xz_compress(_om_src, _om_n, _om_slot(OM_XZ), 65536));
+    store64(_om_sl + OM_BROTLI * 8, brotli_compress_level(_om_src, _om_n, _om_slot(OM_BROTLI), 65536, 9));
+    store64(_om_sl + OM_LZ4 * 8, lz4_compress(_om_src, _om_n, _om_slot(OM_LZ4), 65536));
+    _om_build_tar();
+    var w = zip_writer_init(_om_slot(OM_ZIP), 65536);
+    zip_add(w, "a.txt", _om_src, _om_n, 8);
+    store64(_om_sl + OM_ZIP * 8, zip_writer_finish(w));
+    var k = 0;
+    var ok = 1;
+    while (k <= 10) {
+        if (_om_len(k) <= 0) { ok = 0; }
+        k = k + 1;
+    }
+    assert(ok == 1, "oom matrix: every input stream built");
+    return 0;
+}
+
+# Feed a streaming decoder (1 deflate, 2 zlib, 3 gzip, 4 lz4f) in 97-byte chunks; 1 on exact output.
+fn _om_stream_dec(fmt, src, n) {
+    var ctx = 0;
+    var cap = _om_n + 64;
+    if (fmt == 1) { ctx = deflate_dec_init(_om_out, cap); }
+    if (fmt == 2) { ctx = zlib_dec_init(_om_out, cap); }
+    if (fmt == 3) { ctx = gzip_dec_init(_om_out, cap); }
+    if (fmt == 4) { ctx = lz4f_dec_init(_om_out, cap); }
+    if (ctx == 0) { return 0; }
+    var p = 0;
+    var bad = 0;
+    while (p < n && bad == 0) {
+        var c = 97;
+        if (c > n - p) { c = n - p; }
+        var r = 0;
+        if (fmt == 1) { r = deflate_dec_write(ctx, src + p, c); }
+        if (fmt == 2) { r = zlib_dec_write(ctx, src + p, c); }
+        if (fmt == 3) { r = gzip_dec_write(ctx, src + p, c); }
+        if (fmt == 4) { r = lz4f_dec_write(ctx, src + p, c); }
+        if (r < 0) { bad = 1; }
+        p = p + c;
+    }
+    var f = 0;
+    if (fmt == 1) { f = deflate_dec_finish(ctx); }
+    if (fmt == 2) { f = zlib_dec_finish(ctx); }
+    if (fmt == 3) { f = gzip_dec_finish(ctx); }
+    if (fmt == 4) { f = lz4f_dec_finish(ctx); }
+    if (bad == 1) { return 0; }
+    return _om_same(_om_out, f);
+}
+
+# Streaming encode (1 deflate, 2 zlib, 3 gzip), optionally with a preset dictionary (dict) or a sync
+# flush midway (flush), then decode; 1 on exact round trip.
+fn _om_stream_enc(fmt, level, dict, flush) {
+    var cap = _om_n * 2 + 4096;
+    var ctx = 0;
+    if (dict == 0) {
+        if (fmt == 1) { ctx = deflate_enc_init(level, _om_tmp, cap); }
+        if (fmt == 2) { ctx = zlib_enc_init(level, _om_tmp, cap); }
+        if (fmt == 3) { ctx = gzip_enc_init(level, _om_tmp, cap); }
+    } else {
+        if (fmt == 1) { ctx = deflate_enc_init_dict(level, _om_tmp, cap, _om_dict, 40); }
+        if (fmt == 2) { ctx = zlib_enc_init_dict(level, _om_tmp, cap, _om_dict, 40); }
+        if (fmt == 3) { ctx = gzip_enc_init_dict(level, _om_tmp, cap, _om_dict, 40); }
+    }
+    if (ctx == 0) { return 0; }
+    var p = 0;
+    var bad = 0;
+    while (p < _om_n && bad == 0) {
+        var c = 1500;
+        if (c > _om_n - p) { c = _om_n - p; }
+        var r = 0;
+        if (fmt == 1) { r = deflate_enc_write(ctx, _om_src + p, c); }
+        if (fmt == 2) { r = zlib_enc_write(ctx, _om_src + p, c); }
+        if (fmt == 3) { r = gzip_enc_write(ctx, _om_src + p, c); }
+        if (r < 0) { bad = 1; }
+        if (flush == 1 && fmt == 1 && p == 0 && bad == 0) {
+            if (deflate_enc_flush(ctx) < 0) { bad = 1; }
+        }
+        p = p + c;
+    }
+    var n = 0;
+    if (fmt == 1) { n = deflate_enc_finish(ctx); }
+    if (fmt == 2) { n = zlib_enc_finish(ctx); }
+    if (fmt == 3) { n = gzip_enc_finish(ctx); }
+    if (bad == 1 || n <= 0) { return 0; }
+    var d = 0;
+    if (dict == 1) {
+        if (fmt == 1) { d = deflate_decompress_dict(_om_tmp, n, _om_out, _om_n + 64, _om_dict, 40); }
+        if (fmt == 2) { d = zlib_decompress_dict(_om_tmp, n, _om_out, _om_n + 64, _om_dict, 40); }
+        if (fmt == 3) { return 1; }   # gzip has no FDICT: a private contract, not decodable here
+    } else {
+        d = decompress(fmt + 1, _om_tmp, n, _om_out, _om_n + 64);
+    }
+    return _om_same(_om_out, d);
+}
+
+# One operation; 1 on an exact round trip, 0 on a clean failure.
+fn _om_op(op) {
+    var cap = _om_n * 2 + 4096;
+    if (op <= 8) {                               # one-shot DEFLATE family at levels 1 / 4 / 9
+        var fmt = FORMAT_DEFLATE + op / 3;
+        var lv = 1;
+        if (op % 3 == 1) { lv = 4; }
+        if (op % 3 == 2) { lv = 9; }
+        var c = compress_level(fmt, _om_src, _om_n, _om_tmp, cap, lv);
+        if (c <= 0) { return 0; }
+        return _om_same(_om_out, decompress(fmt, _om_tmp, c, _om_out, _om_n + 64));
+    }
+    if (op == 9) { return _om_stream_dec(1, _om_slot(OM_DEFLATE), _om_len(OM_DEFLATE)); }
+    if (op == 10) { return _om_stream_dec(2, _om_slot(OM_ZLIB), _om_len(OM_ZLIB)); }
+    if (op == 11) { return _om_stream_dec(3, _om_slot(OM_GZIP), _om_len(OM_GZIP)); }
+    if (op == 12) { return _om_stream_dec(4, _om_slot(OM_LZ4F), _om_len(OM_LZ4F)); }
+    if (op == 13) { return _om_stream_enc(1, 6, 0, 1); }
+    if (op == 14) { return _om_stream_enc(2, 1, 0, 0); }
+    if (op == 15) { return _om_stream_enc(3, 9, 0, 0); }
+    if (op == 16) { return _om_stream_enc(1, 6, 1, 0) & _om_stream_enc(2, 6, 1, 0) & _om_stream_enc(3, 6, 1, 0); }
+    if (op == 17) {                              # LZ4 block + LZ4F streaming encode
+        var l = lz4_compress(_om_src, _om_n, _om_tmp, cap);
+        if (l <= 0) { return 0; }
+        if (_om_same(_om_out, lz4_decompress(_om_tmp, l, _om_out, _om_n + 64)) == 0) { return 0; }
+        var e = lz4f_enc_init(_om_tmp, cap);
+        if (e == 0) { return 0; }
+        var bad = 0;
+        if (lz4f_enc_write(e, _om_src, _om_n) < 0) { bad = 1; }
+        var fl = lz4f_enc_finish(e);
+        if (bad == 1 || fl <= 0) { return 0; }
+        return _om_same(_om_out, lz4f_decompress(_om_tmp, fl, _om_out, _om_n + 64));
+    }
+    if (op == 18) {                              # zstd decode + encode at levels 6 and 9
+        var zd = zstd_decompress(_om_slot(OM_ZSTD), _om_len(OM_ZSTD), _om_out, _om_n + 64);
+        if (_om_same(_om_out, zd) == 0) { return 0; }
+        var z = zstd_compress_level(_om_src, _om_n, _om_tmp, cap, 6);
+        if (z <= 0) { return 0; }
+        if (_om_same(_om_out, zstd_decompress(_om_tmp, z, _om_out, _om_n + 64)) == 0) { return 0; }
+        # Level 9 runs the DP optimal parser, whose 15 arrays were unreachable to the sweep
+        # until 2.8.6 routed them through the allocation seam.
+        z = zstd_compress_level(_om_src, _om_n, _om_tmp, cap, 9);
+        if (z <= 0) { return 0; }
+        return _om_same(_om_out, zstd_decompress(_om_tmp, z, _om_out, _om_n + 64));
+    }
+    if (op == 19) {                              # bzip2 + xz decode
+        var bd = bzip2_decompress(_om_slot(OM_BZIP2), _om_len(OM_BZIP2), _om_out, _om_n + 64);
+        if (_om_same(_om_out, bd) == 0) { return 0; }
+        return _om_same(_om_out, xz_decompress(_om_slot(OM_XZ), _om_len(OM_XZ), _om_out, _om_n + 64));
+    }
+    if (op == 20) {                              # Brotli decode + encode
+        if (_om_same(_om_out, brotli_decompress(_om_slot(OM_BROTLI), _om_len(OM_BROTLI), _om_out, _om_n + 64)) == 0) {
+            return 0;
+        }
+        var b = brotli_compress_level(_om_src, _om_n, _om_tmp, cap, 5);
+        if (b <= 0) { return 0; }
+        return _om_same(_om_out, brotli_decompress(_om_tmp, b, _om_out, _om_n + 64));
+    }
+    if (op == 21) {                              # tar cursor over the .tar.gz
+        var cur = tar_open_auto(_om_slot(OM_TARGZ), _om_len(OM_TARGZ));
+        if (cur == 0) { return 0; }
+        if (tar_next(cur) != 1) { return 0; }
+        return _om_same(tar_data(cur), tar_size(cur));
+    }
+    if (op == 22) {                              # ZIP read, then write a fresh archive and read it back
+        var z2 = zip_open(_om_slot(OM_ZIP), _om_len(OM_ZIP));
+        if (z2 == 0) { return 0; }
+        if (_om_same(_om_out, zip_extract(z2, 0, _om_out, _om_n + 64)) == 0) { return 0; }
+        var w = zip_writer_init(_om_tmp, cap);
+        if (w == 0) { return 0; }
+        if (zip_add(w, "b.txt", _om_src, _om_n, 8) < 0) { return 0; }
+        var zl = zip_writer_finish(w);
+        if (zl <= 0) { return 0; }
+        var z3 = zip_open(_om_tmp, zl);
+        if (z3 == 0) { return 0; }
+        return _om_same(_om_out, zip_extract(z3, 0, _om_out, _om_n + 64));
+    }
+    if (op == 23) {                              # stream.cyr both ways + the checksum states
+        var sc = stream_compress_init(FORMAT_ZLIB, 6, _om_tmp, cap);
+        if (sc == 0) { return 0; }
+        var bad2 = 0;
+        if (stream_write(sc, _om_src, _om_n) < 0) { bad2 = 1; }
+        var sn = stream_compress_finish(sc);
+        if (bad2 == 1 || sn <= 0) { return 0; }
+        var sd = stream_decompress_init_inc(FORMAT_ZLIB, _om_out, _om_n + 64);
+        if (sd == 0) { return 0; }
+        if (stream_write(sd, _om_tmp, sn) < 0) { bad2 = 1; }
+        var dn = stream_decompress_finish_inc(sd);
+        if (bad2 == 1 || _om_same(_om_out, dn) == 0) { return 0; }
+        var c64 = crc64_init();
+        var x32 = xxhash32_init();
+        if (c64 == 0 || x32 == 0) { return 0; }
+        return 1;
+    }
+    return 0;
+}
+
+var _OM_OPS = 24;
+
+# Allocations operation `op` makes from a cold start (after a reset): the fault counter counts down
+# once per _sankoch_alloc. Sweeping 0..that count reaches every allocation the operation makes.
+fn _om_allocs(op) {
+    _sankoch_reset_tables();
+    _sankoch_alloc_set_fail_at(1000000);
+    _om_op(op);
+    var used = 1000000 - _sankoch_alloc_fail_at;
+    _sankoch_alloc_set_fail_at(0 - 1);
+    return used;
+}
+
+fn test_oom_retry_matrix() {
+    _om_setup();
+    var bad = 0;
+    var unhit = 0;
+    var base = 0;
+    var swept = 0;
+    var op = 0;
+    while (op < _OM_OPS) {
+        _sankoch_reset_tables();
+        if (_om_op(op) != 1) { base = base + 1; }   # the operation itself must work
+        var limit = _om_allocs(op);
+        var hits = 0;
+        var n = 0;
+        while (n < limit) {
+            _sankoch_reset_tables();
+            _sankoch_alloc_set_fail_at(n);
+            var first = _om_op(op);
+            _sankoch_alloc_set_fail_at(0 - 1);
+            if (first == 0) { hits = hits + 1; }
+            if (_om_op(op) != 1) {               # the retry, NO reset: a latch fails here
+                bad = bad + 1;
+                fmt_int(op);
+                sys_write(1, " op: retry failed after a fault at allocation ", 46);
+                fmt_int(n);
+                sys_write(1, "\n", 1);
+            }
+            n = n + 1;
+            swept = swept + 1;
+        }
+        if (hits == 0) {
+            unhit = unhit + 1;
+            fmt_int(op);
+            sys_write(1, " op: no fault reached it\n", 25);
+        }
+        op = op + 1;
+    }
+    assert_eq(base, 0, "oom matrix: all 24 operations round-trip without faults");
+    assert_eq(bad, 0, "oom matrix: every retry after a partial OOM succeeds (no latch, no leaked lock)");
+    assert_eq(unhit, 0, "oom matrix: a fault reached every operation");
+    assert(swept > 700, "oom matrix: every allocation of every operation faulted once");
+    _sankoch_reset_tables();
+    return 0;
+}
+
+fn main() {
+    _test_init();
+    test_oom_retry_matrix();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
+syscall(60, exit_code);

@@ -313,6 +313,7 @@ enum GzipDec {
     GDEC_STATE_TRAILER = 7;          # 8-byte CRC-32 + ISIZE
     GDEC_STATE_DONE = 8;
     GDEC_STATE_AFTER_TRAILER = 9;    # probe for a concatenated next member
+    GDEC_STATE_CLOSED = 10;          # 2.8.6: gzip_dec_finish ran (the lock is released)
 }
 
 fn _gdec_poison(ctx, code): i64 {
@@ -385,6 +386,9 @@ fn gzip_dec_init(dst, dst_cap): i64 {
 }
 
 fn gzip_dec_write(ctx, input, in_len): i64 {
+    # Finished (2.8.6). A finish in AFTER_TRAILER used to leave this ctx able to start another
+    # member, resetting the finished inner decoder and decoding without the lock.
+    if (load64(ctx + 8) == GDEC_STATE_CLOSED) { return 0 - ERR_INVALID_INPUT; }
     if (load64(ctx + 72) < 0) { return load64(ctx + 72); }
     if (in_len < 0) {
         return _gdec_poison(ctx, 0 - ERR_INVALID_INPUT);
@@ -395,7 +399,7 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
     }
 
     var cp = 0;
-    while (1) {
+    loop {
         var state = load64(ctx + 8);
         if (state == GDEC_STATE_DONE) { return cp; }
 
@@ -589,13 +593,15 @@ fn gzip_dec_write(ctx, input, in_len): i64 {
 }
 
 fn gzip_dec_finish(ctx): i64 {
+    var gstate = load64(ctx + 8);
+    if (gstate == GDEC_STATE_CLOSED) { return 0 - ERR_INVALID_INPUT; }   # finishes once (2.8.6)
+    store64(ctx + 8, GDEC_STATE_CLOSED);
     var inner = load64(ctx + 0);
     var inner_result = deflate_dec_finish(inner);
     var gzip_err = load64(ctx + 72);
     if (gzip_err < 0) { return gzip_err; }
     # AFTER_TRAILER is also an accepting state: the last member's trailer
     # validated and no further member followed (clean EOF at a boundary).
-    var gstate = load64(ctx + 8);
     if (gstate != GDEC_STATE_DONE && gstate != GDEC_STATE_AFTER_TRAILER) {
         return 0 - ERR_CORRUPT_DATA;
     }

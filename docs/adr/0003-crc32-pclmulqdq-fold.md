@@ -34,7 +34,8 @@ from GNU as, never from hand.**
     (slice-by-8, unchanged). `crc32`, `crc32_update`, gzip and zip all go through it.
   - **The fold** (`_crc32_clmul`, `docs/sources/crc32-pclmul/crc32_fold.S`): four 128-bit lanes over
     64-byte blocks, merged into one, then 16-byte blocks. Constants K1..K4 as in Linux
-    `arch/x86/crypto/crc32-pclmul_asm.S`. Only xmm0..xmm5 (Win64 keeps xmm6..15), all loads `movdqu`.
+    `arch/x86/crypto/crc32-pclmul_asm.S`. Only xmm0..xmm5 (Win64 keeps xmm6..15), all loads `movdqu`; rdi / rsi, also Win64-callee-saved, are
+    pushed around the block (2.8.6).
   - **The finish**: the routine leaves the remainder R with the invariant `CRC_reg(data) == CRC_0(R ||
     tail)`, so the table computes the last 16 + (len mod 16) bytes. No 128→64→32 reduction and no
     Barrett step.

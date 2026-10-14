@@ -163,8 +163,17 @@ fn lz77_rebase(delta): i64 {
 # absolute window base. Called at the start of every batch compress and
 # every streaming encoder init, so the window_base for batch is always 0
 # (abs_pos == win_pos in batch mode — no behavior change vs pre-2.x).
+# The body is `_lz77_init_inner`, called by the encoders under _sankoch_mtx; the public name takes
+# the lock around it (2.8.6; before, it took none and reset the shared tables under a locked
+# compress in another thread).
 fn lz77_init(): i64 {
-    _sankoch_arena_guard();   # public, no lock: consumers call it directly (2.8.0)
+    _sankoch_lock();
+    var r = _lz77_init_inner();
+    _sankoch_unlock();
+    return r;
+}
+
+fn _lz77_init_inner(): i64 {
     if (_lz77_head == 0) {
         _lz77_head = _sankoch_alloc(262144);
         if (_lz77_head == 0) { return 0 - ERR_OOM; }

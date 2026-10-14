@@ -162,7 +162,7 @@ fn _bz_get_mtf(): i64 {
     var lbase = t * BZ_MAX_CODE_LEN;
     var zn = load64(_bz_minlens + t * 8);
     var zvec = _bz_bits(zn);
-    while (1) {
+    loop {
         if (zn > 20) { return 0 - ERR_INVALID_HUFFMAN; }
         if (zvec <= load64(_bz_limit + (lbase + zn) * 8)) { break; }
         zn = zn + 1;
@@ -252,7 +252,7 @@ fn _bz_decode_block(level): i64 {
         var curr = _bz_bits(5);
         var s = 0;
         while (s < _bz_alpha) {
-            while (1) {
+            loop {
                 if (curr < 1 || curr > 20) { return 0 - ERR_INVALID_HUFFMAN; }
                 if (_bz_bits(1) == 0) { break; }
                 if (_bz_bits(1) == 0) { curr = curr + 1; } else { curr = curr - 1; }
@@ -809,7 +809,7 @@ fn _bze_make_lengths(lenp, freqp, alpha, maxlen): i64 {
         store64(wt + (i + 1) * 8, f << 8);
         i = i + 1;
     }
-    while (1) {
+    loop {
         var nNodes = alpha;
         var nHeap = 0;
         store64(heap, 0); store64(wt, 0); store64(par, 0 - 2);
@@ -833,7 +833,7 @@ fn _bze_make_lengths(lenp, freqp, alpha, maxlen): i64 {
             nHeap = nHeap - 1;
             var zz = 1;
             var tmp = load64(heap + zz * 8);
-            while (1) {
+            loop {
                 var yy = zz << 1;
                 if (yy > nHeap) { break; }
                 if (yy < nHeap) {
@@ -851,7 +851,7 @@ fn _bze_make_lengths(lenp, freqp, alpha, maxlen): i64 {
             nHeap = nHeap - 1;
             zz = 1;
             tmp = load64(heap + zz * 8);
-            while (1) {
+            loop {
                 var yy = zz << 1;
                 if (yy > nHeap) { break; }
                 if (yy < nHeap) {
@@ -960,7 +960,7 @@ fn _bze_gen_mtf(n, n_in_use): i64 {
         } else {
             if (zpend > 0) {
                 zpend = zpend - 1;
-                while (1) {
+                loop {
                     if ((zpend & 1) != 0) {
                         store64(_bze_mtfv + wr * 8, BZ_RUNB); wr = wr + 1;
                         store64(_bze_efreq + BZ_RUNB * 8, load64(_bze_efreq + BZ_RUNB * 8) + 1);
@@ -980,7 +980,7 @@ fn _bze_gen_mtf(n, n_in_use): i64 {
     }
     if (zpend > 0) {
         zpend = zpend - 1;
-        while (1) {
+        loop {
             if ((zpend & 1) != 0) {
                 store64(_bze_mtfv + wr * 8, BZ_RUNB); wr = wr + 1;
                 store64(_bze_efreq + BZ_RUNB * 8, load64(_bze_efreq + BZ_RUNB * 8) + 1);

@@ -567,8 +567,53 @@ fn test_zc_optimal_backtrack() {
     return 0;
 }
 
+fn _zc_same(a, b, n) {
+    var i = 0;
+    while (i < n) {
+        if (load8(a + i) != load8(b + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+# 2.8.6: a frame larger than the match window declares the window (Window_Descriptor) instead of
+# being single-segment, whose window is the whole content: before, a frame over 128 MiB needed
+# `zstd -d --long` (windowLogMax 27). Up to the window it stays single-segment.
+fn test_zc_window_descriptor() {
+    var n = 600000;
+    var src = alloc(n);
+    var x = 0x1234567;
+    var i = 0;
+    while (i < n) {
+        x = x * 6364136223846793005 + 1442695040888963407;
+        var b = (x >> 33) & 255;
+        if ((i % 97) < 60 && i >= 1000) { b = load8(src + i - 1000 + ((x >> 50) & 7)); }
+        store8(src + i, b);
+        i = i + 1;
+    }
+    var cap = n + 65536;
+    var c = alloc(cap);
+    var d = alloc(n);
+    var lv = 1;
+    while (lv <= 9) {
+        var cl = zstd_compress_level(src, n, c, cap, lv);
+        assert(cl > 0, "window: 600 KB compresses");
+        assert_eq(load8(c + 4) & 0x20, 0, "window: 600 KB is not single-segment");
+        assert_eq(load8(c + 5), 0x48, "window: and declares a 512 KiB window");
+        assert_eq(load32(c + 6), n, "window: and still carries its content size");
+        assert_eq(zstd_decompress(c, cl, d, n), n, "window: round-trips");
+        assert_eq(_zc_same(d, src, n), 1, "window: exactly");
+        lv = lv + 4;
+    }
+    var sl = zstd_compress_level(src, 200000, c, cap, 6);
+    assert_eq(load8(c + 4) & 0x20, 0x20, "window: 200 KB stays single-segment");
+    assert_eq(zstd_decompress(c, sl, d, 200000), 200000, "window: 200 KB round-trips");
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_zc_window_descriptor();
     test_zc_record_parse();
     test_zc_optimal_backtrack();
     test_zc_lazy_beats_greedy();
@@ -597,4 +642,5 @@ fn main() {
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

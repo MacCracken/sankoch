@@ -57,6 +57,15 @@ enum Stream {
 # output as each stream_write chunk is processed. FORMAT_LZ4 (raw block
 # format) has no streaming path — use FORMAT_LZ4F instead.
 fn stream_compress_init(format, level, dst, dst_cap): i64 {
+    if (format != FORMAT_DEFLATE && format != FORMAT_ZLIB && format != FORMAT_GZIP
+      && format != FORMAT_LZ4F) {
+        return 0;   # FORMAT_LZ4 (raw block) or unknown — unsupported
+    }
+    # 2.8.6: the wrapper is allocated BEFORE the inner encoder starts. An inner streaming encoder
+    # holds _sankoch_mtx from init to finish, so failing this allocation after it had started
+    # returned 0 with the lock still held: every later sankoch call deadlocked (oom_matrix.tcyr).
+    var ctx = _sankoch_alloc(48);
+    if (ctx == 0) { return 0; }   # 2.5.9 M-13: don't store through a NULL ctx
     var inner = 0;
     if (format == FORMAT_DEFLATE) {
         inner = deflate_enc_init(level, dst, dst_cap);
@@ -66,13 +75,8 @@ fn stream_compress_init(format, level, dst, dst_cap): i64 {
         inner = gzip_enc_init(level, dst, dst_cap);
     } elif (format == FORMAT_LZ4F) {
         inner = lz4f_enc_init(dst, dst_cap);
-    } else {
-        return 0;   # FORMAT_LZ4 (raw block) or unknown — unsupported
     }
     if (inner == 0) { return 0; }
-
-    var ctx = _sankoch_alloc(48);
-    if (ctx == 0) { return 0; }   # 2.5.9 M-13: don't store through a NULL ctx
     store64(ctx, format);
     store64(ctx + 8, level);
     store64(ctx + 16, STREAM_COMPRESS);
@@ -122,6 +126,13 @@ fn stream_decompress_init(format): i64 {
 # streaming decoder; use FORMAT_LZ4F instead. Returns ctx pointer or 0
 # on alloc failure / unsupported format.
 fn stream_decompress_init_inc(format, dst, dst_cap): i64 {
+    if (format != FORMAT_DEFLATE && format != FORMAT_ZLIB && format != FORMAT_GZIP
+      && format != FORMAT_LZ4F) {
+        return 0;   # FORMAT_LZ4 raw block or unknown — no streaming path
+    }
+    # 2.8.6: allocated before the inner decoder takes _sankoch_mtx (see stream_compress_init).
+    var ctx = _sankoch_alloc(48);
+    if (ctx == 0) { return 0; }   # 2.5.9 M-13
     var inner = 0;
     if (format == FORMAT_DEFLATE) {
         inner = deflate_dec_init(dst, dst_cap);
@@ -131,13 +142,8 @@ fn stream_decompress_init_inc(format, dst, dst_cap): i64 {
         inner = gzip_dec_init(dst, dst_cap);
     } elif (format == FORMAT_LZ4F) {
         inner = lz4f_dec_init(dst, dst_cap);
-    } else {
-        return 0;   # FORMAT_LZ4 raw block or unknown — no streaming path
     }
     if (inner == 0) { return 0; }
-
-    var ctx = _sankoch_alloc(48);
-    if (ctx == 0) { return 0; }   # 2.5.9 M-13
     store64(ctx, format);
     store64(ctx + 8, 0);
     store64(ctx + 16, STREAM_DECOMPRESS_INC);

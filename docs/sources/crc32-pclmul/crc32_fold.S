@@ -12,7 +12,7 @@
 #
 # Afterwards CRC_reg(data[0..len)) == CRC_0(out[0..16) || data[len - len % 16 .. len)), which the
 # caller finishes with the slice-by-8 table. Only xmm0..xmm5 and rax/rcx/rdx/rsi/rdi/r8 are touched
-# (xmm6..15 are callee-saved on Win64). Folding scheme: Gopal et al., "Fast CRC Computation for
+# (xmm6..15 are callee-saved on Win64; so are rdi and rsi, which src/checksum.cyr pushes around the block). Folding scheme: Gopal et al., "Fast CRC Computation for
 # Generic Polynomials Using PCLMULQDQ Instruction" (Intel, 2009); constants as in Linux
 # arch/x86/crypto/crc32-pclmul_asm.S (crc32_pclmul_le_16) for the reflected CRC-32 polynomial.
 

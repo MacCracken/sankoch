@@ -374,8 +374,59 @@ fn test_deflate_enc_dict_levels() {
 # main
 # ================================================================
 
+# 2.8.6: the dynamic-header cost scratch (512 bytes) holds every header _dyn_header_bits can price:
+# no code length costs more than 7 bits, so a header is at most 2,283 bits (286 bytes). 3,000
+# adversarial length sets: random lengths 0..15 with no runs (repeat codes cannot help), and
+# Huffman-built sets from heavy-tailed frequencies.
+fn test_dyn_header_bits_bound() {
+    var lit = alloc(286 * 8);
+    var dist = alloc(30 * 8);
+    var freq = alloc(286 * 8);
+    var rng = 0x2860;
+    var worst = 0;
+    var bad = 0;
+    var t = 0;
+    while (t < 3000) {
+        var i = 0;
+        if (t % 2 == 0) {
+            var prev = 0 - 1;
+            while (i < 286) {
+                rng = rng * 6364136223846793005 + 1442695040888963407;
+                var v = (rng >> 33) % 16;
+                if (v == prev) { v = (v + 1) % 16; }
+                store64(lit + i * 8, v);
+                prev = v;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < 30) {
+                rng = rng * 6364136223846793005 + 1442695040888963407;
+                store64(dist + i * 8, 1 + (rng >> 33) % 15);
+                i = i + 1;
+            }
+        } else {
+            while (i < 286) {
+                rng = rng * 6364136223846793005 + 1442695040888963407;
+                var f = (rng >> 33) % 1000;
+                store64(freq + i * 8, f * f * f + 1);
+                i = i + 1;
+            }
+            huff_compute_lengths(freq, 286, lit, 2, 15);
+            huff_compute_lengths(freq, 30, dist, 2, 15);
+        }
+        var b = _dyn_header_bits(lit, 286, dist, 30);
+        if (b <= 0 || b > 2283) { bad = bad + 1; }
+        if (b > worst) { worst = b; }
+        t = t + 1;
+    }
+    assert_eq(bad, 0, "dyn header: every priced header is 1..2,283 bits (fits the 512-byte scratch)");
+    assert(worst > 1000, "dyn header: the adversarial sets reached large headers");
+    return 0;
+}
+
 fn main() {
     _test_init();
+    test_dyn_header_bits_bound();
     test_deflate_enc_smoke();
     test_deflate_enc_chunked();
     test_deflate_enc_empty();
@@ -399,4 +450,5 @@ fn main() {
 }
 
 var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
 syscall(60, exit_code);

@@ -65,9 +65,14 @@ never cause crashes, buffer overflows, or unbounded memory allocation.
   Brotli decoder and the per-profile arena-reset seam: 0 HIGH · 4 MEDIUM · 15 LOW · 4 INFO, all
   fixed before the cut (the mediums were test/gate blind spots, not decoder defects).
 
-Next periodic audit: the **2.8.x-closeout P(-1) pass** at the end of the 2.8.x line (the 2.7.x
-encoder surface, the Brotli decoder + encoder, the reset seam, the PCLMULQDQ CRC fold), released
-as 2.8.6. Forward ladder in
+- `docs/audit/2026-10-13-2.8.x-closeout.md` — the 2.8.x-closeout P(-1) pass, released as 2.8.6: the
+  2.7.x xz and zstd encoders, the Brotli decoder, the runtime seam and its lock, the PCLMULQDQ CRC
+  fold, the DEFLATE 2.7.9 additions. 2 HIGH · 10 MEDIUM · 19 LOW · 12 INFO; both HIGHs (a zip writer
+  slot that turned a byte offset into an allocator call; a lazily created API lock two threads could
+  each create) and every MEDIUM but the RFC 7692 duplex design fixed in 2.8.6, the rest pinned to
+  2.9.x releases.
+
+Next periodic audit: the **2.9.x-closeout P(-1) pass** at the end of the 2.9.x line. Forward ladder in
 [`docs/development/roadmap.md`](docs/development/roadmap.md).
 
 ## Supported Versions
@@ -84,9 +89,16 @@ as 2.8.6. Forward ladder in
 re-encoded up to 257 bytes at every 1 MiB block boundary and returned a
 stream longer than the input, with no error raised.
 
+⚠ Upgrade to **2.8.6** if you stream more than one ZIP member through `zip_enc_begin` (2.7.7–2.8.5
+called through a byte offset after the first), call sankoch from more than one thread (the API lock
+could be created twice, and the public Huffman / LZ77 builders took no lock), or decode untrusted
+DEFLATE, LZ4F or xz input (long Huffman codes cost ~1,000× zlib's time under the lock; truncated
+LZ4F frames decoded to a prefix as a success). Programs that take sankoch through the Cyrius stdlib
+get it when the stdlib folds 2.8.6.
+
 ⚠ If your program calls the stdlib `alloc_reset()` while using sankoch, upgrade to **2.8.0**:
 2.7.10–2.7.15 could still write through caller-owned memory after a reset (xz, zstd, the unlocked
 table builders, a canary stranded outside the first arena chunk, and every AGNOS build), and every
 profile bundle except `core` failed to link.
 
-**Last Updated**: 2026-09-16
+**Last Updated**: 2026-10-13
