@@ -367,7 +367,9 @@ fn test_oom_retry_matrix() {
     assert_eq(base, 0, "oom matrix: all 24 operations round-trip without faults");
     assert_eq(bad, 0, "oom matrix: every retry after a partial OOM succeeds (no latch, no leaked lock)");
     assert_eq(unhit, 0, "oom matrix: a fault reached every operation");
-    assert(swept > 700, "oom matrix: every allocation of every operation faulted once");
+    # Measured: 727 through 2.8.8, 700 from 2.8.9, when batch inflate / deflate stopped taking their
+    # bit reader / writer from the arena (27 per-call allocations gone; heap_growth.tcyr pins it).
+    assert(swept >= 700, "oom matrix: every allocation of every operation faulted once");
     _sankoch_reset_tables();
     return 0;
 }

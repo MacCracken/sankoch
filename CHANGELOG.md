@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The first 2.8.9 repair (roadmap § *2.8.9, repairs*); the rest of the slot follows before the cut.
+
+### Fixed
+
+- **Batch inflate and deflate no longer keep memory on every call** (sit's filing, 2026-10-20).
+  - **What was wrong.** sankoch allocates from the process's bump `alloc`, which never frees.
+    `br_init` took a 32-byte bit reader from it on every batch inflate (`_deflate_decompress_inner`,
+    `_deflate_decompress_dict_inner`). `bw_init` took a 40-byte bit writer on every batch deflate
+    (`_deflate_compress_level_inner`). So every batch `deflate_*` / `zlib_*` / `gzip_*` call, and
+    `compress` / `decompress` for those formats, kept 32 or 40 B for the life of the process. A
+    long-lived sit process kept 63,968 B over a 2,000-commit push. Present since 2.3.x.
+  - **The fix.** Each reader or writer lives exactly as long as its call, so both are on the codec's
+    stack now (`var brs[32]`, `var bws[40]`). The new private `_br_init_at` / `_bw_init_at`
+    initialise them in place, and the three sites lose an OOM exit they no longer need. `br_init` and
+    `bw_init` are unchanged. The streaming encoder still keeps its writer in its context, for as long
+    as the context lives (roadmap 2.9.5).
+  - **No output changed:** the 47 SIZE rows are identical. Speed is neutral: an interleaved A/B, two
+    runs each on an idle machine, gives the DEFLATE / zlib / gzip rows 0.957–0.997 (min of two) and
+    all 68 rows a geomean of 1.002. Run-to-run noise is about ±3 %.
+
+### Tests
+
+- **New `tests/tcyr/heap_growth.tcyr`** (394 assertions), which makes INFO-D's claim checkable.
+  - **What it runs:** every public batch entry, on a text input and an incompressible one. That is
+    21 compressors and levels, 18 decoders, `compress` / `decompress` for all 9 formats, and the 5
+    batch checksums.
+  - **What it checks:** one warm-up call, then 16 more. `alloc_used()` must not move across the 16,
+    and each result must equal the warm-up's, which is checked first.
+  - **Before the fix** it failed 48 rows: exactly the 24 DEFLATE-family entries on both inputs
+    (512 B per 16 inflates, 640 B per 16 deflates). Every other entry kept nothing already: LZ4, LZ4F,
+    xz, bzip2, zstd, Brotli and the checksums.
+  - It also passes built for aarch64 under `qemu-aarch64`, as do `deflate_decompress` and
+    `zlib_compress`.
+- **`oom_matrix.tcyr`**: the swept-allocation floor goes from `> 700` to `>= 700`. The sweep now
+  faults 27 fewer allocations (727 → 700), which are the per-call ones this fix removed.
+- **Totals: 32 suites, 4,501,372 assertions, 0 failed** (was 31, 4,500,978).
+- **`dist/` regenerated:** the 7 bundles that carry DEFLATE (`full`, `zlib`, `gzip`, `tar`, `zip`,
+  `zipall`, `woff`) change; the version line stays `2.8.8` until the cut.
+
 ## [2.8.8] — 2026-10-22
 
 **The cyrius pin moves 6.7.10 → 6.7.16.** `lib/` is re-vendored to 6.7.16's stdlib, and the roadmap is

@@ -919,16 +919,24 @@ fn _checksum_reset_tables(): i64 {
 #   +16: bit position (0-7, counts from LSB)
 #   +24: data length in bytes
 
-# Each br_init allocates a fresh 32-byte context on the heap.
-# No shared static state — safe for repeat and nested calls.
-fn br_init(data, len): i64 {
-    var br = _sankoch_alloc(32);
-    if (br == 0) { return 0; }   # 2.3.7: OOM → null; callers check
+# Initialise a reader in the caller's 32 bytes. The batch decoders keep theirs on the stack
+# (`var brs[32]`): the reader lives exactly as long as the decode call, and the arena never
+# frees, so a heap reader per call was 32 B kept for the life of the process (2.8.9, sit's
+# filing).
+fn _br_init_at(br, data, len): i64 {
     store64(br, data);
     store64(br + 8, 0);
     store64(br + 16, 0);
     store64(br + 24, len);
     return br;
+}
+
+# Each br_init allocates a fresh 32-byte context on the heap, which is never freed.
+# No shared static state — safe for repeat and nested calls.
+fn br_init(data, len): i64 {
+    var br = _sankoch_alloc(32);
+    if (br == 0) { return 0; }   # 2.3.7: OOM → null; callers check
+    return _br_init_at(br, data, len);
 }
 
 # Read n bits LSB-first. Returns the value, or negative error.
@@ -1025,17 +1033,24 @@ fn br_bytes_consumed(br): i64 {
 #   +24: current partial byte
 #   +32: bit position in partial byte (0-7, from LSB)
 
-# Each bw_init allocates a fresh 40-byte context on the heap.
-# Returns 0 on alloc failure (2.2.1) — callers must check before use.
-fn bw_init(buf, cap): i64 {
-    var bw = _sankoch_alloc(40);
-    if (bw == 0) { return 0; }
+# Initialise a writer in the caller's 40 bytes. Batch deflate keeps its writer on the stack
+# (`var bws[40]`), for the same reason as `_br_init_at` (2.8.9).
+fn _bw_init_at(bw, buf, cap): i64 {
     store64(bw, buf);
     store64(bw + 8, cap);
     store64(bw + 16, 0);
     store64(bw + 24, 0);
     store64(bw + 32, 0);
     return bw;
+}
+
+# Each bw_init allocates a fresh 40-byte context on the heap, which is never freed (the
+# streaming encoder's writer lives in its context for as long as the context does).
+# Returns 0 on alloc failure (2.2.1) — callers must check before use.
+fn bw_init(buf, cap): i64 {
+    var bw = _sankoch_alloc(40);
+    if (bw == 0) { return 0; }
+    return _bw_init_at(bw, buf, cap);
 }
 
 # Write n bits LSB-first. value's low n bits are written.
@@ -2561,8 +2576,8 @@ fn _deflate_decompress_inner(src, src_len, dst, dst_cap, ratio_max, out_max): i6
     if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
     if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
 
-    var br = br_init(src, src_len);
-    if (br == 0) { return 0 - ERR_OOM; }
+    var brs[32];   # the reader lives for this call only (2.8.9)
+    var br = _br_init_at(&brs, src, src_len);
     var dp = 0;
     var bfinal = 0;
 
@@ -2665,8 +2680,8 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ra
     if (_huff_alloc_tables() < 0) { return 0 - ERR_OOM; }
     if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
     if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
-    var br = br_init(src, src_len);
-    if (br == 0) { return 0 - ERR_OOM; }
+    var brs[32];   # the reader lives for this call only (2.8.9)
+    var br = _br_init_at(&brs, src, src_len);
     var dp = dict_len;
     # The ratio ceiling bounds true output (dp - dict_len); the dict
     # prefix occupies dst[0..dict_len) and is shifted out at the end, so
@@ -4224,8 +4239,8 @@ fn _deflate_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
     lz77_set_level(level);
     if (_lz77_init_inner() < 0) { return 0 - ERR_OOM; }
 
-    var bw = bw_init(dst, dst_cap);
-    if (bw == 0) { return 0 - ERR_OOM; }
+    var bws[40];   # the writer lives for this call only (2.8.9)
+    var bw = _bw_init_at(&bws, dst, dst_cap);
     var sp = 0;
     var emitted_final = 0;
 

@@ -1,0 +1,355 @@
+# sankoch — no batch entry keeps memory per call (2.8.9)
+#
+# sankoch allocates from the process's bump `alloc`, which never frees. So a batch entry that takes
+# anything from it per call keeps that memory for the life of the process. sit filed the case that
+# found this (2026-10-20): `br_init` took a 32-byte bit reader on every inflate, and `bw_init` a
+# 40-byte bit writer on every batch deflate. Both are on the codec's stack now.
+#
+# For every public batch entry, on a text-like input and an incompressible one: one warm-up call
+# (which may build the entry's lazy tables), then _hg_reps more calls with the same arguments. The
+# heap must not grow across those calls (`alloc_used()` before == after), and every call must return
+# what the warm-up returned. The warm-up result is checked first, so a row cannot pass on an early
+# error. That covers the direct entries, the `compress` / `decompress` dispatch for every format,
+# and the batch checksums.
+#
+# Not covered, by design: streaming contexts and the tar / zip cursors. Each holds its allocation
+# for as long as the object lives, and nothing frees it after. That is roadmap 2.9.5 (memory per
+# context); the zip reader and writer already take a caller arena through their `_via` forms.
+#
+# Run: cyrius test tests/tcyr/heap_growth.tcyr
+
+include "tests/tcyr/_harness.tcyr"
+
+var _hg_n = 6000;
+var _hg_reps = 16;
+var _hg_txt = 0;       # text-like input: dynamic Huffman blocks, long matches
+var _hg_rnd = 0;       # incompressible input: stored / raw paths
+var _hg_dst = 0;       # encode / decode buffer
+var _hg_s = 0;         # pre-built streams, one 64 KiB slot per (format, input)
+var _hg_sl = 0;        # their lengths (i64 x 32)
+var _hg_dict = 0;
+
+enum HgSlot {
+    HG_DICT_DEFLATE = 20;
+    HG_DICT_ZLIB = 22;
+}
+
+enum HgOp {
+    HG_C_LZ4 = 0;
+    HG_C_LZ4F = 1;
+    HG_C_DEFLATE = 2;
+    HG_C_DEFLATE_L1 = 3;
+    HG_C_DEFLATE_L9 = 4;
+    HG_C_ZLIB = 5;
+    HG_C_ZLIB_L1 = 6;
+    HG_C_ZLIB_L9 = 7;
+    HG_C_GZIP = 8;
+    HG_C_GZIP_L1 = 9;
+    HG_C_GZIP_L9 = 10;
+    HG_C_XZ = 11;
+    HG_C_BZIP2 = 12;
+    HG_C_ZSTD = 13;
+    HG_C_ZSTD_L1 = 14;
+    HG_C_ZSTD_L9 = 15;
+    HG_C_BROTLI = 16;
+    HG_C_BROTLI_Q0 = 17;
+    HG_C_BROTLI_Q1 = 18;
+    HG_C_BROTLI_Q9 = 19;
+    HG_C_BROTLI_Q11 = 20;
+    HG_D_LZ4 = 21;
+    HG_D_LZ4F = 22;
+    HG_D_DEFLATE = 23;
+    HG_D_DEFLATE_RATIO = 24;
+    HG_D_DEFLATE_DICT = 25;
+    HG_D_ZLIB = 26;
+    HG_D_ZLIB_RATIO = 27;
+    HG_D_ZLIB_CAPPED = 28;
+    HG_D_ZLIB_DICT = 29;
+    HG_D_GZIP = 30;
+    HG_D_GZIP_RATIO = 31;
+    HG_D_XZ = 32;
+    HG_D_XZ_RATIO = 33;
+    HG_D_BZIP2 = 34;
+    HG_D_BZIP2_RATIO = 35;
+    HG_D_ZSTD = 36;
+    HG_D_BROTLI = 37;
+    HG_D_BROTLI_CAPPED = 38;
+    HG_DISPATCH_C = 39;    # 39..47: compress(FORMAT_LZ4 .. FORMAT_BROTLI)
+    HG_DISPATCH_D = 48;    # 48..56: decompress(FORMAT_LZ4 .. FORMAT_BROTLI)
+    HG_SUM_ADLER32 = 57;
+    HG_SUM_CRC32 = 58;
+    HG_SUM_CRC64 = 59;
+    HG_SUM_CRC32_BZIP2 = 60;
+    HG_SUM_XXHASH32 = 61;
+    HG_OP_COUNT = 62;
+}
+
+fn _hg_input(which) {
+    if (which == 0) { return _hg_txt; }
+    return _hg_rnd;
+}
+
+fn _hg_slot(k) { return _hg_s + k * 65536; }
+fn _hg_len(k) { return load64(_hg_sl + k * 8); }
+
+# The pre-built stream of `format` (FORMAT_LZ4 .. FORMAT_BROTLI) over input `which`.
+fn _hg_stream(format, which) { return format * 2 + which; }
+
+fn _hg_setup() {
+    _hg_txt = alloc(_hg_n);
+    _hg_rnd = alloc(_hg_n);
+    var i = 0;
+    var x = 2463534242;
+    while (i < _hg_n) {
+        var b = 97 + ((i * 7 + (i >> 5)) % 23);
+        if ((i % 97) < 3) { b = (i * 131) & 255; }
+        store8(_hg_txt + i, b);
+        x = x ^ ((x << 13) & 0xFFFFFFFF);
+        x = x ^ (x >> 17);
+        x = x ^ ((x << 5) & 0xFFFFFFFF);
+        store8(_hg_rnd + i, x & 255);
+        i = i + 1;
+    }
+    _hg_dst = alloc(_hg_n * 2 + 65536);
+    _hg_s = alloc(32 * 65536);
+    _hg_sl = alloc(32 * 8);
+    _hg_dict = alloc(64);
+    _put_str(_hg_dict, "abcdefghijklmnopqrstuvw abcdefghijklmnop", 40);
+    var f = FORMAT_LZ4;
+    while (f <= FORMAT_BROTLI) {
+        var w = 0;
+        while (w < 2) {
+            var k = _hg_stream(f, w);
+            store64(_hg_sl + k * 8, compress(f, _hg_input(w), _hg_n, _hg_slot(k), 65536));
+            w = w + 1;
+        }
+        f = f + 1;
+    }
+    var w2 = 0;
+    while (w2 < 2) {
+        var ctx = deflate_enc_init_dict(6, _hg_slot(HG_DICT_DEFLATE + w2), 65536, _hg_dict, 40);
+        deflate_enc_write(ctx, _hg_input(w2), _hg_n);
+        store64(_hg_sl + (HG_DICT_DEFLATE + w2) * 8, deflate_enc_finish(ctx));
+        var zctx = zlib_enc_init_dict(6, _hg_slot(HG_DICT_ZLIB + w2), 65536, _hg_dict, 40);
+        zlib_enc_write(zctx, _hg_input(w2), _hg_n);
+        store64(_hg_sl + (HG_DICT_ZLIB + w2) * 8, zlib_enc_finish(zctx));
+        w2 = w2 + 1;
+    }
+    return 0;
+}
+
+# One call of `op` on input `which`; returns the entry's result.
+fn _hg_call(op, which) {
+    var src = _hg_input(which);
+    var n = _hg_n;
+    var d = _hg_dst;
+    var cap = _hg_n * 2 + 65536;
+    if (op == HG_C_LZ4) { return lz4_compress(src, n, d, cap); }
+    if (op == HG_C_LZ4F) { return lz4f_compress(src, n, d, cap); }
+    if (op == HG_C_DEFLATE) { return deflate_compress(src, n, d, cap); }
+    if (op == HG_C_DEFLATE_L1) { return deflate_compress_level(src, n, d, cap, 1); }
+    if (op == HG_C_DEFLATE_L9) { return deflate_compress_level(src, n, d, cap, 9); }
+    if (op == HG_C_ZLIB) { return zlib_compress(src, n, d, cap); }
+    if (op == HG_C_ZLIB_L1) { return zlib_compress_level(src, n, d, cap, 1); }
+    if (op == HG_C_ZLIB_L9) { return zlib_compress_level(src, n, d, cap, 9); }
+    if (op == HG_C_GZIP) { return gzip_compress(src, n, d, cap); }
+    if (op == HG_C_GZIP_L1) { return gzip_compress_level(src, n, d, cap, 1); }
+    if (op == HG_C_GZIP_L9) { return gzip_compress_level(src, n, d, cap, 9); }
+    if (op == HG_C_XZ) { return xz_compress(src, n, d, cap); }
+    if (op == HG_C_BZIP2) { return bzip2_compress(src, n, d, cap); }
+    if (op == HG_C_ZSTD) { return zstd_compress(src, n, d, cap); }
+    if (op == HG_C_ZSTD_L1) { return zstd_compress_level(src, n, d, cap, 1); }
+    if (op == HG_C_ZSTD_L9) { return zstd_compress_level(src, n, d, cap, 9); }
+    if (op == HG_C_BROTLI) { return brotli_compress(src, n, d, cap); }
+    if (op == HG_C_BROTLI_Q0) { return brotli_compress_level(src, n, d, cap, 0); }
+    if (op == HG_C_BROTLI_Q1) { return brotli_compress_level(src, n, d, cap, 1); }
+    if (op == HG_C_BROTLI_Q9) { return brotli_compress_level(src, n, d, cap, 9); }
+    if (op == HG_C_BROTLI_Q11) { return brotli_compress_level(src, n, d, cap, 11); }
+    if (op == HG_D_DEFLATE_DICT) {
+        var kd = HG_DICT_DEFLATE + which;
+        return deflate_decompress_dict(_hg_slot(kd), _hg_len(kd), d, cap, _hg_dict, 40);
+    }
+    if (op == HG_D_ZLIB_DICT) {
+        var kz = HG_DICT_ZLIB + which;
+        return zlib_decompress_dict(_hg_slot(kz), _hg_len(kz), d, cap, _hg_dict, 40);
+    }
+    var f = 0;
+    if (op == HG_D_LZ4) { f = FORMAT_LZ4; }
+    if (op == HG_D_LZ4F) { f = FORMAT_LZ4F; }
+    if (op == HG_D_DEFLATE || op == HG_D_DEFLATE_RATIO) { f = FORMAT_DEFLATE; }
+    if (op >= HG_D_ZLIB && op <= HG_D_ZLIB_CAPPED) { f = FORMAT_ZLIB; }
+    if (op == HG_D_GZIP || op == HG_D_GZIP_RATIO) { f = FORMAT_GZIP; }
+    if (op == HG_D_XZ || op == HG_D_XZ_RATIO) { f = FORMAT_XZ; }
+    if (op == HG_D_BZIP2 || op == HG_D_BZIP2_RATIO) { f = FORMAT_BZIP2; }
+    if (op == HG_D_ZSTD) { f = FORMAT_ZSTD; }
+    if (op == HG_D_BROTLI || op == HG_D_BROTLI_CAPPED) { f = FORMAT_BROTLI; }
+    if (f != 0) {
+        var k = _hg_stream(f, which);
+        var s = _hg_slot(k);
+        var sl = _hg_len(k);
+        if (op == HG_D_LZ4) { return lz4_decompress(s, sl, d, cap); }
+        if (op == HG_D_LZ4F) { return lz4f_decompress(s, sl, d, cap); }
+        if (op == HG_D_DEFLATE) { return deflate_decompress(s, sl, d, cap); }
+        if (op == HG_D_DEFLATE_RATIO) { return deflate_decompress_with_ratio_cap(s, sl, d, cap, 1000); }
+        if (op == HG_D_ZLIB) { return zlib_decompress(s, sl, d, cap); }
+        if (op == HG_D_ZLIB_RATIO) { return zlib_decompress_with_ratio_cap(s, sl, d, cap, 1000); }
+        if (op == HG_D_ZLIB_CAPPED) { return zlib_decompress_capped(s, sl, d, cap, n); }
+        if (op == HG_D_GZIP) { return gzip_decompress(s, sl, d, cap); }
+        if (op == HG_D_GZIP_RATIO) { return gzip_decompress_with_ratio_cap(s, sl, d, cap, 1000); }
+        if (op == HG_D_XZ) { return xz_decompress(s, sl, d, cap); }
+        if (op == HG_D_XZ_RATIO) { return xz_decompress_with_ratio_cap(s, sl, d, cap, 1000); }
+        if (op == HG_D_BZIP2) { return bzip2_decompress(s, sl, d, cap); }
+        if (op == HG_D_BZIP2_RATIO) { return bzip2_decompress_with_ratio_cap(s, sl, d, cap, 1000); }
+        if (op == HG_D_ZSTD) { return zstd_decompress(s, sl, d, cap); }
+        if (op == HG_D_BROTLI) { return brotli_decompress(s, sl, d, cap); }
+        return brotli_decompress_capped(s, sl, d, cap, n);
+    }
+    if (op >= HG_DISPATCH_C && op < HG_DISPATCH_D) {
+        return compress(FORMAT_LZ4 + op - HG_DISPATCH_C, src, n, d, cap);
+    }
+    if (op >= HG_DISPATCH_D && op < HG_SUM_ADLER32) {
+        var kf = _hg_stream(FORMAT_LZ4 + op - HG_DISPATCH_D, which);
+        return decompress(FORMAT_LZ4 + op - HG_DISPATCH_D, _hg_slot(kf), _hg_len(kf), d, cap);
+    }
+    if (op == HG_SUM_ADLER32) { return adler32(src, n); }
+    if (op == HG_SUM_CRC32) { return crc32(src, n); }
+    if (op == HG_SUM_CRC64) { return crc64(src, n); }
+    if (op == HG_SUM_CRC32_BZIP2) { return crc32_bzip2(src, n); }
+    return xxhash32(src, n);
+}
+
+fn _hg_name(op) {
+    if (op == HG_C_LZ4) { return "lz4_compress"; }
+    if (op == HG_C_LZ4F) { return "lz4f_compress"; }
+    if (op == HG_C_DEFLATE) { return "deflate_compress"; }
+    if (op == HG_C_DEFLATE_L1) { return "deflate_compress_level 1"; }
+    if (op == HG_C_DEFLATE_L9) { return "deflate_compress_level 9"; }
+    if (op == HG_C_ZLIB) { return "zlib_compress"; }
+    if (op == HG_C_ZLIB_L1) { return "zlib_compress_level 1"; }
+    if (op == HG_C_ZLIB_L9) { return "zlib_compress_level 9"; }
+    if (op == HG_C_GZIP) { return "gzip_compress"; }
+    if (op == HG_C_GZIP_L1) { return "gzip_compress_level 1"; }
+    if (op == HG_C_GZIP_L9) { return "gzip_compress_level 9"; }
+    if (op == HG_C_XZ) { return "xz_compress"; }
+    if (op == HG_C_BZIP2) { return "bzip2_compress"; }
+    if (op == HG_C_ZSTD) { return "zstd_compress"; }
+    if (op == HG_C_ZSTD_L1) { return "zstd_compress_level 1"; }
+    if (op == HG_C_ZSTD_L9) { return "zstd_compress_level 9"; }
+    if (op == HG_C_BROTLI) { return "brotli_compress"; }
+    if (op == HG_C_BROTLI_Q0) { return "brotli_compress_level 0"; }
+    if (op == HG_C_BROTLI_Q1) { return "brotli_compress_level 1"; }
+    if (op == HG_C_BROTLI_Q9) { return "brotli_compress_level 9"; }
+    if (op == HG_C_BROTLI_Q11) { return "brotli_compress_level 11"; }
+    if (op == HG_D_LZ4) { return "lz4_decompress"; }
+    if (op == HG_D_LZ4F) { return "lz4f_decompress"; }
+    if (op == HG_D_DEFLATE) { return "deflate_decompress"; }
+    if (op == HG_D_DEFLATE_RATIO) { return "deflate_decompress_with_ratio_cap"; }
+    if (op == HG_D_DEFLATE_DICT) { return "deflate_decompress_dict"; }
+    if (op == HG_D_ZLIB) { return "zlib_decompress"; }
+    if (op == HG_D_ZLIB_RATIO) { return "zlib_decompress_with_ratio_cap"; }
+    if (op == HG_D_ZLIB_CAPPED) { return "zlib_decompress_capped"; }
+    if (op == HG_D_ZLIB_DICT) { return "zlib_decompress_dict"; }
+    if (op == HG_D_GZIP) { return "gzip_decompress"; }
+    if (op == HG_D_GZIP_RATIO) { return "gzip_decompress_with_ratio_cap"; }
+    if (op == HG_D_XZ) { return "xz_decompress"; }
+    if (op == HG_D_XZ_RATIO) { return "xz_decompress_with_ratio_cap"; }
+    if (op == HG_D_BZIP2) { return "bzip2_decompress"; }
+    if (op == HG_D_BZIP2_RATIO) { return "bzip2_decompress_with_ratio_cap"; }
+    if (op == HG_D_ZSTD) { return "zstd_decompress"; }
+    if (op == HG_D_BROTLI) { return "brotli_decompress"; }
+    if (op == HG_D_BROTLI_CAPPED) { return "brotli_decompress_capped"; }
+    if (op == HG_DISPATCH_C) { return "compress(FORMAT_LZ4)"; }
+    if (op == HG_DISPATCH_C + 1) { return "compress(FORMAT_DEFLATE)"; }
+    if (op == HG_DISPATCH_C + 2) { return "compress(FORMAT_ZLIB)"; }
+    if (op == HG_DISPATCH_C + 3) { return "compress(FORMAT_GZIP)"; }
+    if (op == HG_DISPATCH_C + 4) { return "compress(FORMAT_LZ4F)"; }
+    if (op == HG_DISPATCH_C + 5) { return "compress(FORMAT_XZ)"; }
+    if (op == HG_DISPATCH_C + 6) { return "compress(FORMAT_BZIP2)"; }
+    if (op == HG_DISPATCH_C + 7) { return "compress(FORMAT_ZSTD)"; }
+    if (op == HG_DISPATCH_C + 8) { return "compress(FORMAT_BROTLI)"; }
+    if (op == HG_DISPATCH_D) { return "decompress(FORMAT_LZ4)"; }
+    if (op == HG_DISPATCH_D + 1) { return "decompress(FORMAT_DEFLATE)"; }
+    if (op == HG_DISPATCH_D + 2) { return "decompress(FORMAT_ZLIB)"; }
+    if (op == HG_DISPATCH_D + 3) { return "decompress(FORMAT_GZIP)"; }
+    if (op == HG_DISPATCH_D + 4) { return "decompress(FORMAT_LZ4F)"; }
+    if (op == HG_DISPATCH_D + 5) { return "decompress(FORMAT_XZ)"; }
+    if (op == HG_DISPATCH_D + 6) { return "decompress(FORMAT_BZIP2)"; }
+    if (op == HG_DISPATCH_D + 7) { return "decompress(FORMAT_ZSTD)"; }
+    if (op == HG_DISPATCH_D + 8) { return "decompress(FORMAT_BROTLI)"; }
+    if (op == HG_SUM_ADLER32) { return "adler32"; }
+    if (op == HG_SUM_CRC32) { return "crc32"; }
+    if (op == HG_SUM_CRC64) { return "crc64"; }
+    if (op == HG_SUM_CRC32_BZIP2) { return "crc32_bzip2"; }
+    return "xxhash32";
+}
+
+# 1 when the warm-up result `r` shows the call did its job: a decoder returned the input's length,
+# a compressor a stream, a checksum anything (it cannot fail).
+fn _hg_warm_ok(op, r) {
+    if (op >= HG_SUM_ADLER32) { return 1; }
+    if (op >= HG_D_LZ4 && op < HG_DISPATCH_C) { return r == _hg_n; }
+    if (op >= HG_DISPATCH_D) { return r == _hg_n; }
+    return r > 0;
+}
+
+fn _hg_row(op, which) {
+    var name = _hg_name(op);
+    var r0 = _hg_call(op, which);
+    assert(_hg_warm_ok(op, r0), name);
+    if (_hg_warm_ok(op, r0) == 0) {
+        assert_eq(r0, _hg_n, name);
+        return 0;
+    }
+    var same = 1;
+    var h0 = alloc_used();
+    var i = 0;
+    while (i < _hg_reps) {
+        if (_hg_call(op, which) != r0) { same = 0; }
+        i = i + 1;
+    }
+    var grown = alloc_used() - h0;
+    assert(same, name);
+    # Bytes kept over _hg_reps calls after the warm-up; anything but 0 is a per-call leak.
+    assert_eq(grown, 0, name);
+    return 0;
+}
+
+fn test_every_batch_entry_keeps_nothing_per_call() {
+    var which = 0;
+    while (which < 2) {
+        var op = 0;
+        while (op < HG_OP_COUNT) {
+            _hg_row(op, which);
+            op = op + 1;
+        }
+        which = which + 1;
+    }
+    return 0;
+}
+
+# The setup's streams are what the decode rows read: every one must be a real stream.
+fn test_setup_built_every_stream() {
+    var f = FORMAT_LZ4;
+    while (f <= FORMAT_BROTLI) {
+        assert(_hg_len(_hg_stream(f, 0)) > 0, "setup: text stream");
+        assert(_hg_len(_hg_stream(f, 1)) > 0, "setup: random stream");
+        f = f + 1;
+    }
+    assert(_hg_len(HG_DICT_DEFLATE) > 0, "setup: deflate dict stream (text)");
+    assert(_hg_len(HG_DICT_DEFLATE + 1) > 0, "setup: deflate dict stream (random)");
+    assert(_hg_len(HG_DICT_ZLIB) > 0, "setup: zlib dict stream (text)");
+    assert(_hg_len(HG_DICT_ZLIB + 1) > 0, "setup: zlib dict stream (random)");
+    return 0;
+}
+
+fn main() {
+    _test_init();
+    _hg_setup();
+    test_setup_built_every_stream();
+    test_every_batch_entry_keeps_nothing_per_call();
+    return assert_summary();
+}
+
+var exit_code = main();
+if (exit_code != 0) { exit_code = 1; }   # exit keeps 8 bits: 256 failures would read as 0
+syscall(60, exit_code);

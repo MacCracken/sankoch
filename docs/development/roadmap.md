@@ -49,6 +49,9 @@ taking the 2.9.0 renames with it. Low effort, so batched (CLAUDE.md, *Task Sizin
 2.8.8 roadmap review unless marked otherwise.
 
 - **Batch inflate and deflate keep memory on every call** (sit's filing, 2026-10-20, widened here).
+  ✅ **Fixed on main; ships in 2.8.9** (CHANGELOG `[Unreleased]`). The reader and writer are on the
+  stack, and `tests/tcyr/heap_growth.tcyr` pins every batch entry at zero growth. Before the fix it
+  failed on exactly the 24 DEFLATE-family entries; nothing else grew.
   `br_init` (`src/bitreader.cyr`) takes its 32-byte reader from `_sankoch_alloc`, the process's bump
   `alloc`, at the two `br_init(src, src_len)` sites in `_deflate_decompress_inner` /
   `_deflate_decompress_dict_inner` (`src/deflate.cyr`). Its encoder twin is `bw_init`
@@ -60,8 +63,9 @@ taking the 2.9.0 renames with it. Low effort, so batched (CLAUDE.md, *Task Sizin
     read keeps 32 B per loose object and about 1 KB per packed object at chain depth 33. These run in
     owl and thoth's processes too.
   - **The fix:** each reader or writer lives exactly as long as its call, so a 32- or 40-byte struct
-    on the codec's stack (`var br[32]`, `var bw[40]`, initialised in place) closes both sites with no
-    API change. `br_init` / `bw_init` stay for other callers. `_dyn_cost_bw` (`src/deflate.cyr`) is
+    on the codec's stack (`var brs[32]`, `var bws[40]`, initialised in place by the private
+    `_br_init_at` / `_bw_init_at`) closes both sites with no API change. `br_init` / `bw_init` stay for
+    other callers. `_dyn_cost_bw` (`src/deflate.cyr`) is
     memoized and is not a leak.
   - **The test that makes the claim checkable:** a suite row asserting zero `_heap_used` growth over
     repeated calls of every batch entry (LZ4, LZ4F, DEFLATE, zlib, gzip, xz, bzip2, zstd, Brotli
@@ -70,7 +74,8 @@ taking the 2.9.0 renames with it. Low effort, so batched (CLAUDE.md, *Task Sizin
   memory with repeated use. It was false when written: `br_init` and `bw_init` have allocated per call
   since 2.3.x (`git log -S'_sankoch_alloc(32)' -- src/bitreader.cyr`); the 2.5.10 figures it cites are
   for zstd and tar only. 2.8.8 corrects the text and points it here and at 2.9.5. This item closes when
-  the growth test above passes.
+  the growth test above passes. ✅ It passes on main; `state.md` closes the batch half at the 2.8.9
+  cut.
 - **INFO-B goes on the entries' comments** (raised by the pre-2.3.0 audit, 2026-05-01, and carried in
   `state.md` with no release since): batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len`,
   because the dictionary is staged in `dst`. The check already runs; the comments on the public

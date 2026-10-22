@@ -10,16 +10,24 @@
 #   +16: bit position (0-7, counts from LSB)
 #   +24: data length in bytes
 
-# Each br_init allocates a fresh 32-byte context on the heap.
-# No shared static state — safe for repeat and nested calls.
-fn br_init(data, len): i64 {
-    var br = _sankoch_alloc(32);
-    if (br == 0) { return 0; }   # 2.3.7: OOM → null; callers check
+# Initialise a reader in the caller's 32 bytes. The batch decoders keep theirs on the stack
+# (`var brs[32]`): the reader lives exactly as long as the decode call, and the arena never
+# frees, so a heap reader per call was 32 B kept for the life of the process (2.8.9, sit's
+# filing).
+fn _br_init_at(br, data, len): i64 {
     store64(br, data);
     store64(br + 8, 0);
     store64(br + 16, 0);
     store64(br + 24, len);
     return br;
+}
+
+# Each br_init allocates a fresh 32-byte context on the heap, which is never freed.
+# No shared static state — safe for repeat and nested calls.
+fn br_init(data, len): i64 {
+    var br = _sankoch_alloc(32);
+    if (br == 0) { return 0; }   # 2.3.7: OOM → null; callers check
+    return _br_init_at(br, data, len);
 }
 
 # Read n bits LSB-first. Returns the value, or negative error.

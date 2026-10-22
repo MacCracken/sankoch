@@ -13,17 +13,24 @@
 #   +24: current partial byte
 #   +32: bit position in partial byte (0-7, from LSB)
 
-# Each bw_init allocates a fresh 40-byte context on the heap.
-# Returns 0 on alloc failure (2.2.1) — callers must check before use.
-fn bw_init(buf, cap): i64 {
-    var bw = _sankoch_alloc(40);
-    if (bw == 0) { return 0; }
+# Initialise a writer in the caller's 40 bytes. Batch deflate keeps its writer on the stack
+# (`var bws[40]`), for the same reason as `_br_init_at` (2.8.9).
+fn _bw_init_at(bw, buf, cap): i64 {
     store64(bw, buf);
     store64(bw + 8, cap);
     store64(bw + 16, 0);
     store64(bw + 24, 0);
     store64(bw + 32, 0);
     return bw;
+}
+
+# Each bw_init allocates a fresh 40-byte context on the heap, which is never freed (the
+# streaming encoder's writer lives in its context for as long as the context does).
+# Returns 0 on alloc failure (2.2.1) — callers must check before use.
+fn bw_init(buf, cap): i64 {
+    var bw = _sankoch_alloc(40);
+    if (bw == 0) { return 0; }
+    return _bw_init_at(bw, buf, cap);
 }
 
 # Write n bits LSB-first. value's low n bits are written.

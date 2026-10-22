@@ -379,8 +379,8 @@ fn _deflate_decompress_inner(src, src_len, dst, dst_cap, ratio_max, out_max): i6
     if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
     if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
 
-    var br = br_init(src, src_len);
-    if (br == 0) { return 0 - ERR_OOM; }
+    var brs[32];   # the reader lives for this call only (2.8.9)
+    var br = _br_init_at(&brs, src, src_len);
     var dp = 0;
     var bfinal = 0;
 
@@ -483,8 +483,8 @@ fn _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, ra
     if (_huff_alloc_tables() < 0) { return 0 - ERR_OOM; }
     if (_huff_build_fixed_inner() < 0) { return 0 - ERR_OOM; }
     if (_ddec_alloc_dyn_ws() < 0) { return 0 - ERR_OOM; }
-    var br = br_init(src, src_len);
-    if (br == 0) { return 0 - ERR_OOM; }
+    var brs[32];   # the reader lives for this call only (2.8.9)
+    var br = _br_init_at(&brs, src, src_len);
     var dp = dict_len;
     # The ratio ceiling bounds true output (dp - dict_len); the dict
     # prefix occupies dst[0..dict_len) and is shifted out at the end, so
@@ -2042,8 +2042,8 @@ fn _deflate_compress_level_inner(src, src_len, dst, dst_cap, level): i64 {
     lz77_set_level(level);
     if (_lz77_init_inner() < 0) { return 0 - ERR_OOM; }
 
-    var bw = bw_init(dst, dst_cap);
-    if (bw == 0) { return 0 - ERR_OOM; }
+    var bws[40];   # the writer lives for this call only (2.8.9)
+    var bw = _bw_init_at(&bws, dst, dst_cap);
     var sp = 0;
     var emitted_final = 0;
 
