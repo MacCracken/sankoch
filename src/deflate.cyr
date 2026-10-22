@@ -457,6 +457,10 @@ fn _deflate_decompress_inner(src, src_len, dst, dst_cap, ratio_max, out_max): i6
 # back-references can reach into it. Returns only the decompressed
 # byte count (excluding the dictionary prefix).
 # dict_len must be <= DEFLATE_WINDOW_SIZE (32768).
+# ⚠ dst is the decoder's window: dst_cap must hold dict_len PLUS the
+# decompressed size, or the call fails with ERR_BUFFER_TOO_SMALL even when
+# the output alone would fit (INFO-B). On success the output is moved to
+# dst[0..n); on failure dst holds the staged prefix. dict must not overlap dst.
 fn deflate_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len): i64 {
     _sankoch_lock();
     var r = _deflate_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, 0, 0);
@@ -1420,7 +1424,7 @@ fn _deflate_dec_write_inner(ctx, input, in_len): i64 {
 
 # Finalize the streaming decoder. Returns total bytes emitted into dst
 # on success, or negative error. Releases _sankoch_mtx unconditionally.
-# If the stream wasn't completed (BFINAL=1 block not yet reached),
+# If the stream wasn't completed (the BFINAL=1 block was never reached),
 # returns -ERR_CORRUPT_DATA (caller fed an incomplete stream).
 fn deflate_dec_finish(ctx): i64 {
     # A context finishes once (2.8.6). Before, a second finish released the lock again, out from

@@ -149,10 +149,13 @@ jobs:
         # output. Non-zero exit = something alloc/syscall-using leaked
         # into the kernel-safe subset, or extraction broke a behavior.
         # Must stay green for AGNOS initrd consumption of
-        # dist/sankoch-core.cyr.
+        # dist/sankoch-core.cyr. Its output is compared byte for byte too:
+        # through 2.8.8 the PASS line carried a stray NUL (a length one past the
+        # literal) that an exit-code-only check could not see.
         run: |
           CYRIUS_DCE=1 cyrius build programs/core_smoke.cyr build/core_smoke
-          ./build/core_smoke
+          ./build/core_smoke > build/core_smoke.out
+          printf 'core_smoke: PASS (kernel-safe LZ4 decompress linked clean)\n' | cmp - build/core_smoke.out
 
       - name: Cross-build aarch64
         # 2.2.2 added the aarch64 cross-build gate. sankoch's src/ is

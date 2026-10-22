@@ -73,6 +73,9 @@ fn zlib_decompress_capped(src, src_len, dst, dst_cap, max_output): i64 {
 # If the stream has FDICT=1, dict/dict_len must provide the dictionary
 # whose Adler-32 matches the stream's DICTID. Pass dict=0, dict_len=0
 # for streams without FDICT.
+# ⚠ With a dictionary, dst_cap must hold dict_len PLUS the decompressed
+# size: the DEFLATE decoder stages the dictionary in dst (see
+# deflate_decompress_dict; INFO-B). One byte short is ERR_BUFFER_TOO_SMALL.
 fn zlib_decompress_dict(src, src_len, dst, dst_cap, dict, dict_len): i64 {
     _sankoch_lock();
     var r = _zlib_decompress_dict_inner(src, src_len, dst, dst_cap, dict, dict_len, 0, 0);

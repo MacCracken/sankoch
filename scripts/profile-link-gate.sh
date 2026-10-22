@@ -30,6 +30,8 @@
 #      cannot show that: 2.8.0's unlocked public builders (checksum, lz77, huffman) call the
 #      guard directly and keep it alive whatever the lock does (review 2.8.0: the old check
 #      caught that regression in 2 of 11 profiles). Build only: AGNOS syscalls do not run here.
+#      Only an x86_64 Linux cyrius CLI can build an AGNOS image. On any other host this step is
+#      reported NOT RUN and the gate exits 77 (could not run), never 0 — see `PG_HOST` below.
 #   A profile present in cyrius.cyml with no probe mapping below FAILS the gate — a new
 #   `[lib.<name>]` forces a `probe_body_<name>`. A `[lib...]` header the parser cannot read
 #   also fails, rather than silently skipping that profile.
@@ -74,6 +76,16 @@ case "$BUNDLE_DIR" in
     /*) echo "ERROR: --bundle-dir must be inside $ROOT (cycc rejects absolute includes)" >&2; exit 2 ;;
 esac
 BUNDLE_DIR="${BUNDLE_DIR%/}"
+
+# --- host ------------------------------------------------------------------------------
+# Step 4 builds `--agnos`, which only the x86_64 Linux CLI can do. From cyrius 6.7.11 (macOS,
+# Windows: TL-10) and 6.7.12 (aarch64 Linux: TL-30) the others refuse it with rc 1, which this
+# gate would print as an AGNOS FAIL per profile; before those releases they wrote a non-AGNOS
+# binary at rc 0, so the dead-list check read the wrong image and could pass (2.8.9). PG_HOST
+# overrides `uname -sm`, so the not-run path can be exercised on an x86_64 Linux box.
+PG_HOST="${PG_HOST:-$(uname -sm)}"
+PG_AGNOS=0
+[ "$PG_HOST" = "Linux x86_64" ] && PG_AGNOS=1
 
 # --- manifest ---------------------------------------------------------------------------
 # Every `[lib]` / `[lib.<name>]` table header, tolerating trailing blanks and a `#` comment.
@@ -577,6 +589,7 @@ check_registration() {
 # --- run ---------------------------------------------------------------------------------
 fail=0
 nprof=0
+agnos_unrun=0
 for prof in $PROFILES; do
     nprof=$((nprof + 1))
     if [ "$prof" = full ]; then bundle="$BUNDLE_DIR/sankoch.cyr"; else bundle="$BUNDLE_DIR/sankoch-$prof.cyr"; fi
@@ -627,7 +640,8 @@ for prof in $PROFILES; do
             pfail=1
         fi
     fi
-    if [ "$PG_ALLOC" = 1 ]; then
+    if [ "$PG_ALLOC" = 1 ] && [ "$PG_AGNOS" = 0 ]; then agnos_unrun=$((agnos_unrun + 1)); fi
+    if [ "$PG_ALLOC" = 1 ] && [ "$PG_AGNOS" = 1 ]; then
         env CYRIUS_DCE=1 CYRIUS_DCE_VERBOSE=1 cyrius build --agnos "$probe" "$dir/probe-agnos.bin" \
             > "$dir/build-agnos.log" 2>&1
         arc=$?
@@ -665,7 +679,9 @@ for prof in $PROFILES; do
         fi
     fi
     if [ $pfail -eq 0 ]; then
-        if [ "$PG_ALLOC" = 1 ]; then echo "  ok: registered, links, runs, survives alloc_reset, reset reachable on agnos"
+        if [ "$PG_ALLOC" = 1 ] && [ "$PG_AGNOS" = 0 ]; then
+            echo "  ok: registered, links, runs, survives alloc_reset; AGNOS step NOT RUN (host: $PG_HOST)"
+        elif [ "$PG_ALLOC" = 1 ]; then echo "  ok: registered, links, runs, survives alloc_reset, reset reachable on agnos"
         else echo "  ok: links, runs (alloc-free profile)"; fi
     else
         fail=1
@@ -675,5 +691,10 @@ done
 if [ $fail -ne 0 ]; then
     echo "profile link gate: FAILED"
     exit 1
+fi
+if [ $agnos_unrun -ne 0 ]; then
+    echo "profile link gate: all $nprof profiles link and run, but the AGNOS step did NOT run for $agnos_unrun of them"
+    echo "  this host is '$PG_HOST'; only an x86_64 Linux cyrius CLI builds --agnos (cyrius 6.7.11 TL-10, 6.7.12 TL-30)"
+    exit 77
 fi
 echo "profile link gate: all $nprof profiles link and run"

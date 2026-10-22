@@ -94,11 +94,17 @@ called through a byte offset after the first), call sankoch from more than one t
 could be created twice, and the public Huffman / LZ77 builders took no lock), or decode untrusted
 DEFLATE, LZ4F or xz input (long Huffman codes cost ~1,000× zlib's time under the lock; truncated
 LZ4F frames decoded to a prefix as a success). Programs that take sankoch through the Cyrius stdlib
-get it when the stdlib folds 2.8.6.
+have it from cyrius 6.7.11, which folds 2.8.7.
+
+⚠ Long-lived processes that inflate or deflate through the batch DEFLATE / zlib / gzip entries
+should upgrade to **2.8.9**: through 2.8.8 each call kept 32 B (inflate) or 40 B (deflate) for the
+life of the process, so memory grew with the number of calls, a rate a remote peer can drive by
+sending objects. The other codecs keep nothing per call (`tests/tcyr/heap_growth.tcyr` pins every
+batch entry). Streaming contexts still keep their memory until the process exits (roadmap 2.9.5).
 
 ⚠ If your program calls the stdlib `alloc_reset()` while using sankoch, upgrade to **2.8.0**:
 2.7.10–2.7.15 could still write through caller-owned memory after a reset (xz, zstd, the unlocked
 table builders, a canary stranded outside the first arena chunk, and every AGNOS build), and every
 profile bundle except `core` failed to link.
 
-**Last Updated**: 2026-10-13
+**Last Updated**: 2026-10-22

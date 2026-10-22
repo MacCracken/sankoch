@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The first 2.8.9 repair (roadmap § *2.8.9, repairs*); the rest of the slot follows before the cut.
+## [2.8.9] — 2026-10-22
+
+**Repairs.** Every item of the roadmap's 2.8.9 slot, found by the 2.8.8 review or filed by sit. No API
+change and no output change (the 47 SIZE rows are identical).
+- Batch inflate and deflate no longer keep 32 / 40 B on every call. A new suite pins every batch
+  entry at zero heap growth.
+- INFO-B is documented on the dictionary entries and pinned by a test.
+- The kernel-safe tripwire no longer prints a NUL, and CI checks its output.
+- The link gate no longer misreports its AGNOS step on hosts that cannot build AGNOS images.
+- A stale zstd comment and cyrlint's false deferrals are cleaned up.
 
 ### Fixed
 
@@ -26,6 +35,43 @@ The first 2.8.9 repair (roadmap § *2.8.9, repairs*); the rest of the slot follo
   - **No output changed:** the 47 SIZE rows are identical. Speed is neutral: an interleaved A/B, two
     runs each on an idle machine, gives the DEFLATE / zlib / gzip rows 0.957–0.997 (min of two) and
     all 68 rows a geomean of 1.002. Run-to-run noise is about ±3 %.
+- **The kernel-safe tripwire printed a NUL.** `programs/core_smoke.cyr` wrote 60 bytes for its 59-byte
+  PASS line, so a NUL followed the newline. CI's tripwire step (in `ci.yml` and `release.yml`) checked
+  only the exit code, which is why it went unseen. The length is 59, and both steps now compare the
+  output byte for byte (`cmp`). The new check fails on the 2.8.8 program and passes on the fixed one.
+- **The link gate's AGNOS step on a host that cannot build AGNOS images.** Only an x86_64 Linux cyrius
+  CLI builds `--agnos`.
+  - From cyrius 6.7.11 (macOS, Windows: TL-10) and 6.7.12 (aarch64 Linux: TL-30) the other CLIs
+    refuse it with rc 1. `scripts/profile-link-gate.sh` printed that as an AGNOS FAIL for each of
+    the 11 alloc-bearing profiles.
+  - Before those releases they wrote a non-AGNOS binary at rc 0, so a local run there checked the
+    wrong image's dead list and could pass.
+  - The gate now checks the host once (`uname -sm`; `PG_HOST` overrides it for testing). On any
+    other host it skips the AGNOS builds, says so on each profile and in the summary, and exits
+    **77** (could not run), never 0. A real failure still exits 1 first.
+  - On x86_64 Linux, which is what CI runs, nothing changes: exit 0, 11 profiles reach the reset on
+    AGNOS. With `PG_HOST="Linux aarch64"`: exit 77, 11 NOT RUN lines, no FAIL.
+
+### Docs
+
+- **INFO-B on the dictionary entries** (raised by the pre-2.3.0 audit, carried since with no
+  release). `deflate_decompress_dict` and `zlib_decompress_dict` now say what the code does: the
+  dictionary is staged in `dst`, so `dst_cap` must hold `dict_len` **plus** the output. One byte
+  short is `ERR_BUFFER_TOO_SMALL` even when the output alone would fit, and on failure `dst` holds the
+  staged prefix. INFO-B said only `dst_cap >= dict_len`, which understated it.
+- **A stale `src/zstd.cyr` comment** said 4-stream literals and FSE sequences "are later bites; they
+  fall back to store mode here". Both shipped in 2.5.5. The comment now names the functions that
+  emit them.
+- **cyrlint's untracked-deferral list is empty.** It had 9 lines, unchanged from cyrius 6.7.10 to
+  6.7.16. One was the zstd comment above. The other 8 tripped on ordinary words, now reworded with
+  the same meaning:
+  - Adler-32's "deferred modulo" (`src/checksum.cyr`, 4) is now "batched modulo" / "reduced mod
+    65521 once per NMAX window";
+  - "not yet offered" (`src/brotli_enc.cyr`);
+  - "not yet reached" (`src/deflate.cyr`);
+  - "follow-up call" (`tests/tcyr/deflate_decompress.tcyr`, 2, one of them an assertion label).
+
+  A real deferral now shows up on its own.
 
 ### Tests
 
@@ -40,11 +86,16 @@ The first 2.8.9 repair (roadmap § *2.8.9, repairs*); the rest of the slot follo
     xz, bzip2, zstd, Brotli and the checksums.
   - It also passes built for aarch64 under `qemu-aarch64`, as do `deflate_decompress` and
     `zlib_compress`.
+- **`detect_error.tcyr`** (+8): INFO-B pinned for both dictionary entries. A decode at
+  `dst_cap = dict_len + n` returns `n` with the exact bytes; one byte less is `ERR_BUFFER_TOO_SMALL`.
 - **`oom_matrix.tcyr`**: the swept-allocation floor goes from `> 700` to `>= 700`. The sweep now
   faults 27 fewer allocations (727 → 700), which are the per-call ones this fix removed.
-- **Totals: 32 suites, 4,501,372 assertions, 0 failed** (was 31, 4,500,978).
-- **`dist/` regenerated:** the 7 bundles that carry DEFLATE (`full`, `zlib`, `gzip`, `tar`, `zip`,
-  `zipall`, `woff`) change; the version line stays `2.8.8` until the cut.
+- **Totals: 32 suites, 4,501,380 assertions, 0 failed** (was 31, 4,500,978). The 47 SIZE rows are
+  identical after every item.
+- **`dist/` regenerated.** The 7 bundles that carry DEFLATE change for the stack reader / writer
+  (`full`, `zlib`, `gzip`, `tar`, `zip`, `zipall`, `woff`). `xz`, `bzip2` and `zstd` change only in
+  comments (`checksum.cyr`, `zstd.cyr`). `core` and `brotli` are unchanged. The version line stays
+  `2.8.8` until the cut.
 
 ## [2.8.8] — 2026-10-22
 

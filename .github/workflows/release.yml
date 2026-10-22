@@ -127,10 +127,11 @@ jobs:
 
       - name: Kernel-safe tripwire
         # Mirror the CI gate so a release tag can never ship a
-        # broken or alloc-tainted dist/sankoch-core.cyr.
+        # broken or alloc-tainted dist/sankoch-core.cyr (output byte for byte, 2.8.9).
         run: |
           CYRIUS_DCE=1 cyrius build programs/core_smoke.cyr build/core_smoke
-          ./build/core_smoke
+          ./build/core_smoke > build/core_smoke.out
+          printf 'core_smoke: PASS (kernel-safe LZ4 decompress linked clean)\n' | cmp - build/core_smoke.out
 
       - name: Clean toolchain artifacts
         run: rm -f cyrius-*.tar.gz

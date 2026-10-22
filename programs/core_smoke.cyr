@@ -108,7 +108,7 @@ fn main() {
     _assert(LZ4F_VERSION == 1,        "LZ4F_VERSION", 12);
     _assert(LZ4F_BLOCK_MAX == 65536,  "LZ4F_BLOCK_MAX", 14);
 
-    _write(1, "core_smoke: PASS (kernel-safe LZ4 decompress linked clean)\n", 60);
+    _write(1, "core_smoke: PASS (kernel-safe LZ4 decompress linked clean)\n", 59);
     syscall(60, 0);
 }
 

@@ -532,6 +532,48 @@ fn test_enc_dict_below_min_match_len_2() {
     return 0;
 }
 
+fn _dict_out_is(out, input, n) {
+    var i = 0;
+    while (i < n) {
+        if (load8(out + i) != load8(input + i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn test_dict_decode_dst_holds_dict_plus_output() {
+    # INFO-B (2.8.9): the batch dict decoders stage the dictionary in dst[0..dict_len) and decode
+    # after it, so dst_cap must hold dict_len + the output. One byte short is ERR_BUFFER_TOO_SMALL
+    # even though the output alone would fit (dst then holds the staged prefix, not output); the
+    # exact size decodes. Both public entries.
+    var dict = "the quick brown fox jumps over the lazy dog";
+    var dict_len = strlen(dict);
+    var input = "the lazy dog jumps over the quick brown fox, twice: the lazy dog jumps";
+    var n = strlen(input);
+    var c = alloc(256);
+    var ctx = deflate_enc_init_dict(6, c, 256, dict, dict_len);
+    deflate_enc_write(ctx, input, n);
+    var clen = deflate_enc_finish(ctx);
+    assert(clen > 0, "INFO-B: deflate dict stream");
+    var out = alloc(256);
+    assert(deflate_decompress_dict(c, clen, out, dict_len + n, dict, dict_len) == n,
+      "INFO-B: deflate dict decode at dst_cap = dict_len + n");
+    assert(_dict_out_is(out, input, n), "INFO-B: deflate exact-size decode is the input");
+    assert(deflate_decompress_dict(c, clen, out, dict_len + n - 1, dict, dict_len) == 0 - ERR_BUFFER_TOO_SMALL,
+      "INFO-B: deflate dict decode at dst_cap = dict_len + n - 1 is ERR_BUFFER_TOO_SMALL");
+    var z = alloc(256);
+    var zctx = zlib_enc_init_dict(6, z, 256, dict, dict_len);
+    zlib_enc_write(zctx, input, n);
+    var zlen = zlib_enc_finish(zctx);
+    assert(zlen > 0, "INFO-B: zlib dict stream");
+    assert(zlib_decompress_dict(z, zlen, out, dict_len + n, dict, dict_len) == n,
+      "INFO-B: zlib dict decode at dst_cap = dict_len + n");
+    assert(_dict_out_is(out, input, n), "INFO-B: zlib exact-size decode is the input");
+    assert(zlib_decompress_dict(z, zlen, out, dict_len + n - 1, dict, dict_len) == 0 - ERR_BUFFER_TOO_SMALL,
+      "INFO-B: zlib dict decode at dst_cap = dict_len + n - 1 is ERR_BUFFER_TOO_SMALL");
+    return 0;
+}
+
 # ================================================================
 # main
 # ================================================================
@@ -565,6 +607,7 @@ fn main() {
     test_enc_dict_max_len_32768();
     test_enc_dict_min_match_len_3();
     test_enc_dict_below_min_match_len_2();
+    test_dict_decode_dst_holds_dict_plus_output();
     return assert_summary();
 }
 

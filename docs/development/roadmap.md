@@ -1,12 +1,13 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.8.8**, cyrius **6.7.16**); open filings **1** (sit's `br_init`, now part of
-> 2.8.9). The 2.8.x line shipped the Brotli decoder (2.8.0) and encoder (2.8.4), the PCLMULQDQ CRC-32
+> **Status**: Stable (**v2.8.9**, cyrius **6.7.16**); open filings **0** (sit's `br_init` shipped fixed
+> in 2.8.9). The 2.8.x line shipped the Brotli decoder (2.8.0) and encoder (2.8.4), the PCLMULQDQ CRC-32
 > fold (2.8.5), the 2.8.x-closeout P(-1) pass (2.8.6: 2 HIGH · 10 MEDIUM · 19 LOW · 12 INFO;
-> [dossier](../audit/2026-10-13-2.8.x-closeout.md)), a name fix for the stdlib fold (2.8.7) and four
-> toolchain releases (2.8.1–2.8.3, 2.8.8). Next: **2.8.9, repairs**, then **2.9.0, public names as
-> 6.7.x types**. **Every item of work has a release below**, including the three INFOs that `state.md`
-> carried without one until 2.8.8. Before the next pin move, read
+> [dossier](../audit/2026-10-13-2.8.x-closeout.md)), a name fix for the stdlib fold (2.8.7), four
+> toolchain releases (2.8.1–2.8.3, 2.8.8) and the repairs the 2.8.8 review found (2.8.9). Next: **2.9.0,
+> public names as 6.7.x types**. **Every item of work has a release below**; of the INFOs `state.md`
+> carried without one until 2.8.8, INFO-B and INFO-D's batch half closed in 2.8.9, INFO-C is 2.9.4 and
+> INFO-D's per-context half 2.9.5. Before the next pin move, read
 > [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-22
 
 This file is the **forward** ladder: **▶ Next**, then **▶ Scheduled**, each release pinned. **Shipped
@@ -40,73 +41,7 @@ Large items ship as small bites (CLAUDE.md, *Task Sizing*). The `C-NN` ids are t
 
 ---
 
-## ▶ Next — 2.8.9, repairs (patch)
-
-**Placed ahead of 2.9.0, with the reason:** each item is a defect or a false claim in the tree, none
-needs an API change, and 2.9.0 is a surface change consumers have to migrate through. As a patch, sit
-(and owl and thoth through sit's read API) get the allocation fix at the next cyrius refold without
-taking the 2.9.0 renames with it. Low effort, so batched (CLAUDE.md, *Task Sizing*). Found by the
-2.8.8 roadmap review unless marked otherwise.
-
-- **Batch inflate and deflate keep memory on every call** (sit's filing, 2026-10-20, widened here).
-  ✅ **Fixed on main; ships in 2.8.9** (CHANGELOG `[Unreleased]`). The reader and writer are on the
-  stack, and `tests/tcyr/heap_growth.tcyr` pins every batch entry at zero growth. Before the fix it
-  failed on exactly the 24 DEFLATE-family entries; nothing else grew.
-  `br_init` (`src/bitreader.cyr`) takes its 32-byte reader from `_sankoch_alloc`, the process's bump
-  `alloc`, at the two `br_init(src, src_len)` sites in `_deflate_decompress_inner` /
-  `_deflate_decompress_dict_inner` (`src/deflate.cyr`). Its encoder twin is `bw_init`
-  (`src/bitwriter.cyr`, 40 B), called once per `_deflate_compress_level_inner`, so every
-  `deflate_compress` / `zlib_compress` / `gzip_compress` keeps 40 B too. Nothing frees either.
-  - Measured at 2.8.8 (cyrius 6.7.16, after one warm-up call): **1,000 `zlib_compress` calls keep
-    40,000 B and 1,000 `zlib_decompress` calls keep 32,000 B.**
-  - sit measured it from its side: a `sit serve` ref push over 2,000 commits keeps 63,968 B; a git-mode
-    read keeps 32 B per loose object and about 1 KB per packed object at chain depth 33. These run in
-    owl and thoth's processes too.
-  - **The fix:** each reader or writer lives exactly as long as its call, so a 32- or 40-byte struct
-    on the codec's stack (`var brs[32]`, `var bws[40]`, initialised in place by the private
-    `_br_init_at` / `_bw_init_at`) closes both sites with no API change. `br_init` / `bw_init` stay for
-    other callers. `_dyn_cost_bw` (`src/deflate.cyr`) is
-    memoized and is not a leak.
-  - **The test that makes the claim checkable:** a suite row asserting zero `_heap_used` growth over
-    repeated calls of every batch entry (LZ4, LZ4F, DEFLATE, zlib, gzip, xz, bzip2, zstd, Brotli
-    de/compress) after one warm-up call. It pins these two sites and finds any other.
-- **`state.md`'s INFO-D says something false.** Since 2.5.10 it has said that no public API grows
-  memory with repeated use. It was false when written: `br_init` and `bw_init` have allocated per call
-  since 2.3.x (`git log -S'_sankoch_alloc(32)' -- src/bitreader.cyr`); the 2.5.10 figures it cites are
-  for zstd and tar only. 2.8.8 corrects the text and points it here and at 2.9.5. This item closes when
-  the growth test above passes. ✅ It passes on main; `state.md` closes the batch half at the 2.8.9
-  cut.
-- **INFO-B goes on the entries' comments** (raised by the pre-2.3.0 audit, 2026-05-01, and carried in
-  `state.md` with no release since): batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len`,
-  because the dictionary is staged in `dst`. The check already runs; the comments on the public
-  dictionary entries do not mention it.
-- **`programs/core_smoke.cyr:111` writes 60 bytes for a 59-byte line**, so the kernel-safe tripwire
-  prints a NUL after its PASS line. CI checks only its exit code, which is why it was missed.
-  Found by a literal-against-length scan of every `"…", N)` call in the tree; that is the only real
-  mismatch (the other hits are hex strings passed with their byte count).
-- **A stale comment in `src/zstd.cyr`** (above `_ze_cnt`, "Huffman literal encoder (2.5.5 bite 2)")
-  says 4-stream literals and FSE sequences "are later bites; they fall back to store mode here".
-  Both shipped in 2.5.5; `_ze_emit_huff_literals` picks 4-stream above 1,023 bytes.
-- **`cyrius lint`'s untracked-deferral list says nothing useful.** 9 lines, unchanged from 6.7.10 to
-  6.7.16. The `src/zstd.cyr` comment above is the only real one; the other 8 trip on ordinary words:
-  Adler-32's "deferred modulo" (`src/checksum.cyr`, 4), "not yet offered" (`src/brotli_enc.cyr`),
-  "not yet reached" (`src/deflate.cyr`, `deflate_dec_finish`) and "follow-up call"
-  (`tests/tcyr/deflate_decompress.tcyr`, 2). Reword them so the list is empty and a real deferral
-  stands out.
-- **The link gate's AGNOS step is only valid on an x86_64 Linux host.**
-  - From cyrius 6.7.11 (macOS and Windows, TL-10) and 6.7.12 (aarch64 Linux, TL-30), those CLIs
-    refuse `--agnos` with rc 1. `scripts/profile-link-gate.sh` then prints `AGNOS: FAIL (build rc=1)`
-    for each of the eleven alloc-bearing profiles (every one but `core`), which reads as eleven
-    regressions.
-  - Before those releases the same CLIs wrote a non-AGNOS binary at rc 0. A local run there checked
-    the wrong image's dead list and could pass.
-  - CI runs on x86_64 Linux, so no CI result was wrong.
-  - The fix: check the host once (`uname -sm`). On any other host, report the AGNOS step as not run,
-    with the reason, and never as a pass.
-
----
-
-## ▶ Then — 2.9.0, public names as 6.7.x types (minor)
+## ▶ Next — 2.9.0, public names as 6.7.x types (minor)
 
 A minor because it changes the public surface; the 2.8.6 closeout was its P(-1) pass, so it opens the
 2.9.x line directly.
@@ -228,7 +163,7 @@ connection. The others that do the same:
 The ADR decides one rule for all of them. The precedent is the zip reader and writer (2.7.7): `_via`
 forms that take a caller arena, which `reset_via` really frees, where a `*_close` on a bump allocator
 could only be a no-op that reads like a reclaim (`src/runtime.cyr`, `_sankoch_alloc_via`). This is
-INFO-D's remaining half; 2.8.9 closes its batch half.
+INFO-D's remaining half; 2.8.9 closed its batch half (`heap_growth.tcyr`).
 
 ### 2.9.6 — Brotli encoder: priced / optimal parse (qualities 10–11)
 
@@ -342,8 +277,10 @@ a new codec).
 ## File Summary (at 2.3.0)
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md and state.md cross-links.
-> The figures are refreshed every release. Current as of **2.8.8**, re-counted with `wc -l` (no line
-> changed at 2.8.7, a rename, or at 2.8.8, a toolchain release).
+> The figures are refreshed every release. Current as of **2.8.9**, re-counted with `wc -l`.
+> 2.8.9 grew `bitreader.cyr` 100 → 108, `bitwriter.cyr` 145 → 152 (the in-place initialisers),
+> `deflate.cyr` 3,000 → 3,004 and `zlib.cyr` 542 → 545 (the INFO-B comments). No line changed at
+> 2.8.7 (a rename) or 2.8.8 (a toolchain release).
 > 2.8.6 (the closeout's fixes) grew `lz4_decode.cyr` 181 → 211, `lz4.cyr` 949 → 1,002, `xz.cyr`
 > 2,136 → 2,199, `huffman.cyr` 709 → 808, `deflate.cyr` 2,976 → 3,000, `checksum.cyr` 732 → 748;
 > `runtime.cyr` 275 → 271, `zip.cyr` 1,386 → 1,367 (dead code removed).
@@ -361,14 +298,14 @@ a new codec).
 | types.cyr        |   44 | Enums: formats (incl. FORMAT_XZ, FORMAT_BZIP2, FORMAT_ZSTD, FORMAT_BROTLI), errors (incl. ERR_OOM, ERR_RATIO_LIMIT, ERR_OUTPUT_LIMIT), limits | core |
 | xxhash32.cyr     |   94 | xxHash32 batch + helpers + XXH32 enum (kernel-safe) | core |
 | checksum.cyr     |  748 | Adler-32 / CRC-32 (slice-by-8, + the x86_64 PCLMULQDQ fold 2.8.5) / CRC-64-XZ / CRC-32-BZIP2 + incremental state APIs; unlocked table builders carry the arena guard (2.8.0) | full |
-| bitreader.cyr    |  100 | LSB-first bit-stream reader | full |
-| bitwriter.cyr    |  145 | LSB-first bit-stream writer | full |
+| bitreader.cyr    |  108 | LSB-first bit-stream reader; batch inflate keeps its reader on the stack (`_br_init_at`, 2.8.9) | full |
+| bitwriter.cyr    |  152 | LSB-first bit-stream writer; batch deflate keeps its writer on the stack (`_bw_init_at`, 2.8.9) | full |
 | huffman.cyr      |  808 | Huffman build/decode (Kraft-validated, canonical count/offset slow path, 2.8.6), fixed + optimal trees, encoder pre-reversed codes; public builders lock around `_inner` bodies (2.8.6) | full |
 | lz77.cyr         |  208 | Sliding window match-finder, 8-byte word-compare match extend, `lz77_rebase`, ring-buffer slide | full |
 | lz4_decode.cyr   |  211 | LZ4 block + frame decompress (checked as `lz4 -d`, linked blocks, 2.8.6) + LZ4F enum (kernel-safe) | core |
 | lz4.cyr          | 1002 | LZ4 block + frame compress + `lz4f_enc_*` + `lz4f_dec_*` streaming | full |
-| deflate.cyr      | 3000 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming, dict, ratio cap, RFC 7692 sync flush + fixed-vs-dynamic block chooser | full |
-| zlib.cyr         |  542 | RFC 1950 wrapper + FDICT + streaming + ratio cap + caller output ceiling (`zlib_decompress_capped`) | full |
+| deflate.cyr      | 3004 | DEFLATE de/compress, adaptive blocks, `deflate_enc_*` + `deflate_dec_*` streaming, dict, ratio cap, RFC 7692 sync flush + fixed-vs-dynamic block chooser | full |
+| zlib.cyr         |  545 | RFC 1950 wrapper + FDICT + streaming + ratio cap + caller output ceiling (`zlib_decompress_capped`) | full |
 | gzip.cyr         |  656 | RFC 1952 wrapper + concatenated batch/streaming + FHCRC + ratio cap | full |
 | xz.cyr           | 2199 | `.xz` de/compress: LZMA2 + range coder (decode checked as liblzma, 2.8.6), optimal parse, BT4 finder, 256 KB window, ratio cap | full |
 | bzip2.cyr        | 1347 | `.bz2` de/compress: BWT + MTF/RLE2 + Huffman + RLE1, ratio cap | full |
@@ -383,15 +320,16 @@ a new codec).
 | runtime.cyr      |  271 | Lock (a BSS cell, guard under it, 2.8.6) + alloc seam + arena guard: canary, stranded-canary predicate, failed-arm handling (2.8.0); the reset registration rule | full |
 | lib.cyr          |  258 | Include chain + public API + format dispatch + the full bundle's `_sankoch_reset_tables` | full |
 | reset_<profile>.cyr ×10 | 179 | Per-profile `_sankoch_reset_tables` dispatchers (brotli 15, bzip2 16, gzip 18, tar 21, woff 20, xz 17, zip 18, zipall 21, zlib 18, zstd 15) | one each |
-| **Total**        | **20832** | | |
+| **Total**        | **20854** | | |
 
 `core` modules (types + xxhash32 + lz4_decode = 349 source lines)
 form `[lib.core]` → `dist/sankoch-core.cyr`. They contain no
 `alloc()`, no syscalls, no mutex usage — verified by the CI
 "Kernel-safe tripwire" gate (`programs/core_smoke.cyr`).
 
-Tests: 31 runnable suites in `tests/tcyr/` producing **4,500,978 assertions** (0 failed), including
-`brotli_decompress.tcyr` (4,555), `xz_decompress.tcyr` (7,052), `deflate_decompress.tcyr` (2,545),
+Tests: 32 runnable suites in `tests/tcyr/` producing **4,501,380 assertions** (0 failed), including
+`brotli_decompress.tcyr` (4,555), `heap_growth.tcyr` (394, 2.8.9: zero heap growth over every batch
+entry), `xz_decompress.tcyr` (7,052), `deflate_decompress.tcyr` (2,545),
 `zip.tcyr` (311), `zstd_compress.tcyr` (193), `stream.tcyr` (179), `arena_reset.tcyr` (124) and the
 2.8.6 `oom_matrix.tcyr` (5 verdicts over every allocation of 24 operations). Most of the total comes from per-byte
 round-trip loops on the streaming suites. A single 200 KB round-trip contributes 200,000 assertions
@@ -411,18 +349,18 @@ Distlib: **12 bundles**, one per profile in `cyrius.cyml`:
 
 | Bundle | Lines |
 |---|---:|
-| `sankoch.cyr` (full) | 20,723 |
+| `sankoch.cyr` (full) | 20,745 |
 | `sankoch-core.cyr` (kernel-safe) | 363 |
-| `sankoch-zlib.cyr` | 6,021 |
-| `sankoch-gzip.cyr` | 6,135 |
+| `sankoch-zlib.cyr` | 6,043 |
+| `sankoch-gzip.cyr` | 6,154 |
 | `sankoch-xz.cyr` | 3,612 |
 | `sankoch-bzip2.cyr` | 2,548 |
 | `sankoch-zstd.cyr` | 3,474 |
-| `sankoch-tar.cyr` | 13,530 |
-| `sankoch-zip.cyr` (methods 0/8) | 6,847 |
-| `sankoch-zipall.cyr` (every method) | 13,681 |
+| `sankoch-tar.cyr` | 13,549 |
+| `sankoch-zip.cyr` (methods 0/8) | 6,866 |
+| `sankoch-zipall.cyr` (every method) | 13,700 |
 | `sankoch-brotli.cyr` (Brotli decode) | 1,905 |
-| `sankoch-woff.cyr` (zlib closure + Brotli) | 7,580 |
+| `sankoch-woff.cyr` (zlib closure + Brotli) | 7,602 |
 
 Per-bundle roles are in [`state.md` § Dist bundles](state.md#dist-bundles).
 
@@ -449,7 +387,7 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.16 at 2.8.8).
 
 ---
 
-*Last Updated: 2026-10-22 (the 2.8.8 review: status v2.8.8 on cyrius 6.7.16; ▶ Next = **2.8.9, repairs**, ahead of 2.9.0 with the reason written down: sit's `br_init` filing (was 2.9.11) widened to `bw_init`, measured, plus INFO-B, the `core_smoke` NUL, a stale zstd comment and the lint deferral list; INFO-C pinned to 2.9.4, per-context memory (INFO-D's other half) to 2.9.5; the closeout back to 2.9.11; the 2.9.0 `const` collision census run against 6.7.16; the bzip2 bundle's line count corrected, 2,535 → 2,548). Previous: 2026-10-20 (sit filed `br_init`'s per-inflate 32 B as 2.9.11; the closeout moved to 2.9.12). Previous: 2026-10-13 (the 2.8.6 cut: status v2.8.6; ▶ Next = 2.9.0 (with the closeout's API items); the Backlog retired: every item and every deferred finding pinned to 2.9.1–2.9.11; File Summary / tests / distlib re-counted. Previous: 2026-10-13, GPU texture compression moved to mabda.)*
+*Last Updated: 2026-10-22 (the 2.8.9 cut: status v2.8.9; the shipped 2.8.9 repairs section removed; ▶ Next = 2.9.0; 2.9.5 notes INFO-D's batch half closed; File Summary / tests / distlib re-counted; *Toolchain notes*: the `--agnos` refusals handled by the link gate). Previous: 2026-10-22 (the 2.8.8 review: status v2.8.8 on cyrius 6.7.16; ▶ Next = **2.8.9, repairs**, ahead of 2.9.0 with the reason written down: sit's `br_init` filing (was 2.9.11) widened to `bw_init`, measured, plus INFO-B, the `core_smoke` NUL, a stale zstd comment and the lint deferral list; INFO-C pinned to 2.9.4, per-context memory (INFO-D's other half) to 2.9.5; the closeout back to 2.9.11; the 2.9.0 `const` collision census run against 6.7.16; the bzip2 bundle's line count corrected, 2,535 → 2,548). Previous: 2026-10-20 (sit filed `br_init`'s per-inflate 32 B as 2.9.11; the closeout moved to 2.9.12). Previous: 2026-10-13 (the 2.8.6 cut: status v2.8.6; ▶ Next = 2.9.0 (with the closeout's API items); the Backlog retired: every item and every deferred finding pinned to 2.9.1–2.9.11; File Summary / tests / distlib re-counted. Previous: 2026-10-13, GPU texture compression moved to mabda.)*
 
 ---
 
@@ -485,7 +423,8 @@ only `warn` lines fail), from 6.7.10 through 6.7.16. The 2.9.0 `SANKOCH_ERR_*` i
   - enum members need `;` or `,` (FE-16): every member already ends in `;`;
   - `param_load` needs the whole register name (TL-8): `rdi` / `rsi` / `rdx` / `rcx` / `r8` already;
   - `cyrius tests` was removed (TL-7): CI runs `cyrius test <file>`.
-- No reserved word was added. The `--agnos` refusals are a 2.8.9 item (above).
+- No reserved word was added. The `--agnos` refusals are handled since 2.8.9: on a host whose CLI
+  cannot build AGNOS images, `scripts/profile-link-gate.sh` reports that step NOT RUN and exits 77.
 - The baseline-first run is recorded in
   [`docs/benchmarks/2026-10-22-2.8.8-toolchain-6.7.16.md`](../benchmarks/2026-10-22-2.8.8-toolchain-6.7.16.md):
   every gate identical, the 47 SIZE rows identical, speed neutral, the DCE binary 4,096 B smaller.

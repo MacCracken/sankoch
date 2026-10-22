@@ -297,13 +297,13 @@ fn test_dec_stream_finish_releases_lock() {
 
     # If the mutex were still held, this batch call would deadlock.
     # `_sankoch_lock` is non-reentrant in the single-threaded contract,
-    # but a follow-up call from the same thread MUST succeed because
+    # but a second call from the same thread MUST succeed because
     # finish released the lock.
     var src2 = alloc(2);
     store8(src2 + 0, 65); store8(src2 + 1, 66);
     var c2 = alloc(32);
     var n = deflate_compress(src2, 2, c2, 32);
-    assert(n > 0, "follow-up compress succeeds (lock was released)");
+    assert(n > 0, "a second compress succeeds (lock was released)");
     return 0;
 }
 

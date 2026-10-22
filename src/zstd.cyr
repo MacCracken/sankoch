@@ -1098,13 +1098,13 @@ fn _ze_block_header(last, btype, bsize) {
 }
 
 # ---- Huffman literal encoder (2.5.5 bite 2) ------------------------------
-# Single-stream Huffman-coded literals for small blocks (regen <= 1023) — the
-# entropy-coding foundation. Builds a length-limited (<= 11-bit) canonical
-# Huffman code whose canonical assignment matches the decoder's _z_huff_build
-# exactly, emits the direct weight table + one backward bitstream + a
-# 0-sequences section (a Compressed block whose regenerated output is exactly
-# the literals). Larger blocks (4-stream literals + FSE sequences) are later
-# bites; they fall back to store mode here.
+# The literals coder every Compressed block uses. Builds a length-limited
+# (<= 11-bit) canonical Huffman code whose canonical assignment matches the
+# decoder's _z_huff_build exactly. _ze_emit_huff_literals (below) writes the
+# weight table and one backward bitstream for n <= 1023, else four;
+# _ze_try_huff_block pairs it with a 0-sequences section, and the sequences
+# block (_ze_try_seq_one) with FSE-coded sequences. Bite 2 began as the
+# single-stream case only; the rest landed later in 2.5.5.
 
 var _ze_cnt = 0;    # i64[256] literal histogram
 var _ze_nb = 0;     # i64[256] code length per symbol (0 = absent)
