@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.8] — 2026-10-22
+
+**The cyrius pin moves 6.7.10 → 6.7.16.** `lib/` is re-vendored to 6.7.16's stdlib, and the roadmap is
+reviewed for repairs. No source change, and no API or behaviour change. The move was verified on its
+own, against a baseline run of the same tree on 6.7.10 made first:
+- every gate gives the same result;
+- all 12 bundles are byte-identical apart from their `# Version:` line;
+- the 47 SIZE rows are identical, and speed is neutral.
+
+### Changed
+
+- **cyrius pin 6.7.10 → 6.7.16** (`cyrius.cyml`).
+  - `cyrius deps` re-vendored 12 of the 28 `lib/` leaves: `alloc`, `alloc_cx`, `mmap`, the seven
+    syscall peers, `thread` and `thread_local`. The changes are comments, the cx heap, and poll /
+    epoll / errno work in the peers. `alloc.cyr`'s `_heap_*` globals, which `src/runtime.cyr` reads,
+    are unchanged, and no added name collides with one of sankoch's. `lib/` and `cyrius.lock` stay
+    untracked.
+  - None of the 6.7.11–6.7.16 behaviour changes in cyrius's `ecosystem-migration.md` reaches this
+    tree:
+    - cyrlint's constant-offset / write-length checks: 0 warnings;
+    - the duplicate-global warning, the one that found `_bre_err` (2.8.7): no duplicates;
+    - the one-owner distlib rule;
+    - enum members need `;` or `,`: every member already ends in `;`;
+    - `param_load` needs whole register names: sankoch uses `rdi` / `rsi` / `rdx` / `rcx` / `r8`;
+    - `cyrius tests` was removed: CI runs `cyrius test <file>`.
+  - No reserved word was added.
+  - 6.7.16's stdlib vendors **2.8.7** (`lib/sankoch.cyr` is byte-identical to the 2.8.7 tag's
+    `dist/sankoch.cyr`, refolded at 6.7.11). So stdlib consumers have had 2.8.6's two HIGH fixes since
+    6.7.11.
+- **Verified before any other change**, first on 6.7.10 and then on 6.7.16, with identical results:
+  - lint / fmt / vet clean;
+  - every bundle regenerated with no diff;
+  - the 12-profile link gate;
+  - all 31 suites (4,500,978 assertions, 0 failed);
+  - the raw-include `--no-deps` builds;
+  - the aarch64 cross-build;
+  - all 9 fuzz harnesses.
+
+  The bench gives 47 identical SIZE rows. Its 68 timing rows have a geomean ratio of 1.004; the one
+  row outside ±10 % is `adler32 4KB text`, already known to be noisy. The `CYRIUS_DCE` binary is
+  190,328 → 186,232 B. Record:
+  [`docs/benchmarks/2026-10-22-2.8.8-toolchain-6.7.16.md`](docs/benchmarks/2026-10-22-2.8.8-toolchain-6.7.16.md).
+- **`dist/` regenerated** (cyrius 6.7.16 `distlib`): all 12 bundles read `# Version: 2.8.8`, and no
+  other line changed.
+
+### Docs
+
+- **Roadmap reviewed for repairs.** ▶ Next is now **2.8.9, repairs**, placed ahead of 2.9.0 because
+  none of its items needs an API change and 2.9.0 is a surface change. Its items:
+  - **Batch inflate and deflate keep memory on every call.** This is sit's `br_init` filing (was the
+    2.9.11 slot), widened to its encoder twin `bw_init`. Measured on 6.7.16: 1,000 `zlib_decompress`
+    calls keep 32,000 B and 1,000 `zlib_compress` calls keep 40,000 B. The fix is stack readers and
+    writers, plus a zero-growth test over every batch entry.
+  - **INFO-B** on the dictionary entries' comments.
+  - **`programs/core_smoke.cyr`** writes 60 bytes for a 59-byte line (a NUL on stdout).
+  - **A stale `src/zstd.cyr` comment** says 4-stream literals and FSE sequences "fall back to store
+    mode".
+  - **cyrlint's untracked-deferral list**: 9 lines, 8 of them ordinary words.
+  - **The link gate's AGNOS step on non-x86_64-Linux hosts.** cyrius 6.7.11 / 6.7.12 refuse
+    `--agnos` there; before that, they silently built a non-AGNOS image.
+
+  Two other placements:
+  - **INFO-C** is pinned to 2.9.4.
+  - **Per-context streaming memory** is pinned to 2.9.5: measured, 65,728 B per `zlib_enc_init`,
+    never reclaimed.
+
+  The closeout moves back to 2.9.11. The collision survey that 2.9.0's `const` item asks for was run
+  against 6.7.16's `lib/`: no other leaf declares any of the bundle's 1,036 top-level names or 223
+  enum members. The bzip2 bundle's line count is corrected (2,535 → 2,548), and *Toolchain notes*
+  covers the 6.7.16 move.
+- **`state.md`**:
+  - v2.8.8 and pin 6.7.16;
+  - the 2.8.7 and 2.8.8 recent-releases rows (2.8.7's was missing);
+  - ▶ Next is 2.8.9;
+  - INFO-B, INFO-C and INFO-D each have a release now. Until 2.8.8 they were carried with none,
+    although the roadmap said every item had one.
+  - **INFO-D corrected.** From 2.5.10 it said no public API grows memory with repeated use. That was
+    false when written: `br_init` and `bw_init` have allocated per call since 2.3.x.
+- **SIZE row count corrected.** The bench prints 47 `SIZE` rows. 2.8.6's CHANGELOG and benchmark doc
+  said 49, because `grep -c SIZE` also counts the two marker lines; no row was added after 2.8.4. The
+  dated 2.8.6 artifacts are left as written. Count with `grep -c '^SIZE '`.
+- **`doc-health.md`**: the `VERSION` row read `2.8.5` through 2.8.7. Refreshed with the CHANGELOG,
+  `cyrius.cyml`, roadmap and state rows.
+
 ## [2.8.7] — 2026-10-14
 
 **The Brotli encoder's overflow flag renamed: `_bre_err` → `_bre_ovf`.** No API or behaviour change.

@@ -1,12 +1,13 @@
 # Sankoch Development Roadmap
 
-> **Status**: Stable (**v2.8.6**); open issue queue **0**. The 2.8.x line shipped the Brotli decoder
-> (2.8.0) and encoder (2.8.4), the PCLMULQDQ CRC-32 fold (2.8.5), three toolchain releases (2.8.1–2.8.3),
-> and closed with **2.8.6, the 2.8.x-closeout P(-1) pass** (2 HIGH · 10 MEDIUM · 19 LOW · 12 INFO;
-> [dossier](../audit/2026-10-13-2.8.x-closeout.md)). Next: **2.9.0, public names as 6.7.x types**.
-> **Every item of work has a release below**: the Backlog is gone (2.8.6 pinned it and every deferred
-> finding). Before the next pin move, read
-> [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-20
+> **Status**: Stable (**v2.8.8**, cyrius **6.7.16**); open filings **1** (sit's `br_init`, now part of
+> 2.8.9). The 2.8.x line shipped the Brotli decoder (2.8.0) and encoder (2.8.4), the PCLMULQDQ CRC-32
+> fold (2.8.5), the 2.8.x-closeout P(-1) pass (2.8.6: 2 HIGH · 10 MEDIUM · 19 LOW · 12 INFO;
+> [dossier](../audit/2026-10-13-2.8.x-closeout.md)), a name fix for the stdlib fold (2.8.7) and four
+> toolchain releases (2.8.1–2.8.3, 2.8.8). Next: **2.8.9, repairs**, then **2.9.0, public names as
+> 6.7.x types**. **Every item of work has a release below**, including the three INFOs that `state.md`
+> carried without one until 2.8.8. Before the next pin move, read
+> [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-22
 
 This file is the **forward** ladder: **▶ Next**, then **▶ Scheduled**, each release pinned. **Shipped
 history lives in [`CHANGELOG.md`](../../CHANGELOG.md); the live per-release snapshot lives in
@@ -39,17 +40,82 @@ Large items ship as small bites (CLAUDE.md, *Task Sizing*). The `C-NN` ids are t
 
 ---
 
-## ▶ Next — 2.9.0, public names as 6.7.x types (minor)
+## ▶ Next — 2.8.9, repairs (patch)
+
+**Placed ahead of 2.9.0, with the reason:** each item is a defect or a false claim in the tree, none
+needs an API change, and 2.9.0 is a surface change consumers have to migrate through. As a patch, sit
+(and owl and thoth through sit's read API) get the allocation fix at the next cyrius refold without
+taking the 2.9.0 renames with it. Low effort, so batched (CLAUDE.md, *Task Sizing*). Found by the
+2.8.8 roadmap review unless marked otherwise.
+
+- **Batch inflate and deflate keep memory on every call** (sit's filing, 2026-10-20, widened here).
+  `br_init` (`src/bitreader.cyr`) takes its 32-byte reader from `_sankoch_alloc`, the process's bump
+  `alloc`, at the two `br_init(src, src_len)` sites in `_deflate_decompress_inner` /
+  `_deflate_decompress_dict_inner` (`src/deflate.cyr`). Its encoder twin is `bw_init`
+  (`src/bitwriter.cyr`, 40 B), called once per `_deflate_compress_level_inner`, so every
+  `deflate_compress` / `zlib_compress` / `gzip_compress` keeps 40 B too. Nothing frees either.
+  - Measured at 2.8.8 (cyrius 6.7.16, after one warm-up call): **1,000 `zlib_compress` calls keep
+    40,000 B and 1,000 `zlib_decompress` calls keep 32,000 B.**
+  - sit measured it from its side: a `sit serve` ref push over 2,000 commits keeps 63,968 B; a git-mode
+    read keeps 32 B per loose object and about 1 KB per packed object at chain depth 33. These run in
+    owl and thoth's processes too.
+  - **The fix:** each reader or writer lives exactly as long as its call, so a 32- or 40-byte struct
+    on the codec's stack (`var br[32]`, `var bw[40]`, initialised in place) closes both sites with no
+    API change. `br_init` / `bw_init` stay for other callers. `_dyn_cost_bw` (`src/deflate.cyr`) is
+    memoized and is not a leak.
+  - **The test that makes the claim checkable:** a suite row asserting zero `_heap_used` growth over
+    repeated calls of every batch entry (LZ4, LZ4F, DEFLATE, zlib, gzip, xz, bzip2, zstd, Brotli
+    de/compress) after one warm-up call. It pins these two sites and finds any other.
+- **`state.md`'s INFO-D says something false.** Since 2.5.10 it has said that no public API grows
+  memory with repeated use. It was false when written: `br_init` and `bw_init` have allocated per call
+  since 2.3.x (`git log -S'_sankoch_alloc(32)' -- src/bitreader.cyr`); the 2.5.10 figures it cites are
+  for zstd and tar only. 2.8.8 corrects the text and points it here and at 2.9.5. This item closes when
+  the growth test above passes.
+- **INFO-B goes on the entries' comments** (raised by the pre-2.3.0 audit, 2026-05-01, and carried in
+  `state.md` with no release since): batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len`,
+  because the dictionary is staged in `dst`. The check already runs; the comments on the public
+  dictionary entries do not mention it.
+- **`programs/core_smoke.cyr:111` writes 60 bytes for a 59-byte line**, so the kernel-safe tripwire
+  prints a NUL after its PASS line. CI checks only its exit code, which is why it was missed.
+  Found by a literal-against-length scan of every `"…", N)` call in the tree; that is the only real
+  mismatch (the other hits are hex strings passed with their byte count).
+- **A stale comment in `src/zstd.cyr`** (above `_ze_cnt`, "Huffman literal encoder (2.5.5 bite 2)")
+  says 4-stream literals and FSE sequences "are later bites; they fall back to store mode here".
+  Both shipped in 2.5.5; `_ze_emit_huff_literals` picks 4-stream above 1,023 bytes.
+- **`cyrius lint`'s untracked-deferral list says nothing useful.** 9 lines, unchanged from 6.7.10 to
+  6.7.16. The `src/zstd.cyr` comment above is the only real one; the other 8 trip on ordinary words:
+  Adler-32's "deferred modulo" (`src/checksum.cyr`, 4), "not yet offered" (`src/brotli_enc.cyr`),
+  "not yet reached" (`src/deflate.cyr`, `deflate_dec_finish`) and "follow-up call"
+  (`tests/tcyr/deflate_decompress.tcyr`, 2). Reword them so the list is empty and a real deferral
+  stands out.
+- **The link gate's AGNOS step is only valid on an x86_64 Linux host.**
+  - From cyrius 6.7.11 (macOS and Windows, TL-10) and 6.7.12 (aarch64 Linux, TL-30), those CLIs
+    refuse `--agnos` with rc 1. `scripts/profile-link-gate.sh` then prints `AGNOS: FAIL (build rc=1)`
+    for each of the eleven alloc-bearing profiles (every one but `core`), which reads as eleven
+    regressions.
+  - Before those releases the same CLIs wrote a non-AGNOS binary at rc 0. A local run there checked
+    the wrong image's dead list and could pass.
+  - CI runs on x86_64 Linux, so no CI result was wrong.
+  - The fix: check the host once (`uname -sm`). On any other host, report the AGNOS step as not run,
+    with the reason, and never as a pass.
+
+---
+
+## ▶ Then — 2.9.0, public names as 6.7.x types (minor)
 
 A minor because it changes the public surface; the 2.8.6 closeout was its P(-1) pass, so it opens the
 2.9.x line directly.
 
 - **Public integer constants → `const`**: `TAR_*` (12, `src/tar.cyr`), `ZIP_*` (21, `src/zip.cyr`) and
   `SANKOCH_ARENA_MAGIC` are never-written `var`s today. A `const` beside a same-name `var` is a hard
-  error in cyrius, so survey cyrius's `lib/` and every fold for each name first.
+  error in cyrius, so survey cyrius's `lib/` and every fold for each name first. **Checked at 2.8.8
+  against cyrius 6.7.16's `lib/`:** no other leaf declares any of the bundle's 1,036 top-level names or
+  its 223 enum members, as a `var`, `fn`, `const`, `enum` or `struct`, so nothing blocks the conversion
+  today. Re-run the census at the 2.9.0 pin: cyrius's own `var`-to-`const` arc is open (its
+  `docs/development/issues/2026-10-08-lib-public-constants-const-migration.md`).
 - **A `SANKOCH_ERR_*` namespace** for the error codes: `enum Error`'s bare `OK` / `ERR_*` names and
-  the `TAR_ERR_*` values share the stdlib's one global namespace with every consumer (cyrius 6.7.10's
-  lint already notes them).
+  the `TAR_ERR_*` values share the stdlib's one global namespace with every consumer (cyrius's lint has
+  noted the 12 `ERR_*` members since 6.7.10, and still does at 6.7.16).
 - **`: bool`** on the public predicates, and on the five private path / checksum safety predicates
   (`_star_path_safe`, `_star_symlink_safe`, `_star_ledger_prefix_unsafe`, `_star_checksum_ok`,
   `_zip_path_safe`).
@@ -129,6 +195,9 @@ The closeout's CPU findings, all under the lock, so each stalls every other sank
   assembled `.text` in a built binary, and cover the hand-written CPUID and `param_load` lines.
 - **The stranded-canary predicate under `CYRIUS_POISON` on macOS / Windows** (C-42, suspected): verify
   on a host, and switch to the exact form (record `_heap_ptr` at arm time) if it misfires.
+- **INFO-C, while the aarch64 work is open** (carried in `state.md` with no release until 2.8.8): the
+  one unaligned `load64` in the LZ77 / FDICT path. Measure it under `qemu-aarch64` beside the CRC
+  work; keep it if the cost is noise, otherwise align the read.
 
 ### 2.9.5 — RFC 7692 both directions (per-context DEFLATE streaming state)
 
@@ -139,6 +208,22 @@ the decoder's output only grows. The fix is structural: the streaming DEFLATE st
 tables, the LZ77 window and hash chains) moves from globals into the context, so the lock is held per
 call rather than per context, and the decoder writes into a ring window. **An ADR first** (memory per
 context, what stays global, how the batch paths share code). bote is the consumer that asked.
+
+**Memory per context is a repair, not only a design question** (the 2.8.8 review). Every streaming
+init takes its context from the bump arena and nothing returns it, finish included. Measured at 2.8.8:
+**one `zlib_enc_init` → write → finish keeps 65,728 B**, 65,536 of it the encoder's window
+(`DENC_WINDOW_CAP`). A server that opens a context per connection grows by that much per
+connection. The others that do the same:
+- `deflate_dec_init` (192 B, plus `dict_len` with a dictionary);
+- the zlib / gzip decoder contexts;
+- `lz4f_dec_init` and `lz4f_enc_init_ex` (a context plus a 64 KiB to 4 MiB block buffer);
+- `stream_*_init` (48 B, plus `STREAM_INIT_CAP` for buffered decompress);
+- `tar_open` (128 B) and `tar_open_auto` (the whole decompressed archive).
+
+The ADR decides one rule for all of them. The precedent is the zip reader and writer (2.7.7): `_via`
+forms that take a caller arena, which `reset_via` really frees, where a `*_close` on a bump allocator
+could only be a no-op that reads like a reclaim (`src/runtime.cyr`, `_sankoch_alloc_via`). This is
+INFO-D's remaining half; 2.8.9 closes its batch half.
 
 ### 2.9.6 — Brotli encoder: priced / optimal parse (qualities 10–11)
 
@@ -180,26 +265,7 @@ it") for a rate-distortion-optimized BCn encoder, built from the existing match 
 coders and the Q16 log2. Its entry condition is mabda filing the shape it needs; if that has not
 happened when the slot's turn comes, the closeout goes first and this keeps the next number.
 
-### 2.9.11 — every inflate keeps 32 B: `br_init`'s bit reader (filed by sit, 2026-10-20)
-
-`br_init` (`src/bitreader.cyr`) takes its 32-byte reader from `_sankoch_alloc`, which is the
-process's bump `alloc`. It runs once per `_deflate_decompress_inner` / `_deflate_decompress_dict_inner`
-call (`src/deflate.cyr`, the two `br_init(src, src_len)` sites), and nothing frees it. So every
-`zlib_decompress` and `zlib_decompress_with_ratio_cap` keeps 32 B for the life of the process, where an
-`fl_alloc` / `fl_free` round trip keeps 0. Checked at 2.8.7, in this tree and in cyrius 6.7.15's
-`lib/sankoch.cyr`.
-
-It is all a long-lived sit process still keeps per read, measured from sit:
-- A `sit serve` ref push over 2,000 commits keeps 63,968 B.
-- A git-mode read keeps 32 B per loose object and about 1 KB per packed object at chain depth 33.
-
-These run in owl and thoth's processes too, through sit's read API.
-
-**The fix the decoders already allow:** the reader's lifetime is exactly the decode call, so a 32-byte
-reader on each decoder's stack (`var br[32]`, initialised in place) closes both sites with no API
-change. `br_init` can stay for any other caller.
-
-### 2.9.12 — the 2.9.x-closeout P(-1) pass
+### 2.9.11 — the 2.9.x-closeout P(-1) pass
 
 The P(-1) before the next minor ([`CLAUDE.md` § P(-1)](../../CLAUDE.md)), over everything 2.9.x added:
 the API pass, the match-finder rewrite (byte-identity is its whole contract), the per-context DEFLATE
@@ -271,7 +337,8 @@ a new codec).
 ## File Summary (at 2.3.0)
 
 > Heading anchor kept stable (`#file-summary-at-230`) for the CLAUDE.md and state.md cross-links.
-> The figures are refreshed every release. Current as of **2.8.6**, re-counted with `wc -l`.
+> The figures are refreshed every release. Current as of **2.8.8**, re-counted with `wc -l` (no line
+> changed at 2.8.7, a rename, or at 2.8.8, a toolchain release).
 > 2.8.6 (the closeout's fixes) grew `lz4_decode.cyr` 181 → 211, `lz4.cyr` 949 → 1,002, `xz.cyr`
 > 2,136 → 2,199, `huffman.cyr` 709 → 808, `deflate.cyr` 2,976 → 3,000, `checksum.cyr` 732 → 748;
 > `runtime.cyr` 275 → 271, `zip.cyr` 1,386 → 1,367 (dead code removed).
@@ -344,7 +411,7 @@ Distlib: **12 bundles**, one per profile in `cyrius.cyml`:
 | `sankoch-zlib.cyr` | 6,021 |
 | `sankoch-gzip.cyr` | 6,135 |
 | `sankoch-xz.cyr` | 3,612 |
-| `sankoch-bzip2.cyr` | 2,535 |
+| `sankoch-bzip2.cyr` | 2,548 |
 | `sankoch-zstd.cyr` | 3,474 |
 | `sankoch-tar.cyr` | 13,530 |
 | `sankoch-zip.cyr` (methods 0/8) | 6,847 |
@@ -359,7 +426,7 @@ Per-bundle roles are in [`state.md` § Dist bundles](state.md#dist-bundles).
 **Zero external.** Checksums (Adler-32, CRC-32, xxHash32 — batch and
 incremental) are inline. No sigil dependency. Stdlib-only: `syscalls`,
 `string`, `alloc`, `fmt`, `vec`, `fnptr`, `thread`, `assert` (all
-ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.10 at 2.8.4).
+ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.16 at 2.8.8).
 
 ## Key References
 
@@ -377,7 +444,7 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.10 at 2.8.4).
 
 ---
 
-*Last Updated: 2026-10-20 (sit filed 2.9.11, `br_init`'s per-inflate 32 B; the closeout moves to 2.9.12). Previous: 2026-10-13 (the 2.8.6 cut: status v2.8.6; ▶ Next = 2.9.0 (with the closeout's API items); the Backlog retired: every item and every deferred finding pinned to 2.9.1–2.9.11; File Summary / tests / distlib re-counted. Previous: 2026-10-13, GPU texture compression moved to mabda.)*
+*Last Updated: 2026-10-22 (the 2.8.8 review: status v2.8.8 on cyrius 6.7.16; ▶ Next = **2.8.9, repairs**, ahead of 2.9.0 with the reason written down: sit's `br_init` filing (was 2.9.11) widened to `bw_init`, measured, plus INFO-B, the `core_smoke` NUL, a stale zstd comment and the lint deferral list; INFO-C pinned to 2.9.4, per-context memory (INFO-D's other half) to 2.9.5; the closeout back to 2.9.11; the 2.9.0 `const` collision census run against 6.7.16; the bzip2 bundle's line count corrected, 2,535 → 2,548). Previous: 2026-10-20 (sit filed `br_init`'s per-inflate 32 B as 2.9.11; the closeout moved to 2.9.12). Previous: 2026-10-13 (the 2.8.6 cut: status v2.8.6; ▶ Next = 2.9.0 (with the closeout's API items); the Backlog retired: every item and every deferred finding pinned to 2.9.1–2.9.11; File Summary / tests / distlib re-counted. Previous: 2026-10-13, GPU texture compression moved to mabda.)*
 
 ---
 
@@ -397,11 +464,41 @@ twice: cycc warns `duplicate fn '_brotli_dict_bin'` (or `_brotli_dict_bin_len`) 
 (the later) definition. That warning is expected. A bundle that calls the accessor without listing it
 under `embed` is refused by `cyrius distlib`, which CI's dist gate runs for every profile.
 
-**cyrius 6.7.10's lint notes `types.cyr`'s bare `ERR_*` enum members** (a *note*, which CI does not
-gate on; only `warn` lines fail). The 2.9.0 `SANKOCH_ERR_*` item is the fix.
+**cyrius's lint notes `types.cyr`'s bare `ERR_*` enum members** (a *note*, which CI does not gate on;
+only `warn` lines fail), from 6.7.10 through 6.7.16. The 2.9.0 `SANKOCH_ERR_*` item is the fix.
 
-**How 2.8.4 moved it** (the recipe for the next move): bump `cyrius.cyml`, `cyrius deps`, then run the
-whole CI sequence (lint, fmt, vet, every bundle regenerated and diffed, the link gate, every suite,
-the raw-include `--no-deps` builds, the aarch64 cross-build, every fuzz harness, and the SIZE lines
-against the previous release) **before** any source change, so a toolchain regression cannot hide
-inside a feature diff. Read cyrius's `docs/development/ecosystem-migration.md` for each version passed.
+**The 6.7.16 move (2.8.8) needed no source change.**
+- `cyrius deps` re-vendored 12 of the 28 `lib/` leaves (alloc, alloc_cx, mmap, the seven syscall
+  peers, thread, thread_local). The changes are comments, the cx heap, and epoll / poll / errno work in
+  the peers. `alloc.cyr`'s `_heap_*` globals, which `src/runtime.cyr` reads, did not change. No added
+  name collides with one of sankoch's.
+- The 6.7.11–6.7.16 behaviour changes that could have reached this tree do not. sankoch already does
+  what each one requires, or uses nothing it touches:
+  - cyrlint's constant-offset and write-length checks (TL-3, TL-21): 0 warnings;
+  - the duplicate-global warning (FX-6, the one that caught `_bre_err`): none here;
+  - the one-owner distlib rule (TL-4): sidecars unchanged;
+  - enum members need `;` or `,` (FE-16): every member already ends in `;`;
+  - `param_load` needs the whole register name (TL-8): `rdi` / `rsi` / `rdx` / `rcx` / `r8` already;
+  - `cyrius tests` was removed (TL-7): CI runs `cyrius test <file>`.
+- No reserved word was added. The `--agnos` refusals are a 2.8.9 item (above).
+- The baseline-first run is recorded in
+  [`docs/benchmarks/2026-10-22-2.8.8-toolchain-6.7.16.md`](../benchmarks/2026-10-22-2.8.8-toolchain-6.7.16.md):
+  every gate identical, the 47 SIZE rows identical, speed neutral, the DCE binary 4,096 B smaller.
+- 6.7.16's stdlib vendors **2.8.7** (`lib/sankoch.cyr` is byte-identical to the tag's `dist/sankoch.cyr`;
+  refolded at 6.7.11, cyrius `docs/ecosystem.md`).
+
+**Worth watching at the next move:** cyrius's open issue
+`2026-10-21-value-builtin-statement-load8-compiles-load16-unexpected.md`. If it is decided by
+refusing a bare `load8(p);` statement, that is a new error. This tree has none today.
+
+**How the pin moves** (2.8.4's recipe, used again at 2.8.8):
+- Run the local CI replica on the **old** pin first, as the baseline.
+- Then bump `cyrius.cyml` and run `cyrius deps`.
+- Then run the whole CI sequence again, **before** any source change, so a toolchain regression cannot
+  hide inside a feature diff. That is lint, fmt, vet, every bundle regenerated and diffed, the link
+  gate, every suite, the raw-include `--no-deps` builds, the aarch64 cross-build, every fuzz harness,
+  and the bench's SIZE rows and timings against the baseline.
+- cyrius re-execs into the pinned toolchain, so both runs use the right compiler.
+- ⚠ Switching the pin back and building re-locks `lib/` to the old stdlib. Run `cyrius deps` again
+  after any such comparison.
+- Read cyrius's `docs/development/ecosystem-migration.md` for each version passed.

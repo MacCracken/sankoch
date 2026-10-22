@@ -6,7 +6,7 @@ type: state
 
 # Sankoch State
 
-> **Last refresh**: 2026-10-14 (**v2.8.7 — the Brotli encoder's overflow flag renamed `_bre_err` → `_bre_ovf`**: niyama declares a top-level `_bre_err` too, and cyrius accepts the repeat, so a program including both folds shared one cell; found by cyrius 6.7.11's distlib census at the 2.8.6 refold. No API or behaviour change. Previous: 2026-10-13, **v2.8.6 — the 2.8.x-closeout P(-1) pass**; earlier refresh narratives live in CHANGELOG.)
+> **Last refresh**: 2026-10-22 (**v2.8.8 — cyrius pin 6.7.10 → 6.7.16**, `lib/` re-vendored, no source change; every gate identical to the 6.7.10 baseline, all 12 bundles byte-identical but for the version line, the 47 SIZE rows identical. The roadmap review placed **2.8.9, repairs** ahead of 2.9.0 and corrected INFO-D below. Previous: 2026-10-14, **v2.8.7 — the Brotli encoder's overflow flag renamed `_bre_err` → `_bre_ovf`** (a global shared with niyama); earlier refresh narratives live in CHANGELOG.)
 >
 > Per [first-party-documentation.md § Development Docs](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-documentation.md#development-docs-docsdevelopment), this file holds the **volatile** state. Durable rules live in [`../../CLAUDE.md`](../../CLAUDE.md); release narrative lives in [`../../CHANGELOG.md`](../../CHANGELOG.md); forward ladder lives in [`roadmap.md`](roadmap.md).
 
@@ -14,14 +14,14 @@ type: state
 
 ## Version
 
-- **`VERSION`**: `2.8.7` — single source of truth. 2.8.7 = the encoder's `_bre_err` → `_bre_ovf` (a global shared with niyama); 2.8.6 = **the 2.8.x-closeout P(-1) pass**; 2.8.5 = CRC-32 PCLMULQDQ fold (x86_64); 2.8.4 = Brotli encoder + cyrius 6.7.10 pin; 2.8.3 = cyrius 6.7.5 pin + `[embed]` dictionary + `loop` + `const` knobs (the W2 stdlib wave); 2.8.2 = the `loop` → `more` rename beside cyrius 6.7.5's `loop { … }` statement; 2.8.1 = cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
-- **`cyrius.cyml [package].cyrius`**: `6.7.10` — toolchain pin (2.8.4; unchanged at 2.8.5, 2.8.6 and 2.8.7). The floor for building this repo is **6.7.6**: `[embed]` (≥ 6.6.19), `const` (≥ 6.7.2) and `loop { … }` (≥ 6.7.5) need 6.7.5, and a stdlib that folds 2.8.3 or later (declaring `_brotli_dict_bin`) needs 6.7.6's own-fold `[embed]` rule, the fix 2.8.3 waited on. 6.7.10 ships the 2.8.3 fold, and the move needed no source change. 6.7.5 (2.8.3). 6.6.18 (2.8.1–2.8.2): its distlib derives each `.deps` sidecar by compile-verify (no longer copied from `[deps] stdlib`) and writes the bundle's requires block. It was 6.6.4 at 2.8.0; 6.6.4 added `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0 → 6.6.18 at 2.8.1 → 6.7.5 at 2.8.3 → 6.7.10 at 2.8.4. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
-- **Tag**: `2.8.7` (bare semver, no `v` prefix)
-- **Released**: 2026-10-13
+- **`VERSION`**: `2.8.8` — single source of truth. 2.8.8 = cyrius 6.7.16 pin + `lib/` re-vendored + the roadmap's repairs slot; 2.8.7 = the encoder's `_bre_err` → `_bre_ovf` (a global shared with niyama); 2.8.6 = **the 2.8.x-closeout P(-1) pass**; 2.8.5 = CRC-32 PCLMULQDQ fold (x86_64); 2.8.4 = Brotli encoder + cyrius 6.7.10 pin; 2.8.3 = cyrius 6.7.5 pin + `[embed]` dictionary + `loop` + `const` knobs (the W2 stdlib wave); 2.8.2 = the `loop` → `more` rename beside cyrius 6.7.5's `loop { … }` statement; 2.8.1 = cyrius 6.6.18 pin + dist/ regenerated (compile-verified sidecars + requires block) + raw-include suites; 2.8.0 = Brotli decoder + the per-profile arena-reset fix + profile link gate; see CHANGELOG.
+- **`cyrius.cyml [package].cyrius`**: `6.7.16` — toolchain pin (2.8.8). The move needed no source change; `cyrius deps` re-vendored 12 of the 28 `lib/` leaves (alloc, alloc_cx, mmap, the 7 syscall peers, thread, thread_local). 6.7.10 (2.8.4–2.8.7). The floor for building this repo is **6.7.6**: `[embed]` (≥ 6.6.19), `const` (≥ 6.7.2) and `loop { … }` (≥ 6.7.5) need 6.7.5, and a stdlib that folds 2.8.3 or later (declaring `_brotli_dict_bin`) needs 6.7.6's own-fold `[embed]` rule, the fix 2.8.3 waited on. 6.7.10 ships the 2.8.3 fold, and the move needed no source change. 6.7.5 (2.8.3). 6.6.18 (2.8.1–2.8.2): its distlib derives each `.deps` sidecar by compile-verify (no longer copied from `[deps] stdlib`) and writes the bundle's requires block. It was 6.6.4 at 2.8.0; 6.6.4 added `SYS_FLOCK` and `O_DIRECT` / `O_LARGEFILE` / `O_DIRECTORY` / `O_NOFOLLOW` to the stdlib syscall peers, and `lib/` was re-vendored. Historic: 6.6.0 at 2.7.11 → 6.6.2 at 2.7.15 → 6.6.4 at 2.8.0 → 6.6.18 at 2.8.1 → 6.7.5 at 2.8.3 → 6.7.10 at 2.8.4 → 6.7.16 at 2.8.8. ⚠ `cyrius --version` inside the repo echoes the pin; `~/.cyrius/current` is the active binary.
+- **Tag**: `2.8.8` (bare semver, no `v` prefix)
+- **Released**: 2026-10-22
 
 ## Distribution
 
-- **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius toolchain releases (full profile). Cyrius 6.7.10 carries **2.8.3** (byte-identical to the 2.8.3 tag's `dist/sankoch.cyr`, checked 2026-10-13); 2.8.4–2.8.7 reach the stdlib at cyrius 6.7.11's refold (2.8.7 is the one it vendors: 2.8.6's `_bre_err` collided with niyama's). ⚠ Stdlib consumers do not have 2.8.6's two HIGH fixes (the zip writer slot, the API lock) until then.
+- **Cyrius stdlib**: shipping as `lib/sankoch.cyr` in Cyrius toolchain releases (full profile). Cyrius 6.7.11 through **6.7.16** carry **2.8.7** (6.7.16's `lib/sankoch.cyr` is byte-identical to the 2.8.7 tag's `dist/sankoch.cyr`, checked 2026-10-22; refolded at 6.7.11, cyrius commit `3f8d1b4b`), so stdlib consumers on 6.7.11+ have 2.8.6's two HIGH fixes (the zip writer slot, the API lock). Cyrius 6.7.10 carries 2.8.3. 2.8.8 changes no source, so the next refold has nothing new to carry but the version line.
 - **Kernel-safe subset**: `dist/sankoch-core.cyr` (LZ4 batch decompress only; no alloc / no syscalls / no mutex), available since the 2.1.2 cut. ⚠ Unlike the full bundle it is **consumed as a direct dep, not folded into the Cyrius stdlib** — a consumer (the AGNOS initrd loader) declares it and pulls this repo's `dist/` artifact. It is therefore *correct* that `~/.cyrius/lib/` carries `sankoch.cyr` but no `sankoch-core.cyr`; its absence there is not drift and not a packaging gap. Only the full profile folds into the stdlib.
 - **Consumers import via**: `include "lib/sankoch.cyr"` — no separate `[deps]` declaration in their `cyrius.cyml`.
 - **Stdlib fold-in**: folded into the Cyrius stdlib since 2.0.2 (Cyrius 5.6.34); tracks the toolchain pin in `cyrius.cyml`. Per-version fold-in chronology lives in `CHANGELOG.md`.
@@ -188,12 +188,31 @@ accepted streams the references reject (found by reading the specs and liblzma a
 differentials), and the surface around the codecs (public builders, streaming finish, the lock itself)
 was where the HIGH and most MEDIUM findings lived.
 
-**▶ Next: 2.9.0** (public names as 6.7.x types, plus the closeout's API items: the Huffman / LZ77
+**2.8.7 shipped: `_bre_err` → `_bre_ovf`**, a top-level name the encoder shared with niyama, found by
+cyrius 6.7.11's distlib census. **2.8.8 shipped: the cyrius 6.7.16 pin**, with no source change. Its
+census of the full bundle's 1,036 top-level names and 223 enum members against every other 6.7.16
+stdlib leaf found no second declarer, so no other name is shared the way `_bre_err` was.
+
+**▶ Next: 2.8.9, repairs** ([`roadmap.md`](roadmap.md#-next--289-repairs-patch)), placed ahead of
+2.9.0 because none of its items changes the API. Batch inflate and deflate each keep a bit reader or
+writer per call (sit's `br_init` filing, plus `bw_init`: measured at 2.8.8, 32 B per `zlib_decompress`
+and 40 B per `zlib_compress`), with a zero-growth test over every batch entry. Also INFO-B on the
+dictionary entries' comments, the `core_smoke` NUL byte, a stale zstd comment, and the lint deferral
+list.
+
+**▶ Then: 2.9.0** (public names as 6.7.x types, plus the closeout's API items: the Huffman / LZ77
 primitives go private, `zstd_set_level` goes, the checksum read entries' reset contract), then the
-pinned ladder ([`roadmap.md` § Scheduled](roadmap.md#-scheduled--the-29x-ladder)): 2.9.1 DEFLATE
-match-finder · 2.9.2 bounded work per input byte · 2.9.3 LZ4F frame completeness · 2.9.4 CRC-32
-dispatch (aarch64, AGNOS ring 0) · 2.9.5 RFC 7692 both directions · 2.9.6–2.9.8 Brotli encoder ratio
-steps · 2.9.9 encoder polish · 2.9.10 mabda primitives (on request) · 2.9.11 the 2.9.x closeout.
+pinned ladder ([`roadmap.md` § Scheduled](roadmap.md#-scheduled--the-29x-ladder)):
+- 2.9.1 DEFLATE match-finder;
+- 2.9.2 bounded work per input byte;
+- 2.9.3 LZ4F frame completeness;
+- 2.9.4 CRC-32 dispatch (aarch64, AGNOS ring 0) + INFO-C;
+- 2.9.5 RFC 7692 both directions + memory per streaming context (measured at 2.8.8: 65,728 B per
+  `zlib_enc_init`, never reclaimed);
+- 2.9.6–2.9.8 Brotli encoder ratio steps;
+- 2.9.9 encoder polish;
+- 2.9.10 mabda primitives (on request);
+- 2.9.11 the 2.9.x closeout.
 
 **No backlog**: since 2.8.6 every item of work has a release on the roadmap.
 
@@ -203,6 +222,8 @@ Most recent first. Full per-release notes in [`../../CHANGELOG.md`](../../CHANGE
 
 | Tag    | Date       | Headline                                              |
 |--------|------------|-------------------------------------------------------|
+| 2.8.8  | 2026-10-22 | **cyrius pin 6.7.10 → 6.7.16** — `lib/` re-vendored (12 of 28 leaves), no source change; lint / fmt / vet, the 12-profile link gate, 31 suites (4,500,978 assertions), raw-include, aarch64 and 9 fuzz harnesses identical to the 6.7.10 baseline; bundles changed only in the version line; 47 SIZE rows identical; bench geomean 1.004. Roadmap review: **2.8.9 repairs** ahead of 2.9.0 (`br_init` / `bw_init` per-call growth, measured), INFO-B/C/D placed |
+| 2.8.7  | 2026-10-14 | `_bre_err` → `_bre_ovf` in the Brotli encoder: a top-level `var` niyama also declares, so a program with both folds shared one cell; no API or behaviour change |
 | 2.8.6  | 2026-10-13 | **The 2.8.x-closeout P(-1) pass** — 2 HIGH · 10 MEDIUM · 19 LOW · 12 INFO; fixed: the zip writer's allocator slot (HIGH), the lazily created API lock (HIGH, now a BSS cell with the guard under it), unlocked public builders, double-finish unlocks, DEFLATE's long-code slow path (3.42 → 0.155 s on a valid 937 KB stream), Kraft completeness, OOM latches; LZ4F and xz decode now agree with `lz4 -d` / `xz -d` (linked LZ4F blocks decode; truncated frames no longer succeed; a valid xz stream that was rejected decodes); zstd frames past the window declare it (140 MiB decodes with default `zstd -d`). New `oom_matrix` suite; every gate mutation-checked; 49 SIZE lines identical |
 | 2.8.5  | 2026-10-13 | **CRC-32 PCLMULQDQ fold (x86_64)** — 15–21× faster CRC-32 (256 KiB 358 → 16.7 µs; gzip decode 4 KiB 1.12×), bit-identical: the fold's 128-bit remainder is finished on the slice-by-8 table (no Barrett step); CPUID + a known-answer check per process; 67 instructions assembled from `docs/sources/crc32-pclmul/crc32_fold.S` and checked by `scripts/crc32-clmul-asm.sh --check`. aarch64 keeps slice-by-8 (verified under qemu). New `fuzz_crc32` (found the constants-only-in-the-probe fragility) + 5 checksum cells; 7/7 mutants caught |
 | 2.8.4  | 2026-10-13 | **Brotli encoder (RFC 7932) + cyrius pin 6.7.5 → 6.7.10** — `brotli_compress` / `_level` (quality 0..11, the `brotli -q` scale, default 6) / `_bound`, `compress(FORMAT_BROTLI)`; every quality decodes byte-exact via `brotli -d` 1.2.0 (19 fixtures × 12 qualities incl. 18 MiB past the window and a TTF font); bucketed-hash LZ77 + distance cache + lazy step, context modeling chosen by exact cost, stored fallback (`brotli_compress_bound` holds). Smaller than `brotli -q N` at q1–q6 on source / binary / font; q10–11 = q9 (no dictionary / block splitting / optimal parse yet). Full bundle only. New `brotli_compress.tcyr` (77, mutation-checked) + `fuzz_brotli_enc`; the pin move verified alone first (bundles byte-identical) |
@@ -268,9 +289,9 @@ per-run `mktemp` paths — is a test-harness nicety, not a library finding). The
 is fully remediated: 1 HIGH + 13 MEDIUM + 5 LOW, all resolved. Closed items live in
 `CHANGELOG.md`. What remains tracked:
 
-- **INFO-B** — batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len` (dict staged in `dst`). Carried unchanged (not re-derived by the audit). Already enforced at runtime; docstring-polish item.
-- **INFO-C** — aarch64 LZ77 / FDICT unaligned `load64`. The audit confirmed only one such site repo-wide; aarch64 cross-build green. Carried, narrowed — revisit only if aarch64 perf surfaces it.
-- **INFO-D** — **the never-freeing bump arena**, now the last structural memory item. 2.5.10 removed every *per-call* growth path (zstd decode/encode 0 B/call; the tar ladder 1030 MB → 38 MB), so no public API leaks unboundedly with repeated use. What remains is the design property itself: the arena never returns memory, so a partially-completed lazy init on a retried OOM still orphans its successful allocations. Accepted as the cost of the M-8 completion-flag fix; a future arena-with-reset would close it.
+- **INFO-B** — batch `_deflate_decompress_dict` / `_zlib_decompress_dict` require `dst_cap >= dict_len` (dict staged in `dst`). Already enforced at runtime; the public entries' comments do not say so. **Pinned to 2.8.9** (repairs) at 2.8.8; it had no release before.
+- **INFO-C** — aarch64 LZ77 / FDICT unaligned `load64`. The audit confirmed only one such site repo-wide; aarch64 cross-build green. **Pinned to 2.9.4** (the aarch64 CRC work) at 2.8.8: measure it under `qemu-aarch64` there.
+- **INFO-D** — **the never-freeing bump arena.** ⚠ **Corrected at 2.8.8.** From 2.5.10 to 2.8.7 this entry said no public API grows memory with repeated use. That was false when written. 2.5.10 removed the zstd and tar growth paths (zstd decode/encode 0 B/call; the tar ladder 1030 MB → 38 MB). But `br_init` and `bw_init` have taken their reader / writer from the arena on every call since 2.3.x. Measured at 2.8.8: 32 B per `zlib_decompress`, 40 B per `zlib_compress` (sit's filing, 2026-10-20, found the first). Every streaming context also keeps its allocation for the life of the process (65,728 B per `zlib_enc_init`). Also: a lazy init that fails part-way and is retried after an OOM orphans the allocations that succeeded. That was accepted as the cost of the M-8 completion-flag fix. **Pinned:** the batch half to **2.8.9** (stack readers / writers + a zero-growth test over every batch entry), the per-context half to **2.9.5** (one rule for every streaming context, on the zip reader's `_via` precedent).
 - ~~**INFO-E**~~ — **RESOLVED (negative) in 2.5.9**, encoder half completed in 2.5.10. First-call/partial OOM propagation *was* broken on the encode path; fixed with completion-flag guards + a partial-OOM-then-retry fault sweep across deflate/xz/bzip2/zstd.
 - ~~**INFO-F**~~ — **CLOSED in 2.5.3.** Ratio cap extended to xz and bzip2 decode.
 - ~~**INFO-I1**~~ — **CLOSED in 2.5.10.** `_sankoch_reset_tables()` now clears the xz/bzip2/crc64 *and* zstd lazy globals, and zstd/tar/stream allocations route through the `_sankoch_alloc` fault seam (74 sites), so their OOM paths are sweepable. zstd is in the OOM sweep; `fuzz_xz_truncate` added. The routing immediately caught a sticky-`_ze_oom` bug that would have poisoned every `zstd_compress` after one OOM.
