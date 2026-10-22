@@ -6,7 +6,7 @@
 > [dossier](../audit/2026-10-13-2.8.x-closeout.md)). Next: **2.9.0, public names as 6.7.x types**.
 > **Every item of work has a release below**: the Backlog is gone (2.8.6 pinned it and every deferred
 > finding). Before the next pin move, read
-> [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-13
+> [*Toolchain notes*](#toolchain-notes-for-the-next-pin-move). | **Last Updated**: 2026-10-20
 
 This file is the **forward** ladder: **▶ Next**, then **▶ Scheduled**, each release pinned. **Shipped
 history lives in [`CHANGELOG.md`](../../CHANGELOG.md); the live per-release snapshot lives in
@@ -180,7 +180,26 @@ it") for a rate-distortion-optimized BCn encoder, built from the existing match 
 coders and the Q16 log2. Its entry condition is mabda filing the shape it needs; if that has not
 happened when the slot's turn comes, the closeout goes first and this keeps the next number.
 
-### 2.9.11 — the 2.9.x-closeout P(-1) pass
+### 2.9.11 — every inflate keeps 32 B: `br_init`'s bit reader (filed by sit, 2026-10-20)
+
+`br_init` (`src/bitreader.cyr`) takes its 32-byte reader from `_sankoch_alloc`, which is the
+process's bump `alloc`. It runs once per `_deflate_decompress_inner` / `_deflate_decompress_dict_inner`
+call (`src/deflate.cyr`, the two `br_init(src, src_len)` sites), and nothing frees it. So every
+`zlib_decompress` and `zlib_decompress_with_ratio_cap` keeps 32 B for the life of the process, where an
+`fl_alloc` / `fl_free` round trip keeps 0. Checked at 2.8.7, in this tree and in cyrius 6.7.15's
+`lib/sankoch.cyr`.
+
+It is all a long-lived sit process still keeps per read, measured from sit:
+- A `sit serve` ref push over 2,000 commits keeps 63,968 B.
+- A git-mode read keeps 32 B per loose object and about 1 KB per packed object at chain depth 33.
+
+These run in owl and thoth's processes too, through sit's read API.
+
+**The fix the decoders already allow:** the reader's lifetime is exactly the decode call, so a 32-byte
+reader on each decoder's stack (`var br[32]`, initialised in place) closes both sites with no API
+change. `br_init` can stay for any other caller.
+
+### 2.9.12 — the 2.9.x-closeout P(-1) pass
 
 The P(-1) before the next minor ([`CLAUDE.md` § P(-1)](../../CLAUDE.md)), over everything 2.9.x added:
 the API pass, the match-finder rewrite (byte-identity is its whole contract), the per-context DEFLATE
@@ -358,7 +377,7 @@ ship with Cyrius ≥ 6.0.1; the pin is in `cyrius.cyml`, 6.7.10 at 2.8.4).
 
 ---
 
-*Last Updated: 2026-10-13 (the 2.8.6 cut: status v2.8.6; ▶ Next = 2.9.0 (with the closeout's API items); the Backlog retired: every item and every deferred finding pinned to 2.9.1–2.9.11; File Summary / tests / distlib re-counted. Previous: 2026-10-13, GPU texture compression moved to mabda.)*
+*Last Updated: 2026-10-20 (sit filed 2.9.11, `br_init`'s per-inflate 32 B; the closeout moves to 2.9.12). Previous: 2026-10-13 (the 2.8.6 cut: status v2.8.6; ▶ Next = 2.9.0 (with the closeout's API items); the Backlog retired: every item and every deferred finding pinned to 2.9.1–2.9.11; File Summary / tests / distlib re-counted. Previous: 2026-10-13, GPU texture compression moved to mabda.)*
 
 ---
 
